@@ -30,7 +30,10 @@ LEAGUE_LABEL = {1: "MLB", 11: "MiLB", 23: "LMB"}
 class PipelineContext:
     pool: asyncpg.Pool
     adapters: dict[int, Adapter]
-    telegram: TelegramClient
+    telegram: TelegramClient  # bot NUEVO -- polling (recibe cuotas) + avisos al admin
+    picks_telegram: TelegramClient  # @Lynx_HunterBot (produccion) -- SOLO para publicar picks al
+    # canal de produccion existente; enviar mensajes no choca con el webhook de n8n de ese bot,
+    # solo RECIBIR (polling) chocaria, y este bot nunca hace polling en este sistema.
     admin_chat_id: int
     picks_channel_id: int
     node_bin: str
@@ -71,7 +74,7 @@ def format_pick_message(league_label: str, pipeline: int, away_team: str, home_t
     prob = best_pick.get("prob_model") or best_pick.get("prob_estimated")
     pipeline_label = "abridores" if pipeline == 1 else "lineup completo"
     lines = [
-        f"⚾ PICK ({league_label} · {pipeline_label})",
+        f"🧪 PICK [Auto-Picks v2 — experimental] ({league_label} · {pipeline_label})",
         f"{away_team} @ {home_team}",
         f"Mercado: {market} — {pick_side}",
         f"Cuota: {_fmt_odds(odds)}  |  Edge: {edge * 100:.1f}%  |  Prob. modelo: {(prob or 0) * 100:.1f}%",
@@ -150,7 +153,7 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
     if published:
         league_label = LEAGUE_LABEL.get(sport_id, str(sport_id))
         text = format_pick_message(league_label, pipeline, away_team, home_team, best_pick, data_score)
-        await ctx.telegram.send_message(ctx.picks_channel_id, text)
+        await ctx.picks_telegram.send_message(ctx.picks_channel_id, text)
 
     async with ctx.pool.acquire() as conn:
         await conn.execute(

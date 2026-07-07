@@ -15,7 +15,8 @@ class Config:
     database_url: str
     supabase_url: str
     supabase_key: str
-    tg_bot_token: str
+    tg_bot_token: str  # bot NUEVO -- polling (recibe cuotas) + avisos al admin
+    tg_picks_bot_token: str  # @Lynx_HunterBot (produccion) -- SOLO para publicar picks, nunca polling
     tg_admin_chat_id: int
     tg_picks_channel_id: int
     node_bin: str
@@ -31,6 +32,7 @@ class Config:
             supabase_url=_require("SUPABASE_URL"),
             supabase_key=_require("SUPABASE_KEY"),
             tg_bot_token=_require("TG_BOT_TOKEN"),
+            tg_picks_bot_token=_require("TG_PICKS_BOT_TOKEN"),
             tg_admin_chat_id=int(_require("TG_ADMIN_CHAT_ID")),
             tg_picks_channel_id=int(_require("TG_PICKS_CHANNEL_ID")),
             node_bin=os.environ.get("NODE_BIN", "node"),

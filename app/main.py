@@ -54,6 +54,9 @@ async def main() -> None:
     http_client = httpx.AsyncClient()
     supabase = SupabaseClient(cfg.supabase_url, cfg.supabase_key)
     telegram = TelegramClient(cfg.tg_bot_token, http_client)
+    # Bot de produccion (@Lynx_HunterBot) -- SOLO se usa para publicar picks al canal existente,
+    # nunca para polling (eso seguiria chocando con el webhook de n8n de ese mismo bot).
+    picks_telegram = TelegramClient(cfg.tg_picks_bot_token, http_client)
 
     adapters = {
         1: MlbAdapter(supabase, http_client),
@@ -62,7 +65,7 @@ async def main() -> None:
     }
 
     ctx = PipelineContext(
-        pool=pool, adapters=adapters, telegram=telegram,
+        pool=pool, adapters=adapters, telegram=telegram, picks_telegram=picks_telegram,
         admin_chat_id=cfg.tg_admin_chat_id, picks_channel_id=cfg.tg_picks_channel_id,
         node_bin=cfg.node_bin, vendor_dir=cfg.vendor_dir,
     )
