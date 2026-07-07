@@ -22,7 +22,11 @@ ACTIVE_STATUSES = {"Preview", "Pre-Game", "Warmup", "Scheduled"}
 LOOKAHEAD = dt.timedelta(hours=3)
 
 
-async def upsert_game(pool: asyncpg.Pool, sport_id: int, g: mlb_api.ScheduledGame) -> None:
+async def upsert_game(pool: asyncpg.Pool, sport_id: int, g: mlb_api.ScheduledGame, game_dt: dt.datetime) -> None:
+    # asyncpg exige un datetime.datetime real para columnas TIMESTAMPTZ -- pasarle el string
+    # ISO crudo de la API (ej. "2026-07-07T23:45:00Z") revienta con DataError. game_dt ya viene
+    # parseado por el llamador (detector_tick), que lo necesita de todos modos para el filtro
+    # de ventana horaria.
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -37,7 +41,7 @@ async def upsert_game(pool: asyncpg.Pool, sport_id: int, g: mlb_api.ScheduledGam
               updated_at = now()
             """,
             sport_id, g.game_pk, g.away_team_id, g.home_team_id, g.away_team_name, g.home_team_name,
-            g.game_datetime_utc, g.status, g.away_pitcher_id, g.home_pitcher_id,
+            game_dt, g.status, g.away_pitcher_id, g.home_pitcher_id,
         )
 
 
@@ -102,7 +106,7 @@ async def detector_tick(ctx: PipelineContext) -> None:
                 if game_dt - now > LOOKAHEAD or game_dt < now:
                     continue
 
-                await upsert_game(ctx.pool, sport_id, g)
+                await upsert_game(ctx.pool, sport_id, g, game_dt)
                 minutes_to_start = int((game_dt - now).total_seconds() // 60)
 
                 # Gate A -- abridores
