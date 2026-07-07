@@ -205,6 +205,9 @@ async def handle_message(ctx: PipelineContext, chat_id: int, text: str, message_
     if stripped.startswith("/picks"):
         await cmds.cmd_picks(ctx)
         return
+    if stripped.startswith("/tick"):
+        await cmds.cmd_tick(ctx)
+        return
 
     parsed = parse_odds_message(text)
     if parsed is None:

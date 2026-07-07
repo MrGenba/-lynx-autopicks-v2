@@ -1,6 +1,12 @@
 """Comandos de admin: /status (partidos de hoy + estado), /pending (confirmados sin cuotas),
-/picks (picks de hoy)."""
+/picks (picks de hoy), /tick (fuerza un ciclo del detector ahora mismo, para depurar sin
+acceso a logs del contenedor)."""
+import logging
+import traceback
+
 from app.pipelines import PipelineContext, LEAGUE_LABEL
+
+logger = logging.getLogger(__name__)
 
 
 async def cmd_status(ctx: PipelineContext) -> None:
@@ -70,4 +76,32 @@ async def cmd_picks(ctx: PipelineContext) -> None:
     for r in rows:
         pick = r["best_pick"]
         lines.append(f"[{LEAGUE_LABEL.get(r['sport_id'], r['sport_id'])}] game_pk={r['game_pk']} pipeline={r['pipeline']}: {pick}")
+    await ctx.telegram.send_message(ctx.admin_chat_id, "\n".join(lines))
+
+
+async def cmd_tick(ctx: PipelineContext) -> None:
+    """Fuerza un ciclo del detector ahora mismo y reporta el resultado (o el error exacto)
+    por Telegram -- sin acceso a logs del contenedor, este es el unico canal para depurar
+    en vivo por que no se descubren partidos."""
+    from app.detector import detector_tick  # import diferido: evita import circular en frio
+
+    await ctx.telegram.send_message(ctx.admin_chat_id, "⏳ Ejecutando ciclo del detector...")
+    try:
+        await detector_tick(ctx)
+    except Exception as e:
+        tb = traceback.format_exc()
+        logger.exception("cmd_tick fallo")
+        await ctx.telegram.send_message(ctx.admin_chat_id, f"❌ El detector lanzo una excepcion:\n{str(e)[:300]}\n\n{tb[-800:]}")
+        return
+
+    async with ctx.pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT sport_id, count(*) as n FROM games_gate_state WHERE game_datetime_utc::date = current_date GROUP BY sport_id"
+        )
+    if not rows:
+        await ctx.telegram.send_message(ctx.admin_chat_id, "✅ Ciclo terminado sin excepciones, pero 0 partidos encontrados en ninguna liga hoy.")
+        return
+    lines = ["✅ Ciclo terminado:"]
+    for r in rows:
+        lines.append(f"[{LEAGUE_LABEL.get(r['sport_id'], r['sport_id'])}] {r['n']} partido(s) descubiertos")
     await ctx.telegram.send_message(ctx.admin_chat_id, "\n".join(lines))

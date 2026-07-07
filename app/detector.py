@@ -84,8 +84,14 @@ async def detector_tick(ctx: PipelineContext) -> None:
         for sport_id, cfg in ((1, {}), (11, {}), (23, {"league_id": 125})):
             try:
                 games = await mlb_api.get_schedule(client, sport_id, today, cfg.get("league_id"))
-            except Exception:
+            except Exception as e:
                 logger.exception("detector: fallo el schedule de sport_id=%s", sport_id)
+                # Sin acceso a logs del contenedor, avisar tambien por Telegram es la unica
+                # forma practica de detectar este tipo de fallo en producción.
+                await ctx.telegram.send_message(
+                    ctx.admin_chat_id,
+                    f"❌ Detector: fallo el schedule de sport_id={sport_id}: {str(e)[:250]}",
+                )
                 continue
 
             for g in games:
