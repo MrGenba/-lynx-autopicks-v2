@@ -1,0 +1,54 @@
+"""Adaptador MLB -- el mas simple de los 3: vw_mlb_matchups_ready ya hace todos los joins
+pesados (stats de abridor, bullpen, ofensiva, park factors, clima, Statcast, SIERA) y ya
+nombra las columnas como away_p_*/home_p_* etc., igual que consume "Motor MLB" en n8n.
+"""
+import logging
+from typing import Optional
+
+import httpx
+
+from app.adapters import Mode
+from app.supabase_client import SupabaseClient
+
+logger = logging.getLogger(__name__)
+
+REQUIRED_FIELDS = ("away_p_era", "home_p_era")  # sin esto el motor no tiene nada que analizar
+
+
+class MlbAdapter:
+    def __init__(self, supabase: SupabaseClient, http_client: httpx.AsyncClient):
+        self.supabase = supabase
+        self.http_client = http_client
+
+    async def build_game_object(self, game_pk: int, mode: Mode) -> Optional[dict]:
+        row = await self.supabase.select_one(
+            self.http_client, "vw_mlb_matchups_ready", {"game_pk": f"eq.{game_pk}", "select": "*"}
+        )
+        if row is None:
+            logger.warning("vw_mlb_matchups_ready sin fila para game_pk=%s", game_pk)
+            return None
+        if any(row.get(f) is None for f in REQUIRED_FIELDS):
+            logger.info("game_pk=%s sin ERA de abridores todavia, se omite", game_pk)
+            return None
+
+        game = dict(row)
+
+        # El lineup_factor ya lo calcula y guarda el Lineup Watcher existente (n8n) en
+        # lineup_watch -- solo lectura, no se recalcula aqui. En modo "pitchers_only" se
+        # ignora deliberadamente aunque ya exista, para que el pipeline 1 sea una lectura
+        # limpia de "solo con abridores confirmados".
+        if mode == "full_lineup":
+            lineup_row = await self.supabase.select_one(
+                self.http_client, "lineup_watch",
+                {"game_pk": f"eq.{game_pk}", "select": "lineup_factor_away,lineup_factor_home,lineup_woba_away,lineup_woba_home"},
+            )
+            if lineup_row:
+                game["lineup_factor_away"] = lineup_row.get("lineup_factor_away")
+                game["lineup_factor_home"] = lineup_row.get("lineup_factor_home")
+                game["lineup_woba_away"] = lineup_row.get("lineup_woba_away")
+                game["lineup_woba_home"] = lineup_row.get("lineup_woba_home")
+        else:
+            game["lineup_factor_away"] = None
+            game["lineup_factor_home"] = None
+
+        return game

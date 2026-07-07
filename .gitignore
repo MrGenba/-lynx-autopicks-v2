@@ -1,0 +1,8 @@
+.git_ssh/
+.env
+*.pyc
+__pycache__/
+.pytest_cache/
+.ep_login.json
+.ep_token.txt
+*.log

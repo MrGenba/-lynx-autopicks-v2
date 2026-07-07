@@ -1,0 +1,28 @@
+# SOLO para desarrollo local (probar contra un Postgres real antes de desplegar). En
+# EasyPanel no se usa este archivo directamente -- alli se crean 2 servicios separados
+# (Postgres gestionado + App desde este Dockerfile), ver GUIA_DESPLIEGUE_EASYPANEL.md.
+version: "3.9"
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: autopicks
+      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: autopicks
+    ports:
+      - "5433:5432"
+    volumes:
+      - autopicks_dev_data:/var/lib/postgresql/data
+
+  app:
+    build: .
+    depends_on:
+      - db
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://autopicks:devpassword@db:5432/autopicks
+    ports:
+      - "8080:8080"
+
+volumes:
+  autopicks_dev_data:
