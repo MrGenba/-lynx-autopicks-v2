@@ -2,6 +2,7 @@
 falta), y lanza en paralelo el detector (APScheduler, cada N segundos), el long-poll de
 Telegram, y un servidor aiohttp minimo solo para el health check de EasyPanel."""
 import asyncio
+import datetime as dt
 import logging
 
 import httpx
@@ -71,7 +72,12 @@ async def main() -> None:
     )
 
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(detector_tick, "interval", seconds=cfg.detector_interval_seconds, args=[ctx], max_instances=1)
+    # next_run_time=now: por defecto APScheduler espera el intervalo completo antes del primer
+    # tick (180s en frio tras arrancar) -- se fuerza a que corra de inmediato al iniciar.
+    scheduler.add_job(
+        detector_tick, "interval", seconds=cfg.detector_interval_seconds, args=[ctx],
+        max_instances=1, next_run_time=dt.datetime.now(),
+    )
     scheduler.start()
 
     await telegram.send_message(cfg.tg_admin_chat_id, "🟢 Auto-Picks v2 arrancado y en marcha.")

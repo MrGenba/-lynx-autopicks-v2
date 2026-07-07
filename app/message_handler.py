@@ -185,6 +185,13 @@ async def _handle_clarification_reply(ctx: PipelineContext, chat_id: int, text: 
 
 
 async def handle_message(ctx: PipelineContext, chat_id: int, text: str, message_id: int) -> None:
+    # Bot de uso privado -- se ignora cualquier mensaje que no venga del chat del admin. Sin
+    # respuesta ni error visible para quien no sea el admin (no revela que el bot "existe" o
+    # reacciona a nada).
+    if chat_id != ctx.admin_chat_id:
+        logger.warning("mensaje ignorado de chat_id no autorizado: %s", chat_id)
+        return
+
     if await _handle_clarification_reply(ctx, chat_id, text):
         return
 
