@@ -20,7 +20,18 @@ class MlbAdapter:
         self.supabase = supabase
         self.http_client = http_client
 
-    async def build_game_object(self, game_pk: int, mode: Mode) -> Optional[dict]:
+    async def build_game_object(
+        self,
+        game_pk: int,
+        mode: Mode,
+        away_pitcher_id: Optional[int] = None,
+        home_pitcher_id: Optional[int] = None,
+    ) -> Optional[dict]:
+        # away_pitcher_id/home_pitcher_id no se usan aqui: a diferencia de MiLB/LMB, MLB no
+        # hace una consulta propia de stats de abridor -- vw_mlb_matchups_ready ya trae el ERA
+        # calculado. Si la vista no tiene fila o le falta el ERA, el fallback de pitcher_id no
+        # tiene forma de actuar sobre eso (ver games_gate_state en pipelines.py). Se acepta el
+        # parametro solo para mantener la misma firma que los otros 2 adaptadores.
         row = await self.supabase.select_one(
             self.http_client, "vw_mlb_matchups_ready", {"game_pk": f"eq.{game_pk}", "select": "*"}
         )

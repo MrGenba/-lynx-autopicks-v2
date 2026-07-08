@@ -100,7 +100,15 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
         logger.error("no hay adaptador para sport_id=%s", sport_id)
         return
 
-    game_obj = await adapter.build_game_object(game_pk, mode)
+    async with ctx.pool.acquire() as conn:
+        gate_row = await conn.fetchrow(
+            "SELECT away_pitcher_id, home_pitcher_id FROM games_gate_state WHERE sport_id=$1 AND game_pk=$2",
+            sport_id, game_pk,
+        )
+    gate_away_pid = gate_row["away_pitcher_id"] if gate_row else None
+    gate_home_pid = gate_row["home_pitcher_id"] if gate_row else None
+
+    game_obj = await adapter.build_game_object(game_pk, mode, gate_away_pid, gate_home_pid)
     if game_obj is None:
         # Datos incompletos (p.ej. ERA de abridores aun sin poblar) -- NO se reclama la fila,
         # asi que se puede reintentar en un proximo tick del detector sin violar idempotencia.

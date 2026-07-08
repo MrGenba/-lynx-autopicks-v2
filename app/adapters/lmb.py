@@ -108,7 +108,13 @@ class LmbAdapter:
         )
         return rows[0] if rows else {}
 
-    async def build_game_object(self, game_pk: int, mode: Mode) -> Optional[dict]:
+    async def build_game_object(
+        self,
+        game_pk: int,
+        mode: Mode,
+        away_pitcher_id: Optional[int] = None,
+        home_pitcher_id: Optional[int] = None,
+    ) -> Optional[dict]:
         base = await self.supabase.select_one(
             self.http_client, "vw_lmb_matchups_ready", {"game_pk": f"eq.{game_pk}", "select": "*"}
         )
@@ -116,19 +122,26 @@ class LmbAdapter:
             logger.warning("vw_lmb_matchups_ready sin fila para game_pk=%s", game_pk)
             return None
 
+        # Fallback: si la vista aun no tiene el pitcher_id de un lado, usar el que el
+        # detector ya confirmo en vivo (games_gate_state) para poder buscar su ERA igual.
+        resolved_away_pid = base.get("away_pitcher_id") or away_pitcher_id
+        resolved_home_pid = base.get("home_pitcher_id") or home_pitcher_id
+
         game = dict(base)
+        game["away_pitcher_id"] = resolved_away_pid
+        game["home_pitcher_id"] = resolved_home_pid
         wx = await self._weather(game_pk)
         game["temperature_2m"] = base.get("temperature_2m") or wx.get("temperature_2m")
         game["wind_speed_10m"] = base.get("wind_speed_10m") or wx.get("wind_speed_10m")
         game["wind_tailwind"] = base.get("wind_tailwind") or wx.get("wind_tailwind")
 
         if game.get("away_p_era") is None:
-            fb = await self._era_fallback(base.get("away_pitcher_id"))
+            fb = await self._era_fallback(resolved_away_pid)
             if fb:
                 game["away_p_era"] = fb["era"]
                 game["away_p_ip_season"] = game.get("away_p_ip_season") or fb["ip"]
         if game.get("home_p_era") is None:
-            fb = await self._era_fallback(base.get("home_pitcher_id"))
+            fb = await self._era_fallback(resolved_home_pid)
             if fb:
                 game["home_p_era"] = fb["era"]
                 game["home_p_ip_season"] = game.get("home_p_ip_season") or fb["ip"]

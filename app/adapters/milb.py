@@ -106,7 +106,13 @@ class MilbAdapter:
             r["wind_tailwind"] = None
         return r
 
-    async def build_game_object(self, game_pk: int, mode: Mode) -> Optional[dict]:
+    async def build_game_object(
+        self,
+        game_pk: int,
+        mode: Mode,
+        away_pitcher_id: Optional[int] = None,
+        home_pitcher_id: Optional[int] = None,
+    ) -> Optional[dict]:
         base = await self.supabase.select_one(
             self.http_client, "vw_matchups_enriched", {"game_id": f"eq.{game_pk}", "select": "*"}
         )
@@ -114,15 +120,21 @@ class MilbAdapter:
             logger.warning("vw_matchups_enriched sin fila para game_id=%s", game_pk)
             return None
 
+        # Fallback: si la vista de Supabase aun no tiene el pitcher_id de un lado (sync de
+        # produccion no ha llegado), usar el que el detector ya confirmo en vivo via
+        # MLB Stats API (games_gate_state) para poder consultar sus stats igualmente.
+        resolved_away_pid = base.get("away_pitcher_id") or away_pitcher_id
+        resolved_home_pid = base.get("home_pitcher_id") or home_pitcher_id
+
         season = dt.datetime.utcnow().year
         (
             ap, hp, apsc, hpsc, away_batt, home_batt, away_bull, home_bull,
             away_rpg, home_rpg, park, weather,
         ) = await asyncio.gather(
-            self._pitcher_stats(base.get("away_pitcher_id")),
-            self._pitcher_stats(base.get("home_pitcher_id")),
-            self._pitcher_statcast(base.get("away_pitcher_id")),
-            self._pitcher_statcast(base.get("home_pitcher_id")),
+            self._pitcher_stats(resolved_away_pid),
+            self._pitcher_stats(resolved_home_pid),
+            self._pitcher_statcast(resolved_away_pid),
+            self._pitcher_statcast(resolved_home_pid),
             self._team_batting(base.get("away_team_id"), season),
             self._team_batting(base.get("home_team_id"), season),
             self._team_bullpen(base.get("away_team_id"), season),
@@ -144,6 +156,8 @@ class MilbAdapter:
         game = {
             **base,
             "sport_id": 11,
+            "away_pitcher_id": resolved_away_pid,
+            "home_pitcher_id": resolved_home_pid,
             "lineup_factor_away": lineup.get("lineup_factor_away"),
             "lineup_factor_home": lineup.get("lineup_factor_home"),
             "lineup_woba_away": lineup.get("lineup_woba_away"),
