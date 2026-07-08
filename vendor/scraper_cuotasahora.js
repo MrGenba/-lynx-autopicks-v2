@@ -110,7 +110,31 @@ async function drillIntoMarket(page, tabLabel, opts) {
   return { line: picked.line, odds1: picked.odds1, odds2: picked.odds2, bookmaker: picked.bookmaker };
 }
 
-async function scrapeMatch(league, url) {
+// Filtro barato (no es el matching autoritativo -- eso lo hace Python con aliases.score()
+// despues) para decidir si vale la pena perforar Totales/Handicap de un partido: cada
+// perforacion son 2 clics + esperas de red (~10-20s cada una, mas aun pasando por un proxy
+// residencial), y la mayoria de partidos de una liga no son ninguno de los que estamos
+// esperando cuotas -- perforar solo los candidatos de verdad corta el tiempo total de
+// scrapeo de "toda la liga x2 mercados" a "toda la liga x1 pagina + los pocos que hacen falta".
+function normLoose(s) {
+  return String(s || "").toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function looseMatch(a, b) {
+  const na = normLoose(a), nb = normLoose(b);
+  if (!na || !nb) return false;
+  if (na === nb || na.includes(nb) || nb.includes(na)) return true;
+  const wordsA = na.split(" ").filter((w) => w.length >= 4);
+  return wordsA.some((w) => nb.includes(w));
+}
+
+function makeShouldDrill(candidateNames) {
+  const names = (candidateNames || []).filter(Boolean);
+  if (!names.length) return () => true; // sin lista -- comportamiento original (perforar todo)
+  return (awayTeam, homeTeam) => names.some((n) => looseMatch(n, awayTeam) || looseMatch(n, homeTeam));
+}
+
+async function scrapeMatch(league, url, shouldDrill) {
   const page = await context.newPage();
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
@@ -125,17 +149,19 @@ async function scrapeMatch(league, url) {
     const ml = pickBookmaker(mlRows, PREFERRED_BOOKMAKER);
     if (!ml) return null;
 
-    const total = await drillIntoMarket(page, "Más/Menos de", {});
-    const hc = await drillIntoMarket(page, "Hándicap asiático", { preferAbs: 1.5 });
-
     const game = {
       league, status: "scheduled", time: header.time,
       away_team: header.away_team, home_team: header.home_team,
       moneyline: { home: ml.odds1, away: ml.odds2 },
       bookmaker: ml.bookmaker,
     };
-    if (total) game.total = { line: Math.abs(total.line), over_odds: total.odds1, under_odds: total.odds2 };
-    if (hc) game.run_line = { home: { line: hc.line, odds: hc.odds1 }, away: { line: -hc.line, odds: hc.odds2 } };
+
+    if (shouldDrill(header.away_team, header.home_team)) {
+      const total = await drillIntoMarket(page, "Más/Menos de", {});
+      const hc = await drillIntoMarket(page, "Hándicap asiático", { preferAbs: 1.5 });
+      if (total) game.total = { line: Math.abs(total.line), over_odds: total.odds1, under_odds: total.odds2 };
+      if (hc) game.run_line = { home: { line: hc.line, odds: hc.odds1 }, away: { line: -hc.line, odds: hc.odds2 } };
+    }
     return game;
   } catch (e) {
     return { league, error: String(e && e.message || e), url };
@@ -144,10 +170,11 @@ async function scrapeMatch(league, url) {
   }
 }
 
-async function fetchLeagueOdds(league) {
+async function fetchLeagueOdds(league, candidateNames) {
   const paths = LEAGUE_PATHS[league];
   if (!paths) throw new Error("Liga desconocida: " + league);
   await ensureBrowser();
+  const shouldDrill = makeShouldDrill(candidateNames);
 
   const games = [];
   const errors = [];
@@ -168,7 +195,7 @@ async function fetchLeagueOdds(league) {
       await page.close().catch(() => {});
     }
 
-    const results = await runWithConcurrency(matchLinks, CONCURRENCY, (link) => scrapeMatch(league, link));
+    const results = await runWithConcurrency(matchLinks, CONCURRENCY, (link) => scrapeMatch(league, link, shouldDrill));
     for (const result of results) {
       if (!result) continue;
       if (result.error) errors.push(result.error);

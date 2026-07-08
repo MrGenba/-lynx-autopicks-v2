@@ -46,13 +46,16 @@ async def run_odds_scraper(
     proxy_server: Optional[str] = None,
     proxy_username: Optional[str] = None,
     proxy_password: Optional[str] = None,
+    candidate_names: Optional[list[str]] = None,
     timeout: float = 300.0,
 ) -> dict:
     """Scrapear una liga entera puede tardar varios minutos (varios partidos, cada uno con 2-3
     clics dentro de la pagina) -- mas aun pasando por un proxy residencial (mas latencia por
-    peticion que una conexion directa; probado en vivo: 180s no bastaban para MLB con proxy,
-    subido a 300s el 2026-07-09). El proxy (si se pasa) va por variables de entorno del
-    subproceso, nunca como argv (no queda en logs de proceso)."""
+    peticion que una conexion directa; probado en vivo: 180s no bastaban para MLB con proxy).
+    candidate_names filtra que partidos se "perforan" (Totales/Handicap, lo caro) -- sin esto
+    el scraper perfora TODOS los partidos de la liga, no solo los que hacen falta (tambien
+    probado en vivo: incluso a 300s seguia sin bastar para MLB entero). El proxy (si se pasa)
+    va por variables de entorno del subproceso, nunca como argv (no queda en logs de proceso)."""
     script = str(Path(vendor_dir) / "run_odds_scraper.js")
     env = dict(os.environ)
     if proxy_server:
@@ -63,10 +66,11 @@ async def run_odds_scraper(
             env["PROXY_PASSWORD"] = proxy_password
     proc = await asyncio.create_subprocess_exec(
         node_bin, script, league,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
     )
+    stdin_payload = json.dumps({"candidateNames": candidate_names or []}).encode("utf-8")
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(stdin_payload), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         raise NodeBridgeError(f"run_odds_scraper.js ({league}) supero el timeout de {timeout}s")

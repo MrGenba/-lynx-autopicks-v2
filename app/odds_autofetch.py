@@ -126,10 +126,12 @@ async def autofetch_league(ctx: PipelineContext, sport_id: int) -> None:
         return  # nada que buscar en esta liga ahora mismo -- no hace falta scrapear nada
 
     league_key = SCRAPER_LEAGUE[sport_id]
+    candidate_names = [n for c in candidates for n in (c.away_team_name, c.home_team_name) if n]
     try:
         result = await run_odds_scraper(
             ctx.node_bin, ctx.vendor_dir, league_key,
             ctx.proxy_server, ctx.proxy_username, ctx.proxy_password,
+            candidate_names=candidate_names,
         )
     except NodeBridgeError as e:
         logger.warning("run_odds_scraper fallo para %s: %s", league_key, e)
