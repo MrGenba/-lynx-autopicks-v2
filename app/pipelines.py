@@ -47,18 +47,24 @@ async def get_odds(pool: asyncpg.Pool, sport_id: int, game_pk: int) -> Optional[
         )
 
 
+def _num(v):
+    """asyncpg devuelve las columnas NUMERIC de game_odds como Decimal -- json.dumps no sabe
+    serializarlas (run_quant.js solo necesita precision de float, no la exactitud de Decimal)."""
+    return float(v) if v is not None else None
+
+
 def build_quant_payload(game: dict, odds: asyncpg.Record) -> dict:
     return {
         "game": game,
-        "away_ml": odds["away_ml"],
-        "home_ml": odds["home_ml"],
-        "away_hc_val": odds["away_hc_val"],
-        "away_hc_odds": odds["away_hc_odds"],
-        "home_hc_val": odds["home_hc_val"],
-        "home_hc_odds": odds["home_hc_odds"],
-        "total_line": odds["total_line"],
-        "over_odds": odds["over_odds"],
-        "under_odds": odds["under_odds"],
+        "away_ml": _num(odds["away_ml"]),
+        "home_ml": _num(odds["home_ml"]),
+        "away_hc_val": _num(odds["away_hc_val"]),
+        "away_hc_odds": _num(odds["away_hc_odds"]),
+        "home_hc_val": _num(odds["home_hc_val"]),
+        "home_hc_odds": _num(odds["home_hc_odds"]),
+        "total_line": _num(odds["total_line"]),
+        "over_odds": _num(odds["over_odds"]),
+        "under_odds": _num(odds["under_odds"]),
     }
 
 
