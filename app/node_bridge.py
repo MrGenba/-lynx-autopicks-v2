@@ -46,11 +46,13 @@ async def run_odds_scraper(
     proxy_server: Optional[str] = None,
     proxy_username: Optional[str] = None,
     proxy_password: Optional[str] = None,
-    timeout: float = 180.0,
+    timeout: float = 300.0,
 ) -> dict:
-    """Scrapear una liga entera puede tardar 1-2 minutos (varios partidos, cada uno con 2-3
-    clics dentro de la pagina) -- timeout mucho mas alto que run_quant. El proxy (si se pasa)
-    va por variables de entorno del subproceso, nunca como argv (no queda en logs de proceso)."""
+    """Scrapear una liga entera puede tardar varios minutos (varios partidos, cada uno con 2-3
+    clics dentro de la pagina) -- mas aun pasando por un proxy residencial (mas latencia por
+    peticion que una conexion directa; probado en vivo: 180s no bastaban para MLB con proxy,
+    subido a 300s el 2026-07-09). El proxy (si se pasa) va por variables de entorno del
+    subproceso, nunca como argv (no queda en logs de proceso)."""
     script = str(Path(vendor_dir) / "run_odds_scraper.js")
     env = dict(os.environ)
     if proxy_server:
