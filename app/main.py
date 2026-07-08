@@ -17,6 +17,7 @@ from app.config import Config
 from app.detector import detector_tick
 from app.logging_setup import setup_logging
 from app.message_handler import handle_message
+from app.odds_autofetch import autofetch_tick
 from app.pipelines import PipelineContext
 from app.supabase_client import SupabaseClient
 from app.telegram import TelegramClient, poll_loop
@@ -69,6 +70,7 @@ async def main() -> None:
         pool=pool, adapters=adapters, telegram=telegram, picks_telegram=picks_telegram,
         admin_chat_id=cfg.tg_admin_chat_id, picks_channel_id=cfg.tg_picks_channel_id,
         node_bin=cfg.node_bin, vendor_dir=cfg.vendor_dir,
+        proxy_server=cfg.proxy_server, proxy_username=cfg.proxy_username, proxy_password=cfg.proxy_password,
     )
 
     scheduler = AsyncIOScheduler()
@@ -77,6 +79,12 @@ async def main() -> None:
     scheduler.add_job(
         detector_tick, "interval", seconds=cfg.detector_interval_seconds, args=[ctx],
         max_instances=1, next_run_time=dt.datetime.now(),
+    )
+    # Intervalo mucho mas largo que el detector: cada ciclo scrapea la liga entera en
+    # cuotasahora.com, no solo el partido concreto -- hay que ser conservador con la frecuencia.
+    scheduler.add_job(
+        autofetch_tick, "interval", seconds=cfg.odds_autofetch_interval_seconds, args=[ctx],
+        max_instances=1, next_run_time=dt.datetime.now() + dt.timedelta(seconds=30),
     )
     scheduler.start()
 

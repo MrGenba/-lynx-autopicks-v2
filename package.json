@@ -1,0 +1,8 @@
+{
+  "name": "autopicks-v2-vendor",
+  "private": true,
+  "description": "Dependencias Node del puente Python->Node (run_quant.js, run_odds_scraper.js). No es un servicio propio.",
+  "dependencies": {
+    "patchright": "^1.61.1"
+  }
+}

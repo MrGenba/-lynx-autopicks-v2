@@ -18,3 +18,20 @@ GET https://n8n-n8n.0zhp4h.easypanel.host/api/v1/workflows/blFBFDgejVSXilfR
 // cambiar el "return {...}" final (el último, con analyzeMatchup) por "module.exports = {...}"
 ```
 No usar `scripts/sync_vendor_from_n8n.py` sin revisar el diff a mano — un cambio de calibración en producción debe copiarse aquí deliberadamente, no automáticamente en cada arranque.
+
+## Scraper de cuotas (`scraper_cuotasahora.js` + `parser_cuotasahora.js` + `run_odds_scraper.js`)
+
+Vendorizados desde `D:\Milb\odds_bet365\` (2026-07-08/09) con **una única diferencia** respecto
+al original: `ensureBrowser()` en `scraper_cuotasahora.js` lee `PROXY_SERVER`/`PROXY_USERNAME`/
+`PROXY_PASSWORD` del entorno y los pasa a `chromium.launch({proxy:...})` -- necesario porque el
+VPS de Francia donde corre `autopicks-app` está bloqueado por cuotasahora.com (confirmado
+2026-07-08 con una petición HTTP plana desde n8n, timeout). Producción (`odds_bet365/` + el nodo
+n8n "Actualizar Cuotas bet365") NO usa proxy y seguirá bloqueada hasta que se le añada uno
+también, si hiciera falta -- ese cambio no se ha propagado ahí a propósito (fuera del alcance de
+esta sesión).
+
+| Archivo local | Origen | sha256 original (completo) |
+|---|---|---|
+| `parser_cuotasahora.js` | `D:\Milb\odds_bet365\parser_cuotasahora.js`, sin cambios | `02bacb20e25ccea696be83b016876e4e6ec402e6f01a145c5570c86bb2f1850e` |
+| `scraper_cuotasahora.js` | `D:\Milb\odds_bet365\scraper_cuotasahora.js`, + soporte de proxy | `f61bcf7b7ae4d06d8ad5dd45d350d2f8d93657ad248109c11e3be673b25b56a1` |
+| `run_odds_scraper.js` | nuevo, ~20 líneas (mismo patrón que `run_quant.js`) | n/a |

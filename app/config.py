@@ -24,6 +24,13 @@ class Config:
     log_level: str
     log_dir: str
     detector_interval_seconds: int
+    odds_autofetch_interval_seconds: int
+    # Proxy opcional para el scraper de cuotas (vendor/run_odds_scraper.js) -- el VPS de
+    # Francia esta bloqueado por cuotasahora.com, asi que sin esto el scraper falla igual que
+    # el de produccion. None = sin proxy (mismo comportamiento que antes de 2026-07-09).
+    proxy_server: str | None
+    proxy_username: str | None
+    proxy_password: str | None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -40,4 +47,8 @@ class Config:
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
             log_dir=os.environ.get("LOG_DIR", "/app/logs"),
             detector_interval_seconds=int(os.environ.get("DETECTOR_INTERVAL_SECONDS", "180")),
+            odds_autofetch_interval_seconds=int(os.environ.get("ODDS_AUTOFETCH_INTERVAL_SECONDS", "900")),
+            proxy_server=os.environ.get("PROXY_SERVER") or None,
+            proxy_username=os.environ.get("PROXY_USERNAME") or None,
+            proxy_password=os.environ.get("PROXY_PASSWORD") or None,
         )

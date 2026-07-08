@@ -208,6 +208,9 @@ async def handle_message(ctx: PipelineContext, chat_id: int, text: str, message_
     if stripped.startswith("/tick"):
         await cmds.cmd_tick(ctx)
         return
+    if stripped.startswith("/fetchodds"):
+        await cmds.cmd_fetchodds(ctx)
+        return
     if stripped.startswith("/clock"):
         await cmds.cmd_clock(ctx)
         return

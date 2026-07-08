@@ -38,6 +38,11 @@ class PipelineContext:
     picks_channel_id: int
     node_bin: str
     vendor_dir: str
+    # Proxy opcional para vendor/run_odds_scraper.js -- ver app/odds_autofetch.py. None = sin
+    # proxy (el scraper fallara igual que produccion, bloqueado por cuotasahora.com).
+    proxy_server: Optional[str] = None
+    proxy_username: Optional[str] = None
+    proxy_password: Optional[str] = None
 
 
 async def get_odds(pool: asyncpg.Pool, sport_id: int, game_pk: int) -> Optional[asyncpg.Record]:

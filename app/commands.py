@@ -121,3 +121,19 @@ async def cmd_tick(ctx: PipelineContext) -> None:
     for r in rows:
         lines.append(f"[{LEAGUE_LABEL.get(r['sport_id'], r['sport_id'])}] {r['n']} partido(s) descubiertos")
     await ctx.telegram.send_message(ctx.admin_chat_id, "\n".join(lines))
+
+
+async def cmd_fetchodds(ctx: PipelineContext) -> None:
+    """Fuerza un ciclo de scraping automatico de cuotas ahora mismo (normalmente corre solo
+    cada ODDS_AUTOFETCH_INTERVAL_SECONDS) -- util para probar el proxy/scraper sin esperar."""
+    from app.odds_autofetch import autofetch_tick  # import diferido, mismo motivo que cmd_tick
+
+    await ctx.telegram.send_message(ctx.admin_chat_id, "⏳ Buscando cuotas automáticamente (cuotasahora.com)...")
+    try:
+        await autofetch_tick(ctx)
+    except Exception as e:
+        tb = traceback.format_exc()
+        logger.exception("cmd_fetchodds fallo")
+        await ctx.telegram.send_message(ctx.admin_chat_id, f"❌ El autofetch lanzo una excepcion:\n{str(e)[:300]}\n\n{tb[-800:]}")
+        return
+    await ctx.telegram.send_message(ctx.admin_chat_id, "✅ Ciclo de autofetch terminado (ver /status para el detalle).")
