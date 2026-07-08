@@ -53,6 +53,17 @@ async function ensureBrowser() {
     ],
   });
   context = await browser.newContext({ userAgent: UA, viewport: { width: 1400, height: 1000 }, locale: "en-US" });
+
+  // El proxy es residencial y se paga por GB -- imagenes/fuentes/video son la parte mas pesada
+  // de una pagina llena de anuncios como esta y no aportan nada (solo hace falta el texto y
+  // poder clicar pestañas). Se deja "stylesheet" sin bloquear a proposito: isVisible() depende
+  // del layout real calculado con CSS, bloquearlo rompe los clics en pestañas/lineas.
+  const BLOCKED_TYPES = new Set(["image", "media", "font"]);
+  await context.route("**/*", (route) => {
+    const type = route.request().resourceType();
+    if (BLOCKED_TYPES.has(type)) return route.abort();
+    return route.continue();
+  });
 }
 
 // El banner de cookies (OneTrust) solo aparece la primera vez en el contexto -- comprobarlo
@@ -134,6 +145,20 @@ function makeShouldDrill(candidateNames) {
   return (awayTeam, homeTeam) => names.some((n) => looseMatch(n, awayTeam) || looseMatch(n, homeTeam));
 }
 
+// Los slugs de las URLs de cuotasahora.com ya traen el nombre del equipo en texto legible
+// (ej. ".../h2h/los-angeles-angels-Mg9H0Flh/texas-rangers-f3GcHO7j/...") -- se puede filtrar
+// que partidos vale la pena VISITAR (no solo perforar) sin cargar ni una sola pagina de mas.
+// Esto es lo que de verdad ahorra datos del proxy: MLB tiene 15+ partidos por dia y solo
+// hacen falta 1-2, cargar la pagina completa de cada uno (aunque no se perfore nada) ya era
+// suficiente para agotar el timeout de 300s.
+function matchesUrlSlug(url, candidateNames) {
+  const names = (candidateNames || []).filter(Boolean);
+  if (!names.length) return true; // sin lista -- comportamiento original (visitar todo)
+  const afterH2h = url.split("/baseball/h2h/")[1] || "";
+  const slugText = afterH2h.replace(/[-/]/g, " ");
+  return names.some((n) => looseMatch(n, slugText));
+}
+
 async function scrapeMatch(league, url, shouldDrill) {
   const page = await context.newPage();
   try {
@@ -189,6 +214,7 @@ async function fetchLeagueOdds(league, candidateNames) {
         Array.from(document.querySelectorAll("a")).map((a) => a.href).filter((h) => h.includes("/baseball/h2h/"))
       );
       matchLinks = [...new Set(matchLinks)];
+      matchLinks = matchLinks.filter((link) => matchesUrlSlug(link, candidateNames));
     } catch (e) {
       errors.push(String(e && e.message || e));
     } finally {
