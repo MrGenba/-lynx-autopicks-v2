@@ -8,6 +8,7 @@ Corre en un job de APScheduler separado del detector (ver main.py), a un interva
 largo (por defecto 900s) -- cada ciclo scrapea la liga ENTERA en cuotasahora.com, no solo el
 partido que hace falta, asi que hay que ser conservador con la frecuencia para no arriesgarse a
 otro bloqueo de IP como el que ya sufrio el VPS de Francia."""
+import asyncio
 import logging
 
 import asyncpg
@@ -173,9 +174,17 @@ async def autofetch_league(ctx: PipelineContext, sport_id: int) -> None:
     )
 
 
+async def _autofetch_league_safe(ctx: PipelineContext, sport_id: int) -> None:
+    try:
+        await autofetch_league(ctx, sport_id)
+    except Exception:
+        logger.exception("autofetch_tick fallo para sport_id=%s", sport_id)
+
+
 async def autofetch_tick(ctx: PipelineContext) -> None:
-    for sport_id in LEAGUE_KEY:
-        try:
-            await autofetch_league(ctx, sport_id)
-        except Exception:
-            logger.exception("autofetch_tick fallo para sport_id=%s", sport_id)
+    # Concurrente, no secuencial -- con 3 ligas seguidas a hasta 300s cada una (peor caso 900s)
+    # un solo /fetchodds podia bloquear el resto de comandos de Telegram durante 15 minutos
+    # (poll_loop procesa un mensaje a la vez, ver telegram.py). En paralelo el peor caso baja a
+    # ~300s (la liga mas lenta), no la suma de las 3. Cada liga lanza su propio Chrome -- mas
+    # pico de RAM momentaneo, aceptable por ser un ciclo corto cada 900s, no continuo.
+    await asyncio.gather(*(_autofetch_league_safe(ctx, sport_id) for sport_id in LEAGUE_KEY))
