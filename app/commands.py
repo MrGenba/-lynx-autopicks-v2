@@ -1,12 +1,28 @@
 """Comandos de admin: /status (partidos de hoy + estado), /pending (confirmados sin cuotas),
 /picks (picks de hoy), /tick (fuerza un ciclo del detector ahora mismo, para depurar sin
-acceso a logs del contenedor)."""
+acceso a logs del contenedor), /clock (reloj real del contenedor, para descartar desfase)."""
+import datetime as dt
 import logging
 import traceback
 
 from app.pipelines import PipelineContext, LEAGUE_LABEL
 
 logger = logging.getLogger(__name__)
+
+
+async def cmd_clock(ctx: PipelineContext) -> None:
+    """Compara el reloj del contenedor (usado por el detector para el filtro de 3h) contra
+    now() de Postgres -- si difieren de forma notable, hay desfase de reloj real."""
+    now_py = dt.datetime.now(dt.timezone.utc)
+    async with ctx.pool.acquire() as conn:
+        now_pg = await conn.fetchval("SELECT now()")
+    diff = (now_py - now_pg).total_seconds()
+    await ctx.telegram.send_message(
+        ctx.admin_chat_id,
+        f"🕐 Reloj contenedor (Python, UTC): {now_py.isoformat()}\n"
+        f"🕐 Reloj Postgres (now()): {now_pg.isoformat()}\n"
+        f"Diferencia: {diff:.1f}s",
+    )
 
 
 async def cmd_status(ctx: PipelineContext) -> None:
