@@ -182,7 +182,11 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
         if best_candidate:
             edge_pct = (best_candidate.get("edge") or 0) * 100
             threshold_pct = (best_candidate.get("edge_threshold") or 0.18) * 100
-            detail = f"mejor candidato: {best_candidate.get('market')} edge={edge_pct:.1f}% (umbral {threshold_pct:.0f}%)"
+            market = best_candidate.get("market")
+            pick_side = best_candidate.get("pick_side")
+            team_label = best_candidate.get("pick_team") or {"home": home_team, "away": away_team}.get(pick_side, pick_side)
+            odds = _fmt_odds(best_candidate.get("odds"))
+            detail = f"mejor candidato: {market} {team_label} @{odds} edge={edge_pct:.1f}% (umbral {threshold_pct:.0f}%)"
         else:
             detail = "sin candidatos calculables (faltan cuotas de algun mercado)"
         await ctx.telegram.send_message(
