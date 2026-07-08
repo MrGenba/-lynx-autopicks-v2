@@ -150,10 +150,26 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
     published = bool(best_pick)
     telegram_message_id = None
 
+    league_label = LEAGUE_LABEL.get(sport_id, str(sport_id))
     if published:
-        league_label = LEAGUE_LABEL.get(sport_id, str(sport_id))
         text = format_pick_message(league_label, pipeline, away_team, home_team, best_pick, data_score)
         await ctx.picks_telegram.send_message(ctx.picks_channel_id, text)
+    else:
+        # Sin esto, "se calculo bien pero sin edge suficiente" y "algo fallo silenciosamente"
+        # se ven identicos desde fuera (ningun mensaje llega a ningun sitio). Avisar siempre
+        # al admin, aunque sea "sin valor", cierra ese hueco de visibilidad.
+        candidates = result.get("candidates") or []
+        best_candidate = max(candidates, key=lambda c: (c.get("edge") or -999), default=None)
+        if best_candidate:
+            edge_pct = (best_candidate.get("edge") or 0) * 100
+            threshold_pct = (best_candidate.get("edge_threshold") or 0.18) * 100
+            detail = f"mejor candidato: {best_candidate.get('market')} edge={edge_pct:.1f}% (umbral {threshold_pct:.0f}%)"
+        else:
+            detail = "sin candidatos calculables (faltan cuotas de algun mercado)"
+        await ctx.telegram.send_message(
+            ctx.admin_chat_id,
+            f"ℹ️ {league_label} {away_team} @ {home_team} (pipeline {pipeline}) calculado, sin valor suficiente — {detail}",
+        )
 
     async with ctx.pool.acquire() as conn:
         await conn.execute(
