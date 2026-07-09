@@ -44,6 +44,16 @@ MAX_GAME_AGE = dt.timedelta(hours=5)
 # mismo aviso de "cuotasahora.com no responde" al admin en cada ciclo si sigue bloqueado.
 _last_status: dict[int, bool] = {}
 
+# Bug real encontrado en vivo 2026-07-09: cuando varios partidos confirman su Gate A/B casi a la
+# vez (normal en un mismo bloque horario de la noche), cada uno dispara su propio
+# autofetch_single_game() en paralelo (asyncio.create_task en detector.py) -- y todos comparten
+# el MISMO proceso de Tor (127.0.0.1:9050, un unico daemon en el contenedor). Varias instancias
+# de Chrome intentando abrir circuitos de Tor a la vez lo saturan y todas fallan. Este semaforo
+# limita cuantos scrapes reales corren a la vez (el disparo puntual Y el sondeo periodico
+# comparten el mismo limite) -- 2 en vez de sin limite, para no saturar Tor sin crear una cola
+# tan larga que un partido a punto de empezar se quede esperando demasiado.
+_scrape_semaphore = asyncio.Semaphore(2)
+
 
 async def _candidates_needing_odds(pool: asyncpg.Pool, sport_id: int) -> list[aliases.CandidateGame]:
     async with pool.acquire() as conn:
@@ -145,11 +155,12 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
     league_key = SCRAPER_LEAGUE[sport_id]
     candidate_names = [n for c in candidates for n in (c.away_team_name, c.home_team_name) if n]
     try:
-        result = await run_odds_scraper(
-            ctx.node_bin, ctx.vendor_dir, league_key,
-            ctx.proxy_server, ctx.proxy_username, ctx.proxy_password,
-            candidate_names=candidate_names,
-        )
+        async with _scrape_semaphore:
+            result = await run_odds_scraper(
+                ctx.node_bin, ctx.vendor_dir, league_key,
+                ctx.proxy_server, ctx.proxy_username, ctx.proxy_password,
+                candidate_names=candidate_names,
+            )
     except NodeBridgeError as e:
         logger.warning("run_odds_scraper fallo para %s: %s", league_key, e)
         await _notify_status_change(ctx, sport_id, False, f"scraper falló: {str(e)[:200]}")
