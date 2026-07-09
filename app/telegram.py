@@ -54,7 +54,8 @@ async def set_offset(pool: asyncpg.Pool, offset: int) -> None:
         )
 
 
-MESSAGE_TIMEOUT_SECONDS = 600.0  # ver comentario en poll_loop
+MESSAGE_TIMEOUT_SECONDS = 900.0  # ver comentario en poll_loop -- subido junto con el timeout
+# del scraper (480s) para que /fetchodds nunca choque con este limite en uso normal
 
 
 async def poll_loop(client: TelegramClient, pool: asyncpg.Pool, on_message):

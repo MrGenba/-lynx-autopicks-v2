@@ -47,15 +47,15 @@ async def run_odds_scraper(
     proxy_username: Optional[str] = None,
     proxy_password: Optional[str] = None,
     candidate_names: Optional[list[str]] = None,
-    timeout: float = 300.0,
+    timeout: float = 480.0,
 ) -> dict:
     """Scrapear una liga entera puede tardar varios minutos (varios partidos, cada uno con 2-3
-    clics dentro de la pagina) -- mas aun pasando por un proxy residencial (mas latencia por
-    peticion que una conexion directa; probado en vivo: 180s no bastaban para MLB con proxy).
-    candidate_names filtra que partidos se "perforan" (Totales/Handicap, lo caro) -- sin esto
-    el scraper perfora TODOS los partidos de la liga, no solo los que hacen falta (tambien
-    probado en vivo: incluso a 300s seguia sin bastar para MLB entero). El proxy (si se pasa)
-    va por variables de entorno del subproceso, nunca como argv (no queda en logs de proceso)."""
+    clics dentro de la pagina) -- mas aun pasando por Tor (mas lento que un proxy residencial de
+    pago; probado en vivo 2026-07-10: con 8 partidos de MLB pendientes a la vez, 300s no
+    bastaban aunque el filtro de candidate_names ya reduce cuanto se visita). candidate_names
+    filtra que partidos se "perforan" (Totales/Handicap, lo caro) -- sin esto el scraper perfora
+    TODOS los partidos de la liga, no solo los que hacen falta. El proxy (si se pasa) va por
+    variables de entorno del subproceso, nunca como argv (no queda en logs de proceso)."""
     script = str(Path(vendor_dir) / "run_odds_scraper.js")
     env = dict(os.environ)
     if proxy_server:
