@@ -41,7 +41,8 @@ async def cmd_status(ctx: PipelineContext) -> None:
                    (SELECT count(*) FROM pipeline_runs p WHERE p.sport_id = g.sport_id AND p.game_pk = g.game_pk AND p.published) AS picks_publicados
             FROM games_gate_state g
             LEFT JOIN game_odds o ON o.sport_id = g.sport_id AND o.game_pk = g.game_pk
-            WHERE g.game_datetime_utc::date = current_date
+            WHERE g.game_datetime_utc > now() - interval '5 hours'
+              AND g.game_datetime_utc < now() + interval '18 hours'
             ORDER BY g.sport_id, g.game_datetime_utc
             """
         )
@@ -84,7 +85,8 @@ async def cmd_pending(ctx: PipelineContext) -> None:
             SELECT g.sport_id, g.away_team_name, g.home_team_name, g.pitchers_confirmed_at, g.lineup_confirmed_at
             FROM games_gate_state g
             LEFT JOIN game_odds o ON o.sport_id = g.sport_id AND o.game_pk = g.game_pk
-            WHERE g.game_datetime_utc::date = current_date
+            WHERE g.game_datetime_utc > now() - interval '5 hours'
+              AND g.game_datetime_utc < now() + interval '18 hours'
               AND o.game_pk IS NULL
               AND (g.pitchers_confirmed_at IS NOT NULL OR g.lineup_confirmed_at IS NOT NULL)
             ORDER BY g.game_datetime_utc

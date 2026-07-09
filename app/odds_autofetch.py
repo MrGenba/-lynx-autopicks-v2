@@ -15,6 +15,7 @@ Dos formas de disparo, mismo motor por debajo:
   defecto -- desactivado 2026-07-09 tras un gasto de proxy inesperado, casi todo generado por
   este sondeo repetido antes de que existiera el disparo puntual de arriba)."""
 import asyncio
+import datetime as dt
 import logging
 
 import asyncpg
@@ -32,6 +33,12 @@ MIN_MATCH_SCORE = 4  # 2x score()==2 minimo, o un exacto (3) + parcial (1) -- ev
 GAMES_WINDOW_SQL = (
     "game_datetime_utc BETWEEN now() - interval '1 hour' AND now() + interval '6 hours'"
 )
+# Un partido de beisbol rara vez pasa de ~4h incluso con entradas extra -- si el scraping (mas
+# lento por Tor, o si un ciclo se retrasa) termina despues de este margen, el partido ya
+# probablemente acabo y no tiene sentido guardar ni disparar nada con esas cuotas. Bug real
+# encontrado en vivo 2026-07-09: autofetch_single_game() no comprobaba esto en absoluto, asi que
+# un scrape lento podia guardar cuotas para un partido ya jugado.
+MAX_GAME_AGE = dt.timedelta(hours=5)
 
 # Estado en memoria (se pierde en cada reinicio, no es critico) -- solo para no mandar el
 # mismo aviso de "cuotasahora.com no responde" al admin en cada ciclo si sigue bloqueado.
@@ -43,7 +50,7 @@ async def _candidates_needing_odds(pool: asyncpg.Pool, sport_id: int) -> list[al
         rows = await conn.fetch(
             f"""
             SELECT g.sport_id, g.game_pk, g.away_team_id, g.home_team_id,
-                   g.away_team_name, g.home_team_name
+                   g.away_team_name, g.home_team_name, g.game_datetime_utc
             FROM games_gate_state g
             LEFT JOIN game_odds o ON o.sport_id = g.sport_id AND o.game_pk = g.game_pk
             WHERE g.sport_id = $1
@@ -57,7 +64,7 @@ async def _candidates_needing_odds(pool: asyncpg.Pool, sport_id: int) -> list[al
         aliases.CandidateGame(
             sport_id=r["sport_id"], game_pk=r["game_pk"], away_team_id=r["away_team_id"],
             home_team_id=r["home_team_id"], away_team_name=r["away_team_name"],
-            home_team_name=r["home_team_name"], game_datetime_utc=None,
+            home_team_name=r["home_team_name"], game_datetime_utc=r["game_datetime_utc"],
         )
         for r in rows
     ]
@@ -154,12 +161,26 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
         return 0
     await _notify_status_change(ctx, sport_id, True, "")
 
+    now = dt.datetime.now(dt.timezone.utc)
     remaining = list(candidates)
     matched_count = 0
     for scraped in games:
         cand = _match_scraped_game(scraped, remaining)
         if cand is None:
             continue
+
+        if cand.game_datetime_utc is not None:
+            game_dt = cand.game_datetime_utc
+            if game_dt.tzinfo is None:
+                game_dt = game_dt.replace(tzinfo=dt.timezone.utc)
+            if now - game_dt > MAX_GAME_AGE:
+                logger.info(
+                    "autofetch: descartado game_pk=%s (%s @ %s) -- empezo hace %s, probablemente ya termino",
+                    cand.game_pk, cand.away_team_name, cand.home_team_name, now - game_dt,
+                )
+                remaining = [c for c in remaining if c.game_pk != cand.game_pk]
+                continue
+
         values = _values_from_scraped(scraped)
         if all(v is None for v in values.values()):
             continue
@@ -186,13 +207,16 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
 
 async def autofetch_single_game(
     ctx: PipelineContext, sport_id: int, game_pk: int, away_team_name: str, home_team_name: str,
+    game_datetime_utc: dt.datetime,
 ) -> bool:
     """Disparo puntual: un solo partido, una sola vez (el detector solo llama a esto en la
     transicion first_time de un gate, ver detector.py). Devuelve True si se encontraron y
-    guardaron cuotas (ya disparo el pipeline correspondiente si aplicaba)."""
+    guardaron cuotas (ya disparo el pipeline correspondiente si aplicaba). game_datetime_utc es
+    obligatorio -- sin el, _scrape_and_apply no puede descartar un partido ya jugado si el
+    scrape (mas lento por Tor) termina tarde."""
     candidate = aliases.CandidateGame(
         sport_id=sport_id, game_pk=game_pk, away_team_id=None, home_team_id=None,
-        away_team_name=away_team_name, home_team_name=home_team_name, game_datetime_utc=None,
+        away_team_name=away_team_name, home_team_name=home_team_name, game_datetime_utc=game_datetime_utc,
     )
     matched = await _scrape_and_apply(ctx, sport_id, [candidate])
     return matched > 0

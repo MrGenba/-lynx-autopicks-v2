@@ -4,6 +4,7 @@ Porta el patron real usado en el nodo n8n "Buscar Matchup MLB" (norm()/score()) 
 tabla de alias (sembrada desde MLB Stats API + aprendida de desambiguaciones del usuario) como
 capa rapida antes de caer al fuzzy-matching directo contra los partidos del dia.
 """
+import datetime as dt
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -48,7 +49,7 @@ class CandidateGame:
     home_team_id: Optional[int]
     away_team_name: str
     home_team_name: str
-    game_datetime_utc: Optional[str]
+    game_datetime_utc: Optional[dt.datetime]
     game_no_hint: Optional[int] = None
 
 

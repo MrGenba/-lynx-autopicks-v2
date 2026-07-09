@@ -85,15 +85,18 @@ async def notify_missing_odds_once(ctx: PipelineContext, sport_id: int, game_pk:
 
 
 async def _autofetch_or_notify(
-    ctx: PipelineContext, sport_id: int, game_pk: int, gate_col: str, away: str, home: str, minutes_to_start: int,
+    ctx: PipelineContext, sport_id: int, game_pk: int, gate_col: str, away: str, home: str,
+    minutes_to_start: int, game_dt: dt.datetime,
 ) -> None:
     """Disparo puntual de cuotas (un scrape acotado a este partido) en el momento exacto en que
     un gate se confirma por primera vez -- esto es lo que se pidio originalmente ("manda las
     cuotas cuando se confirmen las alineaciones"), no un sondeo periodico de la liga entera.
     Corre en segundo plano (create_task en el llamador) para no bloquear el resto del tick del
-    detector mientras dura el scrape (hasta 300s)."""
+    detector mientras dura el scrape (hasta 300s). game_dt se le pasa a autofetch_single_game
+    para que pueda descartar el resultado si el scrape termina despues de que el partido ya
+    haya acabado (ver MAX_GAME_AGE en odds_autofetch.py)."""
     try:
-        found = await autofetch_single_game(ctx, sport_id, game_pk, away, home)
+        found = await autofetch_single_game(ctx, sport_id, game_pk, away, home, game_dt)
     except Exception:
         logger.exception("autofetch_single_game fallo para sport_id=%s game_pk=%s", sport_id, game_pk)
         found = False
@@ -137,7 +140,7 @@ async def detector_tick(ctx: PipelineContext) -> None:
                     elif first_time:
                         asyncio.create_task(_autofetch_or_notify(
                             ctx, sport_id, g.game_pk, "pitchers_no_odds_notice_at",
-                            g.away_team_name, g.home_team_name, minutes_to_start,
+                            g.away_team_name, g.home_team_name, minutes_to_start, game_dt,
                         ))
 
                 # Gate B -- lineup completo (9 bateadores en ambos lados)
@@ -156,5 +159,5 @@ async def detector_tick(ctx: PipelineContext) -> None:
                     elif first_time:
                         asyncio.create_task(_autofetch_or_notify(
                             ctx, sport_id, g.game_pk, "lineup_no_odds_notice_at",
-                            g.away_team_name, g.home_team_name, minutes_to_start,
+                            g.away_team_name, g.home_team_name, minutes_to_start, game_dt,
                         ))
