@@ -77,7 +77,18 @@ def _fmt_odds(v) -> str:
     return f"{float(v):.2f}" if v is not None else "?"
 
 
-def format_pick_message(league_label: str, pipeline: int, away_team: str, home_team: str, best_pick: dict, data_score: float) -> str:
+def _lineup_incomplete(sport_id: int, pipeline: int, game_obj: dict) -> bool:
+    """MLB/MiLB ajustan mu por calidad real de lineup (Fase 2, ver quant_engine_mlb.js/quant_engine.js)
+    -- si lineup_watch aun no lo reevaluo, el motor sigue calculando pero SIN ese ajuste, en
+    silencio (mismo resultado que pitchers_only aunque el pipeline se llame "full_lineup").
+    LMB no tiene este ajuste en absoluto (quant_engine_lmb.js no referencia lineup_factor por
+    ningun lado) -- avisar ahi seria ruido constante, no una alerta real, asi que se excluye."""
+    if pipeline != 2 or sport_id not in (1, 11):
+        return False
+    return game_obj.get("lineup_factor_away") is None or game_obj.get("lineup_factor_home") is None
+
+
+def format_pick_message(league_label: str, pipeline: int, away_team: str, home_team: str, best_pick: dict, data_score: float, lineup_incomplete: bool = False) -> str:
     market = best_pick.get("market")
     pick_side = best_pick.get("pick_side")
     odds = best_pick.get("odds")
@@ -91,6 +102,8 @@ def format_pick_message(league_label: str, pipeline: int, away_team: str, home_t
         f"Cuota: {_fmt_odds(odds)}  |  Edge: {edge * 100:.1f}%  |  Prob. modelo: {(prob or 0) * 100:.1f}%",
         f"data_score: {data_score:.2f}",
     ]
+    if lineup_incomplete:
+        lines.append("⚠️ lineup_factor aún sin calcular en producción — este pick NO llevó ajuste por calidad real del lineup.")
     return "\n".join(lines)
 
 
@@ -170,8 +183,9 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
     telegram_message_id = None
 
     league_label = LEAGUE_LABEL.get(sport_id, str(sport_id))
+    lineup_incomplete = _lineup_incomplete(sport_id, pipeline, game_obj)
     if published:
-        text = format_pick_message(league_label, pipeline, away_team, home_team, best_pick, data_score)
+        text = format_pick_message(league_label, pipeline, away_team, home_team, best_pick, data_score, lineup_incomplete)
         await ctx.picks_telegram.send_message(ctx.picks_channel_id, text)
     else:
         # Sin esto, "se calculo bien pero sin edge suficiente" y "algo fallo silenciosamente"
@@ -189,9 +203,10 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
             detail = f"mejor candidato: {market} {team_label} @{odds} edge={edge_pct:.1f}% (umbral {threshold_pct:.0f}%)"
         else:
             detail = "sin candidatos calculables (faltan cuotas de algun mercado)"
+        lineup_note = " ⚠️ sin ajuste de lineup (lineup_factor aún no calculado en producción)." if lineup_incomplete else ""
         await ctx.telegram.send_message(
             ctx.admin_chat_id,
-            f"ℹ️ {league_label} {away_team} @ {home_team} (pipeline {pipeline}) calculado, sin valor suficiente — {detail}",
+            f"ℹ️ {league_label} {away_team} @ {home_team} (pipeline {pipeline}) calculado, sin valor suficiente — {detail}{lineup_note}",
         )
 
     async with ctx.pool.acquire() as conn:
