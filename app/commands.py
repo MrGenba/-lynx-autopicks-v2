@@ -2,6 +2,7 @@
 /picks (picks de hoy), /tick (fuerza un ciclo del detector ahora mismo, para depurar sin
 acceso a logs del contenedor), /clock (reloj real del contenedor, para descartar desfase)."""
 import datetime as dt
+import html
 import logging
 import traceback
 
@@ -25,6 +26,10 @@ async def cmd_clock(ctx: PipelineContext) -> None:
     )
 
 
+def _esc(s: str) -> str:
+    return html.escape(str(s), quote=False)
+
+
 async def cmd_status(ctx: PipelineContext) -> None:
     async with ctx.pool.acquire() as conn:
         rows = await conn.fetch(
@@ -37,19 +42,39 @@ async def cmd_status(ctx: PipelineContext) -> None:
             FROM games_gate_state g
             LEFT JOIN game_odds o ON o.sport_id = g.sport_id AND o.game_pk = g.game_pk
             WHERE g.game_datetime_utc::date = current_date
-            ORDER BY g.game_datetime_utc
+            ORDER BY g.sport_id, g.game_datetime_utc
             """
         )
     if not rows:
-        await ctx.telegram.send_message(ctx.admin_chat_id, "Sin partidos descubiertos hoy todavía.")
+        await ctx.telegram.send_message(ctx.admin_chat_id, "📅 Sin partidos descubiertos hoy todavía.")
         return
-    lines = ["📅 Estado de hoy:"]
+
+    by_league: dict[int, list] = {}
     for r in rows:
-        gates = ("A✅" if r["gate_a"] else "A⏳") + " " + ("B✅" if r["gate_b"] else "B⏳")
-        odds = "cuotas✅" if r["has_odds"] else "sin cuotas"
-        picks = f"{r['picks_publicados']} pick(s)" if r["picks_publicados"] else "sin picks"
-        lines.append(f"[{LEAGUE_LABEL.get(r['sport_id'], r['sport_id'])}] {r['away_team_name']} @ {r['home_team_name']} — {gates} — {odds} — {picks}")
-    await ctx.telegram.send_message(ctx.admin_chat_id, "\n".join(lines))
+        by_league.setdefault(r["sport_id"], []).append(r)
+
+    blocks = [f"📅 <b>Estado de hoy</b> — {len(rows)} partido(s)"]
+    for sport_id, games in by_league.items():
+        blocks.append(f"\n⚾ <b>{_esc(LEAGUE_LABEL.get(sport_id, sport_id))}</b> ({len(games)})")
+        for r in games:
+            gate_a, gate_b, has_odds = r["gate_a"], r["gate_b"], r["has_odds"]
+            if r["picks_publicados"]:
+                dot = "🏆"
+            elif gate_a and gate_b and has_odds:
+                dot = "🟢"
+            elif gate_a or gate_b:
+                dot = "🟡"
+            else:
+                dot = "⚪"
+            gates = ("Abridores✅" if gate_a else "Abridores⏳") + "  " + ("Lineup✅" if gate_b else "Lineup⏳")
+            odds_txt = "Cuotas✅" if has_odds else "Cuotas❌"
+            picks_txt = f"🏆 {r['picks_publicados']} pick(s)" if r["picks_publicados"] else "sin picks"
+            blocks.append(
+                f"{dot} <b>{_esc(r['away_team_name'])}</b> @ <b>{_esc(r['home_team_name'])}</b>\n"
+                f"   {gates}  ·  {odds_txt}  ·  {picks_txt}"
+            )
+
+    await ctx.telegram.send_message(ctx.admin_chat_id, "\n".join(blocks), parse_mode="HTML")
 
 
 async def cmd_pending(ctx: PipelineContext) -> None:

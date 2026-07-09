@@ -16,13 +16,16 @@ class TelegramClient:
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
         self.http_client = http_client
 
-    async def send_message(self, chat_id: int, text: str) -> None:
+    async def send_message(self, chat_id: int, text: str, parse_mode: Optional[str] = None) -> None:
         # Telegram limita a 4096 caracteres -- trocear si hace falta (mismo margen de 3800
         # ya usado en otras integraciones de Telegram de este proyecto).
         for i in range(0, len(text), 3800):
             chunk = text[i:i + 3800]
+            payload = {"chat_id": chat_id, "text": chunk}
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
             resp = await self.http_client.post(
-                f"{self.base_url}/sendMessage", json={"chat_id": chat_id, "text": chunk}, timeout=10.0
+                f"{self.base_url}/sendMessage", json=payload, timeout=10.0
             )
             if resp.status_code >= 400:
                 logger.warning("sendMessage fallo (%s): %s", resp.status_code, resp.text[:300])
