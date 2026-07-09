@@ -4,7 +4,7 @@
 # (mismo patron que odds_bet365/scraper_cuotasahora.js en produccion).
 FROM python:3.12-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl gnupg ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends curl gnupg ca-certificates tor \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -24,9 +24,12 @@ COPY package.json .
 RUN npm install --omit=dev \
     && npx patchright install --with-deps chrome
 
+COPY docker-entrypoint.sh .
+RUN chmod +x docker-entrypoint.sh
+
 ENV VENDOR_DIR=/app/vendor
 ENV LOG_DIR=/app/logs
 RUN mkdir -p /app/logs
 
 EXPOSE 8080
-CMD ["python", "-m", "app.main"]
+CMD ["./docker-entrypoint.sh"]
