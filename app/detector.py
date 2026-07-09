@@ -7,6 +7,7 @@ Telegram, el propio manejador de mensajes consulta games_gate_state y dispara el
 ese momento (ver telegram_handlers.py). Si el gate pasa y las cuotas YA estaban, se dispara
 aqui mismo.
 """
+import asyncio
 import datetime as dt
 import logging
 
@@ -14,6 +15,7 @@ import asyncpg
 import httpx
 
 from app import mlb_stats_client as mlb_api
+from app.odds_autofetch import autofetch_single_game
 from app.pipelines import PipelineContext, get_odds, try_fire_pipeline
 
 logger = logging.getLogger(__name__)
@@ -82,6 +84,23 @@ async def notify_missing_odds_once(ctx: PipelineContext, sport_id: int, game_pk:
     )
 
 
+async def _autofetch_or_notify(
+    ctx: PipelineContext, sport_id: int, game_pk: int, gate_col: str, away: str, home: str, minutes_to_start: int,
+) -> None:
+    """Disparo puntual de cuotas (un scrape acotado a este partido) en el momento exacto en que
+    un gate se confirma por primera vez -- esto es lo que se pidio originalmente ("manda las
+    cuotas cuando se confirmen las alineaciones"), no un sondeo periodico de la liga entera.
+    Corre en segundo plano (create_task en el llamador) para no bloquear el resto del tick del
+    detector mientras dura el scrape (hasta 300s)."""
+    try:
+        found = await autofetch_single_game(ctx, sport_id, game_pk, away, home)
+    except Exception:
+        logger.exception("autofetch_single_game fallo para sport_id=%s game_pk=%s", sport_id, game_pk)
+        found = False
+    if not found:
+        await notify_missing_odds_once(ctx, sport_id, game_pk, gate_col, away, home, minutes_to_start)
+
+
 async def detector_tick(ctx: PipelineContext) -> None:
     today = dt.datetime.utcnow().strftime("%Y-%m-%d")
     async with httpx.AsyncClient() as client:
@@ -116,10 +135,10 @@ async def detector_tick(ctx: PipelineContext) -> None:
                     if odds is not None:
                         await try_fire_pipeline(ctx, sport_id, g.game_pk, 1, "pitchers_only", g.away_team_name, g.home_team_name)
                     elif first_time:
-                        await notify_missing_odds_once(
+                        asyncio.create_task(_autofetch_or_notify(
                             ctx, sport_id, g.game_pk, "pitchers_no_odds_notice_at",
                             g.away_team_name, g.home_team_name, minutes_to_start,
-                        )
+                        ))
 
                 # Gate B -- lineup completo (9 bateadores en ambos lados)
                 try:
@@ -135,7 +154,7 @@ async def detector_tick(ctx: PipelineContext) -> None:
                     if odds is not None:
                         await try_fire_pipeline(ctx, sport_id, g.game_pk, 2, "full_lineup", g.away_team_name, g.home_team_name)
                     elif first_time:
-                        await notify_missing_odds_once(
+                        asyncio.create_task(_autofetch_or_notify(
                             ctx, sport_id, g.game_pk, "lineup_no_odds_notice_at",
                             g.away_team_name, g.home_team_name, minutes_to_start,
-                        )
+                        ))

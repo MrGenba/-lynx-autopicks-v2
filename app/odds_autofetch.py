@@ -4,10 +4,16 @@ las pegue por Telegram. Reutiliza exactamente la misma logica de validacion/guar
 que message_handler.py usa para las cuotas manuales -- asi el camino automatico y el manual
 convergen en el mismo sitio (_store_odds, _check_gates_and_fire), sin divergencia de reglas.
 
-Corre en un job de APScheduler separado del detector (ver main.py), a un intervalo mucho mas
-largo (por defecto 900s) -- cada ciclo scrapea la liga ENTERA en cuotasahora.com, no solo el
-partido que hace falta, asi que hay que ser conservador con la frecuencia para no arriesgarse a
-otro bloqueo de IP como el que ya sufrio el VPS de Francia."""
+Dos formas de disparo, mismo motor por debajo:
+- autofetch_single_game(): disparado por el detector EN EL MOMENTO en que un partido confirma
+  Gate A o Gate B sin cuotas todavia (ver detector.py) -- un scrape acotado a un solo partido,
+  como mucho 2 intentos por partido en toda su vida (una vez por gate). Este es el camino
+  principal desde 2026-07-09: coincide con lo que se pidio originalmente ("manda las cuotas
+  cuando se confirmen las alineaciones"), no un sondeo periodico de ligas enteras.
+- autofetch_tick()/autofetch_league(): sondeo periodico de TODA la liga, pensado como red de
+  seguridad para partidos que el disparo puntual no cogio (ODDS_AUTOFETCH_ENABLED=false por
+  defecto -- desactivado 2026-07-09 tras un gasto de proxy inesperado, casi todo generado por
+  este sondeo repetido antes de que existiera el disparo puntual de arriba)."""
 import asyncio
 import logging
 
@@ -121,10 +127,13 @@ async def _notify_status_change(ctx: PipelineContext, sport_id: int, ok: bool, d
         await ctx.telegram.send_message(ctx.admin_chat_id, f"⚠️ Cuotas automáticas {label}: {detail}")
 
 
-async def autofetch_league(ctx: PipelineContext, sport_id: int) -> None:
-    candidates = await _candidates_needing_odds(ctx.pool, sport_id)
+async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: list[aliases.CandidateGame]) -> int:
+    """Nucleo compartido: scrapea la liga (filtrada a candidates via slug de URL, ver
+    scraper_cuotasahora.js), empareja, guarda y dispara. Devuelve cuantos candidatos
+    consiguieron cuotas. Usado tanto por el disparo puntual (1 candidato) como por el
+    sondeo periodico (N candidatos)."""
     if not candidates:
-        return  # nada que buscar en esta liga ahora mismo -- no hace falta scrapear nada
+        return 0
 
     league_key = SCRAPER_LEAGUE[sport_id]
     candidate_names = [n for c in candidates for n in (c.away_team_name, c.home_team_name) if n]
@@ -137,12 +146,12 @@ async def autofetch_league(ctx: PipelineContext, sport_id: int) -> None:
     except NodeBridgeError as e:
         logger.warning("run_odds_scraper fallo para %s: %s", league_key, e)
         await _notify_status_change(ctx, sport_id, False, f"scraper falló: {str(e)[:200]}")
-        return
+        return 0
 
     games = result.get("games") or []
     if not games and result.get("errors"):
         await _notify_status_change(ctx, sport_id, False, f"sin partidos, {result['errors'][0][:180]}")
-        return
+        return 0
     await _notify_status_change(ctx, sport_id, True, "")
 
     remaining = list(candidates)
@@ -172,6 +181,26 @@ async def autofetch_league(ctx: PipelineContext, sport_id: int) -> None:
         "autofetch %s: %s candidatos, %s partidos scrapeados, %s asignados",
         league_key, len(candidates), len(games), matched_count,
     )
+    return matched_count
+
+
+async def autofetch_single_game(
+    ctx: PipelineContext, sport_id: int, game_pk: int, away_team_name: str, home_team_name: str,
+) -> bool:
+    """Disparo puntual: un solo partido, una sola vez (el detector solo llama a esto en la
+    transicion first_time de un gate, ver detector.py). Devuelve True si se encontraron y
+    guardaron cuotas (ya disparo el pipeline correspondiente si aplicaba)."""
+    candidate = aliases.CandidateGame(
+        sport_id=sport_id, game_pk=game_pk, away_team_id=None, home_team_id=None,
+        away_team_name=away_team_name, home_team_name=home_team_name, game_datetime_utc=None,
+    )
+    matched = await _scrape_and_apply(ctx, sport_id, [candidate])
+    return matched > 0
+
+
+async def autofetch_league(ctx: PipelineContext, sport_id: int) -> None:
+    candidates = await _candidates_needing_odds(ctx.pool, sport_id)
+    await _scrape_and_apply(ctx, sport_id, candidates)
 
 
 async def _autofetch_league_safe(ctx: PipelineContext, sport_id: int) -> None:
