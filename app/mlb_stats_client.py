@@ -1,6 +1,7 @@
 """Cliente de statsapi.mlb.com -- puerta A/B del detector. Porta exactamente el patron ya
 probado en lineup_watcher_poll_pitchers.js / lineup_watcher_poll.js de este mismo proyecto,
 incluido el fallback a r.jina.ai cuando la API bloquea la IP de la VPS (406)."""
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -27,11 +28,23 @@ async def fetch_with_fallback(client: httpx.AsyncClient, url: str) -> dict:
         return resp.json()
     except Exception as e:
         logger.warning("fetch directo fallo (%s), probando fallback Jina.ai: %s", url, e)
+        return await _fetch_jina(client, url)
+
+
+async def _fetch_jina(client: httpx.AsyncClient, url: str, retries: int = 1) -> dict:
+    # r.jina.ai (servicio gratuito) devuelve 429 bajo carga -- encontrado en vivo 2026-07-09
+    # (detector_tick usaba esto para CADA partido activo en CADA tick de 180s para siempre,
+    # ver el fix en detector.py que ya reduce el volumen; este reintento es solo la red de
+    # seguridad adicional para picos puntuales, no el arreglo principal).
+    for attempt in range(retries + 1):
         jina_resp = await client.get(
             f"https://r.jina.ai/{url}",
             headers={"Accept": "text/plain", "X-Return-Format": "text"},
             timeout=15.0,
         )
+        if jina_resp.status_code == 429 and attempt < retries:
+            await asyncio.sleep(3.0)
+            continue
         jina_resp.raise_for_status()
         body = jina_resp.text
         return json.loads(body) if isinstance(body, str) else body

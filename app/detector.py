@@ -10,6 +10,7 @@ aqui mismo.
 import asyncio
 import datetime as dt
 import logging
+from typing import Optional
 
 import asyncpg
 import httpx
@@ -24,13 +25,15 @@ ACTIVE_STATUSES = {"Preview", "Pre-Game", "Warmup", "Scheduled"}
 LOOKAHEAD = dt.timedelta(hours=3)
 
 
-async def upsert_game(pool: asyncpg.Pool, sport_id: int, g: mlb_api.ScheduledGame, game_dt: dt.datetime) -> None:
-    # asyncpg exige un datetime.datetime real para columnas TIMESTAMPTZ -- pasarle el string
-    # ISO crudo de la API (ej. "2026-07-07T23:45:00Z") revienta con DataError. game_dt ya viene
-    # parseado por el llamador (detector_tick), que lo necesita de todos modos para el filtro
-    # de ventana horaria.
+async def upsert_game(pool: asyncpg.Pool, sport_id: int, g: mlb_api.ScheduledGame, game_dt: dt.datetime) -> Optional[dt.datetime]:
+    """Devuelve el lineup_confirmed_at YA guardado (si lo habia) -- el llamador lo usa para
+    saltarse las 2 llamadas de boxscore de Gate B si ya estaba confirmado en un tick anterior
+    (ver detector_tick). asyncpg exige un datetime.datetime real para columnas TIMESTAMPTZ --
+    pasarle el string ISO crudo de la API (ej. "2026-07-07T23:45:00Z") revienta con DataError.
+    game_dt ya viene parseado por el llamador (detector_tick), que lo necesita de todos modos
+    para el filtro de ventana horaria."""
     async with pool.acquire() as conn:
-        await conn.execute(
+        row = await conn.fetchrow(
             """
             INSERT INTO games_gate_state
               (sport_id, game_pk, away_team_id, home_team_id, away_team_name, home_team_name,
@@ -41,10 +44,12 @@ async def upsert_game(pool: asyncpg.Pool, sport_id: int, g: mlb_api.ScheduledGam
               away_pitcher_id = COALESCE(games_gate_state.away_pitcher_id, EXCLUDED.away_pitcher_id),
               home_pitcher_id = COALESCE(games_gate_state.home_pitcher_id, EXCLUDED.home_pitcher_id),
               updated_at = now()
+            RETURNING lineup_confirmed_at
             """,
             sport_id, g.game_pk, g.away_team_id, g.home_team_id, g.away_team_name, g.home_team_name,
             game_dt, g.status, g.away_pitcher_id, g.home_pitcher_id,
         )
+    return row["lineup_confirmed_at"] if row else None
 
 
 async def mark_pitchers_confirmed(pool: asyncpg.Pool, sport_id: int, game_pk: int) -> bool:
@@ -128,7 +133,7 @@ async def detector_tick(ctx: PipelineContext) -> None:
                 if game_dt - now > LOOKAHEAD or game_dt < now:
                     continue
 
-                await upsert_game(ctx.pool, sport_id, g, game_dt)
+                already_lineup_confirmed = await upsert_game(ctx.pool, sport_id, g, game_dt)
                 minutes_to_start = int((game_dt - now).total_seconds() // 60)
 
                 # Gate A -- abridores
@@ -143,7 +148,15 @@ async def detector_tick(ctx: PipelineContext) -> None:
                             g.away_team_name, g.home_team_name, minutes_to_start, game_dt,
                         ))
 
-                # Gate B -- lineup completo (9 bateadores en ambos lados)
+                # Gate B -- lineup completo (9 bateadores en ambos lados). Si ya se confirmo en
+                # un tick anterior, no hace falta volver a pedir el boxscore -- esto era una
+                # fuente real de carga innecesaria sobre MLB Stats API / el fallback de Jina.ai
+                # (2 llamadas por partido activo, EN CADA tick de 180s, para siempre, aunque el
+                # gate llevara horas confirmado). Encontrado en vivo 2026-07-09 tras un 429 de
+                # Jina.ai en LMB.
+                if already_lineup_confirmed is not None:
+                    continue
+
                 try:
                     away_lineup = await mlb_api.get_lineup(client, g.game_pk, "away")
                     home_lineup = await mlb_api.get_lineup(client, g.game_pk, "home")
