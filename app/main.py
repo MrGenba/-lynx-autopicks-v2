@@ -80,12 +80,15 @@ async def main() -> None:
         detector_tick, "interval", seconds=cfg.detector_interval_seconds, args=[ctx],
         max_instances=1, next_run_time=dt.datetime.now(),
     )
-    # Intervalo mucho mas largo que el detector: cada ciclo scrapea la liga entera en
-    # cuotasahora.com, no solo el partido concreto -- hay que ser conservador con la frecuencia.
-    scheduler.add_job(
-        autofetch_tick, "interval", seconds=cfg.odds_autofetch_interval_seconds, args=[ctx],
-        max_instances=1, next_run_time=dt.datetime.now() + dt.timedelta(seconds=30),
-    )
+    # Pausado por defecto (ODDS_AUTOFETCH_ENABLED=false) -- ver comentario en config.py. Con
+    # el job desactivado, /fetchodds sigue funcionando igual para disparar un ciclo a proposito.
+    if cfg.odds_autofetch_enabled:
+        scheduler.add_job(
+            autofetch_tick, "interval", seconds=cfg.odds_autofetch_interval_seconds, args=[ctx],
+            max_instances=1, next_run_time=dt.datetime.now() + dt.timedelta(seconds=30),
+        )
+    else:
+        logger.info("odds_autofetch_enabled=false -- job automatico NO registrado, solo /fetchodds manual")
     scheduler.start()
 
     await telegram.send_message(cfg.tg_admin_chat_id, "🟢 Auto-Picks v2 arrancado y en marcha.")

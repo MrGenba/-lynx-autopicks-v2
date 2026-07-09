@@ -25,6 +25,7 @@ class Config:
     log_dir: str
     detector_interval_seconds: int
     odds_autofetch_interval_seconds: int
+    odds_autofetch_enabled: bool
     # Proxy opcional para el scraper de cuotas (vendor/run_odds_scraper.js) -- el VPS de
     # Francia esta bloqueado por cuotasahora.com, asi que sin esto el scraper falla igual que
     # el de produccion. None = sin proxy (mismo comportamiento que antes de 2026-07-09).
@@ -48,6 +49,12 @@ class Config:
             log_dir=os.environ.get("LOG_DIR", "/app/logs"),
             detector_interval_seconds=int(os.environ.get("DETECTOR_INTERVAL_SECONDS", "180")),
             odds_autofetch_interval_seconds=int(os.environ.get("ODDS_AUTOFETCH_INTERVAL_SECONDS", "900")),
+            # Pausado por defecto 2026-07-09: el proxy IPRoyal (pago por GB) se comio >4GB
+            # durante la depuracion de esta funcionalidad, casi todo ANTES de que el filtro por
+            # URL y el bloqueo de imagenes estuvieran desplegados. /fetchodds sigue disponible
+            # para disparar un ciclo manual a proposito -- reactivar aqui cuando se confirme
+            # cuanto gasta realmente el ciclo ya optimizado.
+            odds_autofetch_enabled=os.environ.get("ODDS_AUTOFETCH_ENABLED", "false").lower() == "true",
             proxy_server=os.environ.get("PROXY_SERVER") or None,
             proxy_username=os.environ.get("PROXY_USERNAME") or None,
             proxy_password=os.environ.get("PROXY_PASSWORD") or None,
