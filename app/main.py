@@ -1,6 +1,7 @@
 """Punto de entrada: arranca el pool de Postgres, aplica migraciones, siembra alias (si hace
 falta), y lanza en paralelo el detector (APScheduler, cada N segundos), el long-poll de
-Telegram, y un servidor aiohttp minimo solo para el health check de EasyPanel."""
+Telegram, y un servidor aiohttp con el health check de EasyPanel + /scrape-odds (ver mas
+abajo)."""
 import asyncio
 import datetime as dt
 import logging
@@ -17,7 +18,8 @@ from app.config import Config
 from app.detector import detector_tick
 from app.logging_setup import setup_logging
 from app.message_handler import handle_message
-from app.odds_autofetch import autofetch_tick
+from app.node_bridge import NodeBridgeError, run_odds_scraper
+from app.odds_autofetch import _scrape_semaphore, autofetch_tick
 from app.pipelines import PipelineContext
 from app.supabase_client import SupabaseClient
 from app.telegram import TelegramClient, poll_loop
@@ -29,9 +31,41 @@ async def health(_request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
-async def run_health_server(port: int = 8080) -> None:
+async def scrape_odds(request: web.Request) -> web.Response:
+    """Endpoint HTTP para que produccion (n8n, proyecto EasyPanel distinto sin red interna
+    compartida con este) reuse el scraper con Tor de este contenedor en vez de duplicar
+    Tor+Chrome alli. Protegido por token compartido (SCRAPE_ENDPOINT_TOKEN) via cabecera
+    Authorization: Bearer <token> -- NUNCA en la URL/query string (quedaria en logs). Sin ese
+    env var configurado, siempre devuelve 401 (desactivado por defecto, no expuesto sin
+    querer). Comparte el mismo semaforo que el autofetch interno (_scrape_semaphore) para no
+    competir por el unico proceso de Tor del contenedor con las propias llamadas de Auto-Picks
+    v2."""
+    cfg: Config = request.app["cfg"]
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header[len("Bearer "):] if auth_header.startswith("Bearer ") else None
+    if not cfg.scrape_endpoint_token or token != cfg.scrape_endpoint_token:
+        return web.json_response({"error": "unauthorized"}, status=401)
+
+    league = request.query.get("league")
+    if league not in ("MLB", "MiLB", "LMB"):
+        return web.json_response({"error": "parametro 'league' debe ser MLB, MiLB o LMB"}, status=400)
+
+    try:
+        async with _scrape_semaphore:
+            result = await run_odds_scraper(
+                cfg.node_bin, cfg.vendor_dir, league,
+                cfg.proxy_server, cfg.proxy_username, cfg.proxy_password,
+            )
+    except NodeBridgeError as e:
+        return web.json_response({"error": str(e)}, status=502)
+    return web.json_response(result)
+
+
+async def run_health_server(cfg: Config, port: int = 8080) -> None:
     app = web.Application()
+    app["cfg"] = cfg
     app.router.add_get("/healthz", health)
+    app.router.add_get("/scrape-odds", scrape_odds)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
@@ -94,7 +128,7 @@ async def main() -> None:
     await telegram.send_message(cfg.tg_admin_chat_id, "🟢 Auto-Picks v2 arrancado y en marcha.")
 
     await asyncio.gather(
-        run_health_server(),
+        run_health_server(cfg),
         poll_loop(telegram, pool, lambda chat_id, text, msg_id: handle_message(ctx, chat_id, text, msg_id)),
     )
 

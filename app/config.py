@@ -32,6 +32,11 @@ class Config:
     proxy_server: str | None
     proxy_username: str | None
     proxy_password: str | None
+    # Token compartido para /scrape-odds -- endpoint HTTP que produccion (n8n, proyecto
+    # EasyPanel distinto, sin red interna compartida con este) llama para reusar el scraper
+    # con Tor de este contenedor en vez de duplicar Tor+Chrome en producción. None = endpoint
+    # desactivado (siempre 401), no expuesto por accidente sin querer protegerlo.
+    scrape_endpoint_token: str | None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -58,4 +63,5 @@ class Config:
             proxy_server=os.environ.get("PROXY_SERVER") or None,
             proxy_username=os.environ.get("PROXY_USERNAME") or None,
             proxy_password=os.environ.get("PROXY_PASSWORD") or None,
+            scrape_endpoint_token=os.environ.get("SCRAPE_ENDPOINT_TOKEN") or None,
         )
