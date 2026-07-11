@@ -8,6 +8,7 @@ el proceso se reinicia a mitad. La comprobacion de "ya existe" de mas arriba es 
 optimizacion (evita reconstruir el objeto game innecesariamente); la garantia real esta en la
 restriccion UNIQUE de la base de datos, no en la logica de la aplicacion.
 """
+import datetime as dt
 import json
 import logging
 from dataclasses import dataclass
@@ -18,12 +19,38 @@ import httpx
 
 from app.adapters import Adapter, Mode
 from app.node_bridge import NodeBridgeError, run_quant
+from app.supabase_client import SupabaseClient
 from app.telegram import TelegramClient
 
 logger = logging.getLogger(__name__)
 
 LEAGUE_KEY = {1: "mlb", 11: "milb", 23: "lmb"}
 LEAGUE_LABEL = {1: "MLB", 11: "MiLB", 23: "LMB"}
+CANDIDATES_HISTORY_TABLE = {1: "mlb_candidates_history", 11: "candidates_history", 23: "lmb_candidates_history"}
+# Columnas reales por tabla (verificadas contra Supabase 2026-07-11 antes de escribir -- mismo
+# bug ya sufrido una vez con prob_edge faltante en mlb_picks_history, ver CLAUDE.md/KNOWN_ISSUES).
+# Solo se envian las columnas que existen de verdad en cada tabla, nunca el superset completo.
+CANDIDATES_HISTORY_COLUMNS = {
+    "mlb_candidates_history": {
+        "game_id", "game_date", "market", "pick_side", "pick_team", "odds", "prob_estimated",
+        "prob_implied", "prob_edge", "edge", "edge_threshold", "data_score", "published", "result",
+        "total_line", "hc_value", "diag_flags", "away_runs_predicted", "home_runs_predicted",
+        "league", "created_at", "matchup_label", "prob_model", "market_prob", "fair_odds",
+        "model_version", "source",
+    },
+    "candidates_history": {
+        "game_id", "game_date", "market", "pick_side", "pick_team", "odds", "prob_estimated",
+        "prob_implied", "prob_edge", "edge", "edge_threshold", "data_score", "published", "result",
+        "total_line", "hc_value", "diag_flags", "away_runs_predicted", "home_runs_predicted",
+        "league", "created_at", "matchup_label", "away_team", "home_team", "source",
+    },
+    "lmb_candidates_history": {
+        "game_id", "game_date", "market", "pick_side", "pick_team", "odds", "prob_estimated",
+        "prob_implied", "prob_edge", "edge", "edge_threshold", "data_score", "published", "result",
+        "total_line", "hc_value", "diag_flags", "away_runs_predicted", "home_runs_predicted",
+        "league", "created_at", "source",
+    },
+}
 
 
 @dataclass
@@ -38,6 +65,8 @@ class PipelineContext:
     picks_channel_id: int
     node_bin: str
     vendor_dir: str
+    supabase: SupabaseClient  # lectura de vistas + escritura SOLO en *_candidates_history (ver supabase_client.py)
+    http_client: httpx.AsyncClient
     # Proxy opcional para vendor/run_odds_scraper.js -- ver app/odds_autofetch.py. None = sin
     # proxy (el scraper fallara igual que produccion, bloqueado por cuotasahora.com).
     proxy_server: Optional[str] = None
@@ -155,6 +184,64 @@ def format_full_analysis(league_label: str, pipeline: int, away_team: str, home_
     return "\n".join(lines)
 
 
+def _pick_team_for(pick_side: Optional[str], away_team: str, home_team: str) -> Optional[str]:
+    if not pick_side:
+        return None
+    upper = pick_side.upper()
+    if upper.startswith("AWAY"):
+        return away_team
+    if upper.startswith("HOME"):
+        return home_team
+    return None
+
+
+def build_candidates_history_rows(
+    sport_id: int, game_pk: int, game_date, away_team: str, home_team: str, result: dict, published_key
+) -> tuple[str, list[dict]]:
+    """Mapea los candidatos de un pipeline run al esquema real de *_candidates_history (Supabase),
+    marcados con source='autopicks_v2' para distinguirlos de los de produccion (n8n). Solo se
+    incluyen columnas que existen de verdad en cada tabla (CANDIDATES_HISTORY_COLUMNS) -- ver
+    comentario en la constante, mismo bug que el prob_edge de mlb_picks_history a evitar."""
+    table = CANDIDATES_HISTORY_TABLE[sport_id]
+    allowed = CANDIDATES_HISTORY_COLUMNS[table]
+    league_label = LEAGUE_LABEL.get(sport_id, str(sport_id))
+    away_mu = result.get("away_mu")
+    home_mu = result.get("home_mu")
+    now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
+
+    rows = []
+    for c in result.get("candidates") or []:
+        market = c.get("market")
+        pick_side = c.get("pick_side")
+        prob_model = c.get("prob_model") or c.get("prob_estimated")
+        prob_implied = c.get("prob_implied")
+        prob_blended = c.get("prob_blended")
+        prob_final = prob_blended if prob_blended is not None else prob_model
+        full_row = {
+            "game_id": game_pk, "game_date": game_date, "market": market, "pick_side": pick_side,
+            "pick_team": c.get("pick_team") or _pick_team_for(pick_side, away_team, home_team),
+            "odds": c.get("odds"),
+            "prob_estimated": prob_final, "prob_implied": prob_implied,
+            "prob_edge": (prob_final - prob_implied) if (prob_final is not None and prob_implied is not None) else None,
+            "edge": c.get("edge"), "edge_threshold": c.get("edge_threshold"),
+            "data_score": c.get("data_score"),
+            "published": (market, pick_side) == published_key,
+            "result": "PENDING",
+            "total_line": c.get("total_line"), "hc_value": c.get("hc_value"),
+            "diag_flags": [],
+            "away_runs_predicted": away_mu, "home_runs_predicted": home_mu,
+            "league": league_label, "created_at": now_iso,
+            "matchup_label": f"{away_team} @ {home_team}",
+            "prob_model": prob_model, "market_prob": prob_implied,
+            "fair_odds": round(1 / prob_final, 2) if prob_final else None,
+            "model_version": "autopicks_v2",
+            "away_team": away_team, "home_team": home_team,
+            "source": "autopicks_v2",
+        }
+        rows.append({k: v for k, v in full_row.items() if k in allowed})
+    return table, rows
+
+
 async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, pipeline: int, mode: Mode, away_team: str, home_team: str) -> None:
     async with ctx.pool.acquire() as conn:
         existing = await conn.fetchrow(
@@ -228,10 +315,21 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
     best_pick = result.get("best_pick")
     data_score = result.get("data_score") or 0
     published = bool(best_pick)
+    published_key = (best_pick.get("market"), best_pick.get("pick_side")) if best_pick else None
     telegram_message_id = None
 
     league_label = LEAGUE_LABEL.get(sport_id, str(sport_id))
     lineup_incomplete = _lineup_incomplete(sport_id, pipeline, game_obj)
+
+    # Candidatos evaluados -> mismo pool de calibracion que produccion (*_candidates_history en
+    # Supabase, source='autopicks_v2'). No critico: si falla, no bloquea el envio de mensajes.
+    try:
+        table, rows = build_candidates_history_rows(
+            sport_id, game_pk, game_obj.get("game_date"), away_team, home_team, result, published_key
+        )
+        await ctx.supabase.insert(ctx.http_client, table, rows)
+    except Exception:
+        logger.exception("fallo guardando candidates_history en Supabase para game_pk=%s pipeline=%s", game_pk, pipeline)
 
     # El admin (@Cuotasodds_bot) recibe SIEMPRE el analisis completo (todos los mercados
     # evaluados, no solo el mejor), se haya publicado o no en el canal de produccion.

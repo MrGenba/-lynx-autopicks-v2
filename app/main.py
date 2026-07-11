@@ -174,6 +174,7 @@ async def main() -> None:
         pool=pool, adapters=adapters, telegram=telegram, picks_telegram=picks_telegram,
         admin_chat_id=cfg.tg_admin_chat_id, picks_channel_id=cfg.tg_picks_channel_id,
         node_bin=cfg.node_bin, vendor_dir=cfg.vendor_dir,
+        supabase=supabase, http_client=http_client,
         proxy_server=cfg.proxy_server, proxy_username=cfg.proxy_username, proxy_password=cfg.proxy_password,
         odds_api_key=cfg.odds_api_key,
     )
