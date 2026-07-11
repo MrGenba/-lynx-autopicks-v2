@@ -219,11 +219,20 @@ def _values_to_scraper_shape(values: dict, away_team: str, home_team: str, event
 async def get_league_odds(api_key: str, league_key: str) -> dict:
     """Equivalente a fetchLeagueOdds() del scraper de Tor, pero via odds-api.io -- mismo shape
     de vuelta ({league, games, errors, fetched_at}) para que /scrape-odds/* (main.py) pueda
-    usar esto como reemplazo directo sin que produccion (n8n) note la diferencia."""
+    usar esto como reemplazo directo sin que produccion (n8n) note la diferencia.
+
+    Bug real encontrado en vivo: sin filtro de fecha, /events?status=pending devuelve TODOS los
+    partidos futuros de la liga (semanas/meses vista, ~950 para MLB) -- una llamada a /odds por
+    cada uno agota el limite de 100 peticiones/hora del plan gratuito casi al instante (944
+    errores 429 en la primera prueba). Se limita a una ventana de 30h desde ahora -- de sobra
+    para "hoy" en cualquier zona horaria sin arrastrar partidos de dentro de varias semanas."""
     sport_id = LEAGUE_KEY_TO_SPORT_ID.get(league_key)
     slugs = LEAGUE_SLUGS.get(sport_id, [])
     games: list[dict] = []
     errors: list[str] = []
+    now = dt.datetime.now(dt.timezone.utc)
+    frm = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    to = (now + dt.timedelta(hours=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     async with httpx.AsyncClient() as client:
         events = []
@@ -231,7 +240,7 @@ async def get_league_odds(api_key: str, league_key: str) -> dict:
             try:
                 resp = await client.get(
                     f"{BASE}/events",
-                    params={"sport": "baseball", "league": slug, "status": "pending", "apiKey": api_key},
+                    params={"sport": "baseball", "league": slug, "status": "pending", "from": frm, "to": to, "apiKey": api_key},
                     timeout=20.0,
                 )
                 resp.raise_for_status()
