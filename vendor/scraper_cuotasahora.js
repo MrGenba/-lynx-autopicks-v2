@@ -195,11 +195,32 @@ async function scrapeMatch(league, url, shouldDrill) {
   }
 }
 
+// Diagnostico -- investigando en vivo 2026-07-11 si el desfase de 1h en la hora que muestra
+// cuotasahora.com depende del pais real de salida de Tor en cada intento (Tor sale por
+// cualquier pais al azar, sin restriccion de pais fija). Visita un servicio de geolocalizacion
+// por la MISMA conexion/contexto que usa el scraper, asi se sabe que pais tenia la IP de Tor en
+// el momento exacto de este scrape en concreto -- una sola pagina extra, no cambia el
+// comportamiento del scraping en si.
+async function getExitGeo() {
+  const page = await context.newPage();
+  try {
+    await page.goto("https://ipapi.co/json/", { waitUntil: "domcontentloaded", timeout: 15000 });
+    const text = await page.innerText("body").catch(() => "");
+    const data = JSON.parse(text);
+    return { ip: data.ip, country: data.country_name, country_code: data.country_code, timezone: data.timezone, utc_offset: data.utc_offset };
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
 async function fetchLeagueOdds(league, candidateNames) {
   const paths = LEAGUE_PATHS[league];
   if (!paths) throw new Error("Liga desconocida: " + league);
   await ensureBrowser();
   const shouldDrill = makeShouldDrill(candidateNames);
+  const exitGeo = await getExitGeo();
 
   const games = [];
   const errors = [];
@@ -240,7 +261,7 @@ async function fetchLeagueOdds(league, candidateNames) {
     }
   }
 
-  return { league, games, errors, fetched_at: new Date().toISOString() };
+  return { league, games, errors, fetched_at: new Date().toISOString(), exit_geo: exitGeo };
 }
 
 // Concurrencia baja a proposito -- este contenedor no es una maquina potente y comparte
