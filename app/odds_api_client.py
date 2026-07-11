@@ -8,6 +8,7 @@ no se borra ese camino.
 import datetime as dt
 import logging
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -19,6 +20,9 @@ logger = logging.getLogger(__name__)
 BASE = "https://api.odds-api.io/v3"
 BOOKMAKERS = "Bet365,Betano"  # fijados en el plan gratuito de esta cuenta, no configurable por query
 MIN_MATCH_SCORE = 4  # mismo umbral que odds_autofetch._match_scraped_game -- evita matches debiles
+MADRID_TZ = ZoneInfo("Europe/Madrid")  # hora correcta (con DST real) para el formato "HH:MM"
+# que consume produccion (n8n) -- a diferencia del desfase de 1h que se encontro en
+# cuotasahora.com (ver memoria del proyecto), esto usa zoneinfo real, no depende de ninguna web.
 
 # sport_id -> lista de slugs de liga en odds-api.io. MiLB AAA se reparte en las mismas 2 ligas
 # (International League / Pacific Coast League) que ya combinabamos en el scraper de cuotasahora.
@@ -27,6 +31,9 @@ LEAGUE_SLUGS: dict[int, list[str]] = {
     11: ["usa-milb-triple-a-international-league", "usa-milb-triple-a-pacific-coast-league"],
     23: ["mexico-mexican-league"],
 }
+
+# league_key (el que usa produccion, ver vendor/scraper_cuotasahora.js LEAGUE_PATHS) -> sport_id
+LEAGUE_KEY_TO_SPORT_ID: dict[str, int] = {"MLB": 1, "MiLB": 11, "LMB": 23}
 
 
 async def _find_event_id(
@@ -181,3 +188,83 @@ async def get_odds_for_game(
         if any(v is not None for v in values.values()):
             return values
     return None
+
+
+def _values_to_scraper_shape(values: dict, away_team: str, home_team: str, event_date_iso: str, bookmaker: str) -> dict:
+    """Convierte el dict 'values' (mismo formato que _store_odds) a la forma que ya esperaba
+    el scraper de cuotasahora.com (games[]) -- asi produccion (n8n, validateGame/fmtGame) no
+    necesita cambiar nada, solo cambia de donde viene el dict."""
+    try:
+        utc_dt = dt.datetime.fromisoformat(event_date_iso.replace("Z", "+00:00"))
+        time_str = utc_dt.astimezone(MADRID_TZ).strftime("%H:%M")
+    except (TypeError, ValueError):
+        time_str = None
+
+    game = {
+        "league": None, "status": "scheduled", "time": time_str,
+        "away_team": away_team, "home_team": home_team,
+        "moneyline": {"home": values["home_ml"], "away": values["away_ml"]},
+        "bookmaker": bookmaker,
+    }
+    if values["total_line"] is not None:
+        game["total"] = {"line": values["total_line"], "over_odds": values["over_odds"], "under_odds": values["under_odds"]}
+    if values["home_hc_val"] is not None:
+        game["run_line"] = {
+            "home": {"line": values["home_hc_val"], "odds": values["home_hc_odds"]},
+            "away": {"line": values["away_hc_val"], "odds": values["away_hc_odds"]},
+        }
+    return game
+
+
+async def get_league_odds(api_key: str, league_key: str) -> dict:
+    """Equivalente a fetchLeagueOdds() del scraper de Tor, pero via odds-api.io -- mismo shape
+    de vuelta ({league, games, errors, fetched_at}) para que /scrape-odds/* (main.py) pueda
+    usar esto como reemplazo directo sin que produccion (n8n) note la diferencia."""
+    sport_id = LEAGUE_KEY_TO_SPORT_ID.get(league_key)
+    slugs = LEAGUE_SLUGS.get(sport_id, [])
+    games: list[dict] = []
+    errors: list[str] = []
+
+    async with httpx.AsyncClient() as client:
+        events = []
+        for slug in slugs:
+            try:
+                resp = await client.get(
+                    f"{BASE}/events",
+                    params={"sport": "baseball", "league": slug, "status": "pending", "apiKey": api_key},
+                    timeout=20.0,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception as e:
+                errors.append(f"/events fallo para {slug}: {e}")
+                continue
+            events.extend(data if isinstance(data, list) else data.get("data") or data.get("events") or [])
+
+        for ev in events:
+            event_id = ev.get("id")
+            try:
+                oresp = await client.get(
+                    f"{BASE}/odds",
+                    params={"eventId": event_id, "bookmakers": BOOKMAKERS, "apiKey": api_key},
+                    timeout=15.0,
+                )
+                oresp.raise_for_status()
+                odata = oresp.json()
+            except Exception as e:
+                errors.append(f"/odds fallo para eventId={event_id}: {e}")
+                continue
+
+            bookmakers = odata.get("bookmakers") or {}
+            for name in ("Bet365", "Betano"):
+                markets = bookmakers.get(name)
+                if not markets:
+                    continue
+                values = _values_from_markets(markets)
+                if any(v is not None for v in values.values()):
+                    game = _values_to_scraper_shape(values, ev.get("away", ""), ev.get("home", ""), ev.get("date", ""), name)
+                    game["league"] = league_key
+                    games.append(game)
+                break
+
+    return {"league": league_key, "games": games, "errors": errors, "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat()}

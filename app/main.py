@@ -20,6 +20,7 @@ from app.detector import detector_tick
 from app.logging_setup import setup_logging
 from app.message_handler import handle_message
 from app.node_bridge import NodeBridgeError, run_odds_scraper
+from app.odds_api_client import get_league_odds
 from app.odds_autofetch import _scrape_semaphore, autofetch_tick
 from app.pipelines import PipelineContext
 from app.supabase_client import SupabaseClient
@@ -55,6 +56,22 @@ def _check_scrape_token(request: web.Request, cfg: Config) -> bool:
 
 async def _run_scrape_job(job_id: str, cfg: Config, league: str) -> None:
     try:
+        # 2026-07-11: prueba primero odds-api.io (API real, mas rapido y fiable) -- exito real
+        # es "encontro partidos" O "termino sin errores" (liga sin partidos publicados ahora
+        # mismo es valido, no un fallo). Solo cae al scraper de Tor si de verdad no pudo
+        # completar la consulta -- no se borro ese camino, sigue siendo el respaldo real.
+        if cfg.odds_api_key:
+            try:
+                api_result = await get_league_odds(cfg.odds_api_key, league)
+            except Exception:
+                logger.exception("get_league_odds fallo de forma inesperada para %s", league)
+                api_result = None
+            if api_result is not None and (api_result["games"] or not api_result["errors"]):
+                _scrape_jobs[job_id]["status"] = "done"
+                _scrape_jobs[job_id]["result"] = api_result
+                return
+            logger.warning("odds-api.io sin resultado usable para %s, cae al scraper de Tor", league)
+
         async with _scrape_semaphore:
             result = await run_odds_scraper(
                 cfg.node_bin, cfg.vendor_dir, league,
