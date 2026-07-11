@@ -195,12 +195,33 @@ async function scrapeMatch(league, url, shouldDrill) {
   }
 }
 
-// Diagnostico -- investigando en vivo 2026-07-11 si el desfase de 1h en la hora que muestra
-// cuotasahora.com depende del pais real de salida de Tor en cada intento (Tor sale por
-// cualquier pais al azar, sin restriccion de pais fija). Visita un servicio de geolocalizacion
-// por la MISMA conexion/contexto que usa el scraper, asi se sabe que pais tenia la IP de Tor en
-// el momento exacto de este scrape en concreto -- una sola pagina extra, no cambia el
-// comportamiento del scraping en si.
+// Diagnostico -- investigando en vivo 2026-07-11 el desfase de 1h en la hora que muestra
+// cuotasahora.com. Dato clave que descarta la hipotesis de "depende del pais de salida de
+// Tor": el mismo partido (Houston Astros @ Texas Rangers) mostro SIEMPRE "00:05" en varios
+// scrapes distintos a lo largo de varias horas, con Tor eligiendo un pais de salida distinto
+// al azar cada vez -- si dependiera de la IP, deberia variar. Nueva hipotesis: la pagina
+// calcula la hora local con el reloj/timezone del propio NAVEGADOR (Intl.DateTimeFormat /
+// Date del sistema), no con la IP -- y el contenedor podria estar en horario de invierno fijo
+// (UTC+1, CET) en vez de verano (UTC+2, CEST en julio), lo que encajaria exacto con el desfase
+// de 1h visto. browserTz comprueba esto directamente; exitGeo (ipapi.co) se mantiene como
+// diagnostico secundario aunque a veces falle (Tor puede ser bloqueado por el propio ipapi.co).
+async function getBrowserTimezone() {
+  const page = await context.newPage();
+  try {
+    const info = await page.evaluate(() => ({
+      resolvedTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      dateString: new Date().toString(),
+      isoString: new Date().toISOString(),
+      timezoneOffsetMin: new Date().getTimezoneOffset(),
+    }));
+    return info;
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
 async function getExitGeo() {
   const page = await context.newPage();
   try {
@@ -221,6 +242,7 @@ async function fetchLeagueOdds(league, candidateNames) {
   await ensureBrowser();
   const shouldDrill = makeShouldDrill(candidateNames);
   const exitGeo = await getExitGeo();
+  const browserTz = await getBrowserTimezone();
 
   const games = [];
   const errors = [];
@@ -261,7 +283,7 @@ async function fetchLeagueOdds(league, candidateNames) {
     }
   }
 
-  return { league, games, errors, fetched_at: new Date().toISOString(), exit_geo: exitGeo };
+  return { league, games, errors, fetched_at: new Date().toISOString(), exit_geo: exitGeo, browser_timezone: browserTz };
 }
 
 // Concurrencia baja a proposito -- este contenedor no es una maquina potente y comparte
