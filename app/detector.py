@@ -136,17 +136,17 @@ async def detector_tick(ctx: PipelineContext) -> None:
                 already_lineup_confirmed = await upsert_game(ctx.pool, sport_id, g, game_dt)
                 minutes_to_start = int((game_dt - now).total_seconds() // 60)
 
-                # Gate A -- abridores
+                # Gate A -- abridores. Ya NO dispara autofetch de cuotas (a peticion del usuario
+                # 2026-07-11): los abridores probables suelen confirmarse horas o dias antes del
+                # partido, mucho antes de que el analisis automatico haga falta de verdad -- pedir
+                # cuotas aqui gastaba peticiones de odds-api.io (limite 100/hora) demasiado pronto.
+                # Solo dispara pipeline 1 si las cuotas YA existen (enviadas a mano, o ya obtenidas
+                # por el autofetch real de Gate B en un tick anterior) -- nunca pide cuotas nuevas.
                 if g.away_pitcher_id and g.home_pitcher_id:
-                    first_time = await mark_pitchers_confirmed(ctx.pool, sport_id, g.game_pk)
+                    await mark_pitchers_confirmed(ctx.pool, sport_id, g.game_pk)
                     odds = await get_odds(ctx.pool, sport_id, g.game_pk)
                     if odds is not None:
                         await try_fire_pipeline(ctx, sport_id, g.game_pk, 1, "pitchers_only", g.away_team_name, g.home_team_name)
-                    elif first_time:
-                        asyncio.create_task(_autofetch_or_notify(
-                            ctx, sport_id, g.game_pk, "pitchers_no_odds_notice_at",
-                            g.away_team_name, g.home_team_name, minutes_to_start, game_dt,
-                        ))
 
                 # Gate B -- lineup completo (9 bateadores en ambos lados). Si ya se confirmo en
                 # un tick anterior, no hace falta volver a pedir el boxscore -- esto era una
