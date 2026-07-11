@@ -43,6 +43,9 @@ class PipelineContext:
     proxy_server: Optional[str] = None
     proxy_username: Optional[str] = None
     proxy_password: Optional[str] = None
+    # odds-api.io (2026-07-11) -- fuente primaria nueva, ver app/odds_api_client.py. None =
+    # desactivada, cae directo al scraper de Tor (comportamiento identico a antes de esto).
+    odds_api_key: Optional[str] = None
 
 
 async def get_odds(pool: asyncpg.Pool, sport_id: int, game_pk: int) -> Optional[asyncpg.Record]:

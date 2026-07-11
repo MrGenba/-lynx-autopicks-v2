@@ -1,0 +1,183 @@
+"""Cliente de odds-api.io (2026-07-11) -- fuente de cuotas primaria nueva, API real (no
+scraping). Se probo en vivo: cubre las 3 ligas del proyecto con nombres de liga exactos, y el
+plan gratuito de esta cuenta trae Bet365 + Betano ya fijados (Bet365 es la casa con la que esta
+calibrado todo el proyecto). Si no encuentra el partido o ninguna de las 2 casas tiene cuotas
+todavia, devuelve None -- el llamador (odds_autofetch.py) cae al scraper de Tor como respaldo,
+no se borra ese camino.
+"""
+import datetime as dt
+import logging
+from typing import Optional
+
+import httpx
+
+from app import aliases
+from app.overround import check_overround
+
+logger = logging.getLogger(__name__)
+
+BASE = "https://api.odds-api.io/v3"
+BOOKMAKERS = "Bet365,Betano"  # fijados en el plan gratuito de esta cuenta, no configurable por query
+MIN_MATCH_SCORE = 4  # mismo umbral que odds_autofetch._match_scraped_game -- evita matches debiles
+
+# sport_id -> lista de slugs de liga en odds-api.io. MiLB AAA se reparte en las mismas 2 ligas
+# (International League / Pacific Coast League) que ya combinabamos en el scraper de cuotasahora.
+LEAGUE_SLUGS: dict[int, list[str]] = {
+    1: ["usa-mlb"],
+    11: ["usa-milb-triple-a-international-league", "usa-milb-triple-a-pacific-coast-league"],
+    23: ["mexico-mexican-league"],
+}
+
+
+async def _find_event_id(
+    client: httpx.AsyncClient, api_key: str, sport_id: int,
+    away_team_name: str, home_team_name: str, game_dt: dt.datetime,
+) -> Optional[int]:
+    slugs = LEAGUE_SLUGS.get(sport_id, [])
+    if not slugs:
+        return None
+    # Ventana de +/- 6h alrededor de la hora real del partido -- suficiente margen para
+    # cualquier retraso/adelanto de horario sin arrastrar partidos de otros dias.
+    frm = (game_dt - dt.timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    to = (game_dt + dt.timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    candidates = []
+    for slug in slugs:
+        try:
+            resp = await client.get(
+                f"{BASE}/events",
+                params={"sport": "baseball", "league": slug, "status": "pending", "from": frm, "to": to, "apiKey": api_key},
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            logger.warning("odds-api.io /events fallo para %s: %s", slug, e)
+            continue
+        events = data if isinstance(data, list) else data.get("data") or data.get("events") or []
+        candidates.extend(events)
+
+    if not candidates:
+        return None
+
+    # Desempate por cercania de fecha/hora, no solo por nombre de equipo -- bug real
+    # encontrado en vivo: un doblete (2 partidos el mismo dia, mismos 2 equipos) puntuaba
+    # exactamente igual por nombre y se descartaba como "ambiguo" aunque game_dt (la hora real
+    # del partido concreto, ya conocida via MLB Stats API) apuntaba claramente a uno solo.
+    def date_diff_seconds(ev: dict) -> float:
+        try:
+            ev_dt = dt.datetime.fromisoformat(ev["date"].replace("Z", "+00:00"))
+            return abs((ev_dt - game_dt).total_seconds())
+        except (KeyError, ValueError):
+            return float("inf")
+
+    scored = []
+    for ev in candidates:
+        s = aliases.score(away_team_name, ev.get("away", "")) + aliases.score(home_team_name, ev.get("home", ""))
+        if s < MIN_MATCH_SCORE:
+            continue
+        scored.append((s, date_diff_seconds(ev), ev))
+    if not scored:
+        return None
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    best_score, best_diff, best_ev = scored[0]
+    # Solo ambiguo de verdad si otro candidato empata en AMBOS: mismo score Y practicamente
+    # la misma hora (menos de 5 min de diferencia) -- un doblete real cae fuera de esto porque
+    # sus horas de inicio difieren varias horas.
+    if len(scored) > 1 and scored[1][0] == best_score and scored[1][1] < 300:
+        logger.info("odds-api.io: match ambiguo para %s @ %s, se omite", away_team_name, home_team_name)
+        return None
+    return best_ev.get("id")
+
+
+def _market_by_name(markets: list[dict], name: str) -> Optional[dict]:
+    for m in markets:
+        if m.get("name") == name:
+            return m
+    return None
+
+
+def _f(v) -> Optional[float]:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _values_from_markets(markets: list[dict]) -> dict:
+    values = {
+        "away_ml": None, "home_ml": None,
+        "away_hc_val": None, "away_hc_odds": None, "home_hc_val": None, "home_hc_odds": None,
+        "total_line": None, "over_odds": None, "under_odds": None,
+    }
+
+    ml = _market_by_name(markets, "ML")
+    if ml and ml.get("odds"):
+        row = ml["odds"][0]
+        home_odds, away_odds = _f(row.get("home")), _f(row.get("away"))
+        if home_odds is not None and away_odds is not None:
+            chk = check_overround(away_odds, home_odds)
+            if chk.ok:
+                values["home_ml"], values["away_ml"] = home_odds, away_odds
+
+    # Spread (run line) -- odds-api.io devuelve las dos orientaciones (hdp negativo = home
+    # favorito, hdp positivo = away favorito) como filas separadas del mismo mercado. Se
+    # prioriza la fila con hdp negativo (home favorito) como referencia, igual que hacia
+    # pickMainLine({preferAbs:1.5}) en el scraper de cuotasahora -- el run line de beisbol es
+    # casi siempre +/-1.5.
+    spread = _market_by_name(markets, "Spread")
+    if spread and spread.get("odds"):
+        rows = spread["odds"]
+        row = next((r for r in rows if _f(r.get("hdp")) is not None and _f(r["hdp"]) < 0), rows[0])
+        hdp, home_odds, away_odds = _f(row.get("hdp")), _f(row.get("home")), _f(row.get("away"))
+        if hdp is not None and home_odds is not None and away_odds is not None:
+            chk = check_overround(away_odds, home_odds)
+            if chk.ok:
+                values["home_hc_val"], values["home_hc_odds"] = hdp, home_odds
+                values["away_hc_val"], values["away_hc_odds"] = -hdp, away_odds
+
+    totals = _market_by_name(markets, "Totals")
+    if totals and totals.get("odds"):
+        row = totals["odds"][0]
+        line, over_odds, under_odds = _f(row.get("hdp")), _f(row.get("over")), _f(row.get("under"))
+        if line is not None and over_odds is not None and under_odds is not None:
+            chk = check_overround(over_odds, under_odds)
+            if chk.ok:
+                values["total_line"], values["over_odds"], values["under_odds"] = line, over_odds, under_odds
+
+    return values
+
+
+async def get_odds_for_game(
+    api_key: str, sport_id: int, away_team_name: str, home_team_name: str, game_dt: dt.datetime,
+) -> Optional[dict]:
+    """None si no se encuentra el partido, o si ninguna de las 2 casas fijadas (Bet365/Betano)
+    tiene cuotas todavia -- el llamador cae al scraper de Tor en ese caso."""
+    async with httpx.AsyncClient() as client:
+        event_id = await _find_event_id(client, api_key, sport_id, away_team_name, home_team_name, game_dt)
+        if event_id is None:
+            return None
+
+        try:
+            resp = await client.get(
+                f"{BASE}/odds",
+                params={"eventId": event_id, "bookmakers": BOOKMAKERS, "apiKey": api_key},
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            logger.warning("odds-api.io /odds fallo para eventId=%s: %s", event_id, e)
+            return None
+
+    bookmakers = data.get("bookmakers") or {}
+    # Bet365 primero (casa con la que esta calibrado el proyecto), Betano como respaldo --
+    # mismo patron PREFERRED_BOOKMAKER que ya usaba el scraper de cuotasahora.
+    for name in ("Bet365", "Betano"):
+        markets = bookmakers.get(name)
+        if not markets:
+            continue
+        values = _values_from_markets(markets)
+        if any(v is not None for v in values.values()):
+            return values
+    return None

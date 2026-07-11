@@ -37,6 +37,9 @@ class Config:
     # con Tor de este contenedor en vez de duplicar Tor+Chrome en producción. None = endpoint
     # desactivado (siempre 401), no expuesto por accidente sin querer protegerlo.
     scrape_endpoint_token: str | None
+    # odds-api.io (2026-07-11) -- fuente de cuotas primaria nueva, API real en vez de scraping.
+    # None = desactivada, cae directo al scraper de Tor (comportamiento identico a antes).
+    odds_api_key: str | None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -64,4 +67,5 @@ class Config:
             proxy_username=os.environ.get("PROXY_USERNAME") or None,
             proxy_password=os.environ.get("PROXY_PASSWORD") or None,
             scrape_endpoint_token=os.environ.get("SCRAPE_ENDPOINT_TOKEN") or None,
+            odds_api_key=os.environ.get("ODDS_API_KEY") or None,
         )
