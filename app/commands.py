@@ -139,10 +139,15 @@ async def cmd_tick(ctx: PipelineContext) -> None:
 
     async with ctx.pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT sport_id, count(*) as n FROM games_gate_state WHERE game_datetime_utc::date = current_date GROUP BY sport_id"
+            """
+            SELECT sport_id, count(*) as n FROM games_gate_state
+            WHERE game_datetime_utc > now() - interval '5 hours'
+              AND game_datetime_utc < now() + interval '18 hours'
+            GROUP BY sport_id
+            """
         )
     if not rows:
-        await ctx.telegram.send_message(ctx.admin_chat_id, "✅ Ciclo terminado sin excepciones, pero 0 partidos encontrados en ninguna liga hoy.")
+        await ctx.telegram.send_message(ctx.admin_chat_id, "✅ Ciclo terminado sin excepciones, pero 0 partidos vigentes (-5h/+18h) en ninguna liga ahora mismo.")
         return
     lines = ["✅ Ciclo terminado:"]
     for r in rows:
