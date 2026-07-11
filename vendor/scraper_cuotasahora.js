@@ -210,11 +210,22 @@ async function fetchLeagueOdds(league, candidateNames) {
       await page.goto(BASE + path, { waitUntil: "domcontentloaded", timeout: 30000 });
       await sleep(3000);
       await dismissOverlays(page);
-      matchLinks = await page.evaluate(() =>
-        Array.from(document.querySelectorAll("a")).map((a) => a.href).filter((h) => h.includes("/baseball/h2h/"))
+      const allLinks = await page.evaluate(() =>
+        Array.from(document.querySelectorAll("a")).map((a) => a.href)
       );
-      matchLinks = [...new Set(matchLinks)];
-      matchLinks = matchLinks.filter((link) => matchesUrlSlug(link, candidateNames));
+      const rawH2hLinks = [...new Set(allLinks.filter((h) => h.includes("/baseball/h2h/")))];
+      matchLinks = rawH2hLinks.filter((link) => matchesUrlSlug(link, candidateNames));
+      // Diagnostico -- encontrado en vivo 2026-07-10: un scrape entero de MLB (sin filtro de
+      // candidateNames) devolvio 0 partidos SIN ningun error (la pagina cargo bien, pero
+      // querySelectorAll no encontro ni un enlace de partido). Sin esto no habia forma de saber
+      // si fue un bloqueo/CAPTCHA del nodo de salida de Tor o un fallo real de extraccion. Se
+      // mira rawH2hLinks (ANTES del filtro de candidateNames), no matchLinks -- 0 tras filtrar
+      // por candidatos es el caso normal en el uso interno de Auto-Picks v2, no un fallo.
+      if (rawH2hLinks.length === 0) {
+        const title = await page.title().catch(() => "?");
+        const bodySnippet = (await page.innerText("body").catch(() => "")).slice(0, 300);
+        errors.push(`sin NINGUN enlace de partido en la pagina (title="${title}", totalLinksEnPagina=${allLinks.length}): ${bodySnippet}`);
+      }
     } catch (e) {
       errors.push(String(e && e.message || e));
     } finally {

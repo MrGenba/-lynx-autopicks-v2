@@ -49,10 +49,15 @@ _last_status: dict[int, bool] = {}
 # autofetch_single_game() en paralelo (asyncio.create_task en detector.py) -- y todos comparten
 # el MISMO proceso de Tor (127.0.0.1:9050, un unico daemon en el contenedor). Varias instancias
 # de Chrome intentando abrir circuitos de Tor a la vez lo saturan y todas fallan. Este semaforo
-# limita cuantos scrapes reales corren a la vez (el disparo puntual Y el sondeo periodico
-# comparten el mismo limite) -- 2 en vez de sin limite, para no saturar Tor sin crear una cola
-# tan larga que un partido a punto de empezar se quede esperando demasiado.
-_scrape_semaphore = asyncio.Semaphore(2)
+# limita cuantos scrapes reales corren a la vez -- lo comparten el disparo puntual, el sondeo
+# periodico Y el endpoint /scrape-odds/* de produccion (2026-07-10).
+# Bajado de 2 a 1 el 2026-07-10: probado en vivo que 2 scrapes reales a la vez (cada uno con su
+# propio Chrome via patchright, canal "chrome" real no chromium generico) dejaban el contenedor
+# intermitentemente inalcanzable (502 "Service is not reachable" en Traefik) por presion de
+# CPU/memoria en este VPS compartido con n8n/postgres/etc. Serializar del todo es mas lento
+# pero mas seguro -- sin esto, el endpoint de produccion podia coincidir con un disparo puntual
+# interno y tumbar el contenedor.
+_scrape_semaphore = asyncio.Semaphore(1)
 
 
 async def _candidates_needing_odds(pool: asyncpg.Pool, sport_id: int) -> list[aliases.CandidateGame]:
