@@ -110,6 +110,51 @@ def format_pick_message(league_label: str, pipeline: int, away_team: str, home_t
     return "\n".join(lines)
 
 
+def format_full_analysis(league_label: str, pipeline: int, away_team: str, home_team: str, result: dict, lineup_incomplete: bool = False) -> str:
+    """Desglose completo de TODOS los mercados evaluados (no solo el mejor) -- para el chat
+    privado del admin via @Cuotasodds_bot, en todo pipeline run, se haya publicado o no."""
+    pipeline_label = "abridores" if pipeline == 1 else "lineup completo"
+    data_score = result.get("data_score") or 0
+    candidates = sorted(result.get("candidates") or [], key=lambda c: (c.get("edge") or -999), reverse=True)
+    best_pick = result.get("best_pick")
+    published_key = (best_pick.get("market"), best_pick.get("pick_side")) if best_pick else None
+
+    lines = [
+        f"🔍 Análisis completo ({league_label} · {pipeline_label})",
+        f"{away_team} @ {home_team}",
+        f"data_score: {data_score:.2f}",
+        "",
+    ]
+    if not candidates:
+        lines.append("Sin candidatos calculables (faltan cuotas de algún mercado).")
+    for c in candidates:
+        market = c.get("market")
+        pick_side = c.get("pick_side")
+        odds = c.get("odds")
+        edge = c.get("edge") or 0
+        threshold = c.get("edge_threshold") or 0.18
+        prob_model = c.get("prob_model") or c.get("prob_estimated") or 0
+        prob_implied = c.get("prob_implied") or 0
+        prob_blended = c.get("prob_blended")
+        confidence = c.get("confidence")
+        mark = "✅" if edge >= threshold else "➖"
+        key = (market, pick_side)
+        published_mark = "  📣 PUBLICADO" if published_key == key else ""
+        blended_txt = f"  |  Prob. blend: {prob_blended * 100:.1f}%" if prob_blended is not None else ""
+        conf_txt = f"  |  Confianza: {confidence}" if confidence else ""
+        lines.append(f"{mark} {market} — {pick_side}{published_mark}")
+        lines.append(
+            f"   Cuota: {_fmt_odds(odds)}  |  Prob. modelo: {prob_model * 100:.1f}%  |  "
+            f"Prob. mercado: {prob_implied * 100:.1f}%{blended_txt}"
+        )
+        lines.append(f"   Edge: {edge * 100:.1f}% (umbral {threshold * 100:.0f}%){conf_txt}")
+
+    if lineup_incomplete:
+        lines.append("")
+        lines.append("⚠️ lineup_factor aún sin calcular en producción — este análisis NO llevó ajuste por calidad real del lineup.")
+    return "\n".join(lines)
+
+
 async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, pipeline: int, mode: Mode, away_team: str, home_team: str) -> None:
     async with ctx.pool.acquire() as conn:
         existing = await conn.fetchrow(
@@ -187,30 +232,15 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
 
     league_label = LEAGUE_LABEL.get(sport_id, str(sport_id))
     lineup_incomplete = _lineup_incomplete(sport_id, pipeline, game_obj)
+
+    # El admin (@Cuotasodds_bot) recibe SIEMPRE el analisis completo (todos los mercados
+    # evaluados, no solo el mejor), se haya publicado o no en el canal de produccion.
+    full_text = format_full_analysis(league_label, pipeline, away_team, home_team, result, lineup_incomplete)
+    await ctx.telegram.send_message(ctx.admin_chat_id, full_text)
+
     if published:
         text = format_pick_message(league_label, pipeline, away_team, home_team, best_pick, data_score, lineup_incomplete)
         await ctx.picks_telegram.send_message(ctx.picks_channel_id, text)
-    else:
-        # Sin esto, "se calculo bien pero sin edge suficiente" y "algo fallo silenciosamente"
-        # se ven identicos desde fuera (ningun mensaje llega a ningun sitio). Avisar siempre
-        # al admin, aunque sea "sin valor", cierra ese hueco de visibilidad.
-        candidates = result.get("candidates") or []
-        best_candidate = max(candidates, key=lambda c: (c.get("edge") or -999), default=None)
-        if best_candidate:
-            edge_pct = (best_candidate.get("edge") or 0) * 100
-            threshold_pct = (best_candidate.get("edge_threshold") or 0.18) * 100
-            market = best_candidate.get("market")
-            pick_side = best_candidate.get("pick_side")
-            team_label = best_candidate.get("pick_team") or {"home": home_team, "away": away_team}.get(pick_side, pick_side)
-            odds = _fmt_odds(best_candidate.get("odds"))
-            detail = f"mejor candidato: {market} {team_label} @{odds} edge={edge_pct:.1f}% (umbral {threshold_pct:.0f}%)"
-        else:
-            detail = "sin candidatos calculables (faltan cuotas de algun mercado)"
-        lineup_note = " ⚠️ sin ajuste de lineup (lineup_factor aún no calculado en producción)." if lineup_incomplete else ""
-        await ctx.telegram.send_message(
-            ctx.admin_chat_id,
-            f"ℹ️ {league_label} {away_team} @ {home_team} (pipeline {pipeline}) calculado, sin valor suficiente — {detail}{lineup_note}",
-        )
 
     async with ctx.pool.acquire() as conn:
         await conn.execute(
