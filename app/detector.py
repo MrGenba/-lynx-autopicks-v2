@@ -73,6 +73,29 @@ async def mark_lineup_confirmed(pool: asyncpg.Pool, sport_id: int, game_pk: int)
     return row is not None
 
 
+async def fill_pitcher_ids_from_lineup(
+    pool: asyncpg.Pool, sport_id: int, game_pk: int, away_pitcher_id: Optional[int], home_pitcher_id: Optional[int]
+) -> None:
+    """Relleno de emergencia: el schedule de MLB Stats API (hydrate=probablePitcher, lo que
+    alimenta games_gate_state en Gate A) a veces no trae el abridor de un lado incluso para
+    partidos de MiLB cuyo lineup YA se confirmo por boxscore (caso real: game_pk=815512,
+    2026-07-11 -- Rochester @ Worcester, home.probablePitcher ausente del schedule pese a que el
+    boxscore ya tenia el abridor real y el lineup completo publicado). Sin este relleno, el
+    adaptador de MiLB/LMB se queda sin pitcher_id para ese lado y bloquea el analisis entero
+    ("datos insuficientes") aunque las stats del pitcher SI existen en Supabase.
+    COALESCE no pisa un valor ya bueno -- solo rellena huecos."""
+    if away_pitcher_id is None and home_pitcher_id is None:
+        return
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE games_gate_state SET "
+            "away_pitcher_id = COALESCE(away_pitcher_id, $3), "
+            "home_pitcher_id = COALESCE(home_pitcher_id, $4) "
+            "WHERE sport_id=$1 AND game_pk=$2",
+            sport_id, game_pk, away_pitcher_id, home_pitcher_id,
+        )
+
+
 async def notify_missing_odds_once(ctx: PipelineContext, sport_id: int, game_pk: int, gate_col: str, away: str, home: str, minutes_to_start: int) -> None:
     async with ctx.pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -155,7 +178,20 @@ async def detector_tick(ctx: PipelineContext) -> None:
                 # gate llevara horas confirmado). Encontrado en vivo 2026-07-09 tras un 429 de
                 # Jina.ai en LMB.
                 if already_lineup_confirmed is not None:
-                    continue
+                    # El lineup ya se confirmo en un tick anterior -- normalmente no hace falta
+                    # volver a pedir el boxscore (ver comentario arriba), PERO si pipeline 2
+                    # nunca llego a reclamarse (ej. build_game_object fallo por falta de datos,
+                    # caso real: game_pk=815512, 2026-07-11), este game_pk quedaba huerfano para
+                    # siempre -- el mensaje "reintentando en proximos ticks" era falso en ese
+                    # camino. Un SELECT barato (sin boxscore) basta para distinguir "ya publicado
+                    # con exito" de "confirmado pero nunca proceso".
+                    async with ctx.pool.acquire() as conn:
+                        pipeline2_done = await conn.fetchval(
+                            "SELECT 1 FROM pipeline_runs WHERE sport_id=$1 AND game_pk=$2 AND pipeline=2",
+                            sport_id, g.game_pk,
+                        )
+                    if pipeline2_done:
+                        continue
 
                 try:
                     away_lineup = await mlb_api.get_lineup(client, g.game_pk, "away")
@@ -166,6 +202,9 @@ async def detector_tick(ctx: PipelineContext) -> None:
 
                 if away_lineup.published and home_lineup.published:
                     first_time = await mark_lineup_confirmed(ctx.pool, sport_id, g.game_pk)
+                    await fill_pitcher_ids_from_lineup(
+                        ctx.pool, sport_id, g.game_pk, away_lineup.pitcher_id, home_lineup.pitcher_id,
+                    )
                     odds = await get_odds(ctx.pool, sport_id, g.game_pk)
                     if odds is not None:
                         await try_fire_pipeline(ctx, sport_id, g.game_pk, 2, "full_lineup", g.away_team_name, g.home_team_name)
