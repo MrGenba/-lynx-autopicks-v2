@@ -56,21 +56,31 @@ def _check_scrape_token(request: web.Request, cfg: Config) -> bool:
 
 async def _run_scrape_job(job_id: str, cfg: Config, league: str) -> None:
     try:
-        # 2026-07-11: prueba primero odds-api.io (API real, mas rapido y fiable) -- exito real
-        # es "encontro partidos" O "termino sin errores" (liga sin partidos publicados ahora
-        # mismo es valido, no un fallo). Solo cae al scraper de Tor si de verdad no pudo
-        # completar la consulta -- no se borro ese camino, sigue siendo el respaldo real.
+        # 2026-07-11: prueba primero odds-api.io (API real, mas rapido y fiable).
+        # 2026-07-17 CORREGIDO: la condicion de exito original era "encontro partidos O
+        # termino sin errores" -- trataba "0 partidos, 0 errores" como exito terminal, sin caer
+        # nunca al scraper de Tor. Bug real confirmado en vivo: MiLB y LMB devolvian games=[]
+        # errors=[] con el mismo dia teniendo partidos reales de verdad (15 en MiLB, 10 en LMB
+        # segun statsapi.mlb.com/lmb_games) -- odds-api.io simplemente no tenia esos eventos con
+        # cuotas de Bet365/Betano todavia, no es lo mismo que "liga sin partidos hoy". Esto
+        # tambien contradecia el patron ya usado en odds_autofetch.autofetch_single_game(), que
+        # SIEMPRE cae a Tor si "values" viene vacio, sin mirar si hubo error explicito. Ahora el
+        # unico caso de exito rapido es "encontro partidos de verdad"; cualquier resultado vacio
+        # (con o sin errores) cae al scraper de Tor como respaldo, igual que el resto del
+        # proyecto -- el coste es que un dia sin partidos de verdad tarda lo mismo que un scrape
+        # completo de Tor en vez de responder al instante, pero es preferible a devolver "sin
+        # partidos" cuando en realidad los hay.
         if cfg.odds_api_key:
             try:
                 api_result = await get_league_odds(cfg.odds_api_key, league)
             except Exception:
                 logger.exception("get_league_odds fallo de forma inesperada para %s", league)
                 api_result = None
-            if api_result is not None and (api_result["games"] or not api_result["errors"]):
+            if api_result is not None and api_result["games"]:
                 _scrape_jobs[job_id]["status"] = "done"
                 _scrape_jobs[job_id]["result"] = api_result
                 return
-            logger.warning("odds-api.io sin resultado usable para %s, cae al scraper de Tor", league)
+            logger.warning("odds-api.io sin partidos para %s, cae al scraper de Tor", league)
 
         async with _scrape_semaphore:
             result = await run_odds_scraper(
