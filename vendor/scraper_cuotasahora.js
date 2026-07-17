@@ -168,11 +168,17 @@ async function scrapeMatch(league, url, shouldDrill) {
 
     let lines = await getLines(page);
     const header = parseMatchHeader(lines);
-    if (!header || header.isLive) return null;
+    // Diagnostico 2026-07-17 -- investigando por que MiLB/LMB devuelven games=[] sin errores
+    // pese a haber partidos reales: antes esto era "return null" silencioso en los 3 casos
+    // (sin cabecera, en vivo, sin fila de bet365), indistinguible de "url no era un partido de
+    // verdad". Ahora se marca el motivo (__skipped) para poder verlo en errors[] igual que ya
+    // se hacia con "sin ningun enlace de partido en la pagina".
+    if (!header) return { __skipped: "no_header", url, linesSample: lines.slice(0, 12) };
+    if (header.isLive) return { __skipped: "is_live", url, home: header.home_team, away: header.away_team };
 
     const mlRows = parseBookmakerRows(lines, header.tabIdx, Math.min(lines.length, header.tabIdx + 80));
     const ml = pickBookmaker(mlRows, PREFERRED_BOOKMAKER);
-    if (!ml) return null;
+    if (!ml) return { __skipped: "no_bookmaker_rows", url, home: header.home_team, away: header.away_team, mlRowsFound: mlRows.length };
 
     const game = {
       league, status: "scheduled", time: header.time,
@@ -246,44 +252,59 @@ async function fetchLeagueOdds(league, candidateNames) {
 
   const games = [];
   const errors = [];
+  const debugCounts = [];
   for (const path of paths) {
-    const page = await context.newPage();
     let matchLinks = [];
-    try {
-      await page.goto(BASE + path, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await sleep(3000);
-      await dismissOverlays(page);
-      const allLinks = await page.evaluate(() =>
-        Array.from(document.querySelectorAll("a")).map((a) => a.href)
-      );
-      const rawH2hLinks = [...new Set(allLinks.filter((h) => h.includes("/baseball/h2h/")))];
-      matchLinks = rawH2hLinks.filter((link) => matchesUrlSlug(link, candidateNames));
-      // Diagnostico -- encontrado en vivo 2026-07-10: un scrape entero de MLB (sin filtro de
-      // candidateNames) devolvio 0 partidos SIN ningun error (la pagina cargo bien, pero
-      // querySelectorAll no encontro ni un enlace de partido). Sin esto no habia forma de saber
-      // si fue un bloqueo/CAPTCHA del nodo de salida de Tor o un fallo real de extraccion. Se
-      // mira rawH2hLinks (ANTES del filtro de candidateNames), no matchLinks -- 0 tras filtrar
-      // por candidatos es el caso normal en el uso interno de Auto-Picks v2, no un fallo.
-      if (rawH2hLinks.length === 0) {
-        const title = await page.title().catch(() => "?");
-        const bodySnippet = (await page.innerText("body").catch(() => "")).slice(0, 300);
-        errors.push(`sin NINGUN enlace de partido en la pagina (title="${title}", totalLinksEnPagina=${allLinks.length}): ${bodySnippet}`);
+    // Reintento 2026-07-17: un timeout de 30s navegando a la pagina de calendario (visto en
+    // vivo para International League) puede ser solo lentitud puntual del circuito Tor, no un
+    // bloqueo real -- un segundo intento con un circuito ya "caliente" (mismo browser/context,
+    // TCP/TLS de Tor ya establecido) es barato y evita perder la liga entera por una sola
+    // navegacion lenta.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const page = await context.newPage();
+      try {
+        await page.goto(BASE + path, { waitUntil: "domcontentloaded", timeout: 45000 });
+        await sleep(3000);
+        await dismissOverlays(page);
+        const allLinks = await page.evaluate(() =>
+          Array.from(document.querySelectorAll("a")).map((a) => a.href)
+        );
+        const rawH2hLinks = [...new Set(allLinks.filter((h) => h.includes("/baseball/h2h/")))];
+        matchLinks = rawH2hLinks.filter((link) => matchesUrlSlug(link, candidateNames));
+        debugCounts.push({ path, attempt, totalLinks: allLinks.length, rawH2hLinks: rawH2hLinks.length, matchLinks: matchLinks.length });
+        // Diagnostico -- encontrado en vivo 2026-07-10: un scrape entero de MLB (sin filtro de
+        // candidateNames) devolvio 0 partidos SIN ningun error (la pagina cargo bien, pero
+        // querySelectorAll no encontro ni un enlace de partido). Sin esto no habia forma de saber
+        // si fue un bloqueo/CAPTCHA del nodo de salida de Tor o un fallo real de extraccion. Se
+        // mira rawH2hLinks (ANTES del filtro de candidateNames), no matchLinks -- 0 tras filtrar
+        // por candidatos es el caso normal en el uso interno de Auto-Picks v2, no un fallo.
+        if (rawH2hLinks.length === 0) {
+          const title = await page.title().catch(() => "?");
+          const bodySnippet = (await page.innerText("body").catch(() => "")).slice(0, 300);
+          errors.push(`sin NINGUN enlace de partido en la pagina (${path}, title="${title}", totalLinksEnPagina=${allLinks.length}): ${bodySnippet}`);
+        }
+        break; // exito (con o sin enlaces) -- no reintentar
+      } catch (e) {
+        if (attempt === 2) errors.push(`${path}: ${String(e && e.message || e)}`);
+      } finally {
+        await page.close().catch(() => {});
       }
-    } catch (e) {
-      errors.push(String(e && e.message || e));
-    } finally {
-      await page.close().catch(() => {});
     }
 
     const results = await runWithConcurrency(matchLinks, CONCURRENCY, (link) => scrapeMatch(league, link, shouldDrill));
     for (const result of results) {
       if (!result) continue;
-      if (result.error) errors.push(result.error);
-      else games.push(result);
+      if (result.error) { errors.push(result.error); continue; }
+      if (result.__skipped) {
+        const who = result.away && result.home ? ` ${result.away} @ ${result.home}` : "";
+        errors.push(`descartado (${result.__skipped})${who} url=${result.url}` + (result.mlRowsFound != null ? ` mlRowsFound=${result.mlRowsFound}` : "") + (result.linesSample ? ` linesSample=${JSON.stringify(result.linesSample)}` : ""));
+        continue;
+      }
+      games.push(result);
     }
   }
 
-  return { league, games, errors, fetched_at: new Date().toISOString(), exit_geo: exitGeo, browser_timezone: browserTz };
+  return { league, games, errors, fetched_at: new Date().toISOString(), exit_geo: exitGeo, browser_timezone: browserTz, debug_counts: debugCounts };
 }
 
 // Concurrencia baja a proposito -- este contenedor no es una maquina potente y comparte
