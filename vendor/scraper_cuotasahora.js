@@ -85,6 +85,18 @@ async function getLines(page) {
   return body.split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
+// Diagnostico 2026-07-17: en LMB, varios partidos con enlace real daban "no_header" (la pagina
+// solo mostraba el menu de navegacion, sin contenido del partido) o "no_bookmaker_rows" (header
+// si, pero 0 casas listadas) -- un sleep(3000) fijo tras domcontentloaded puede no bastar si el
+// contenido (menos popular que MLB, quizas menos cacheado) tarda mas en pintarse via XHR/JS.
+// Se espera a una senal real -- "OBTENER BONO" es el texto ancla que ya usa parseBookmakerRows
+// para cada fila de casa de apuestas -- en vez de alargar a ciegas el sleep fijo. Si no aparece
+// en el plazo, se sigue igual (puede que de verdad no haya ninguna casa con cuotas todavia para
+// ese partido, eso lo decide luego parseBookmakerRows/mlRowsFound, no esta funcion).
+async function waitForBookmakerRows(page, timeout = 6000) {
+  await page.locator("text=OBTENER BONO").first().waitFor({ timeout }).catch(() => {});
+}
+
 // Hándicap/Totales muestran una lista agregada de líneas cuando el mercado tiene varias
 // (hay que elegir la principal, ver pickMainLine, y clicarla) -- pero cuando solo hay UNA línea
 // ofrecida, el sitio se salta la lista y muestra el desglose por casa directamente tras clicar
@@ -163,8 +175,9 @@ async function scrapeMatch(league, url, shouldDrill) {
   const page = await context.newPage();
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await sleep(3000);
+    await sleep(1500);
     await dismissOverlays(page);
+    await waitForBookmakerRows(page);
 
     let lines = await getLines(page);
     const header = parseMatchHeader(lines);
@@ -264,8 +277,13 @@ async function fetchLeagueOdds(league, candidateNames) {
       const page = await context.newPage();
       try {
         await page.goto(BASE + path, { waitUntil: "domcontentloaded", timeout: 45000 });
-        await sleep(3000);
+        await sleep(1500);
         await dismissOverlays(page);
+        // Diagnostico 2026-07-17: PCL devolvia 0 enlaces /baseball/h2h/ con la pagina cargada
+        // (title correcto, 108 links totales) -- posible lista de partidos pintada via XHR
+        // despues de domcontentloaded. Se espera a que aparezca al menos un enlace real antes
+        // de leerlos, en vez de fiarse de un sleep fijo.
+        await page.locator('a[href*="/baseball/h2h/"]').first().waitFor({ timeout: 6000 }).catch(() => {});
         const allLinks = await page.evaluate(() =>
           Array.from(document.querySelectorAll("a")).map((a) => a.href)
         );
