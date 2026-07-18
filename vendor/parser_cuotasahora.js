@@ -26,9 +26,20 @@ function parseBookmakerRows(lines, startIdx, endIdx) {
   return rows;
 }
 
+// BUG REAL encontrado en vivo 2026-07-18 (reportado por el usuario comparando cuotas reales de
+// bet365 con lo que devolvia el scraper): el "|| rows[0]" hacia fallback silencioso a la
+// PRIMERA casa de la lista cuando bet365 no aparecia entre las filas de un mercado concreto.
+// Para moneyline esto era "solo" enganoso (game.bookmaker si reflejaba la casa real usada, pero
+// nada rio abajo -- ni el nodo n8n "Actualizar Cuotas bet365" -- comprobaba ese campo antes de
+// mostrarlo como si fuera bet365). Para Totales/Handicap era peor: drillIntoMarket() SI
+// calculaba el bookmaker real elegido pero scrapeMatch() lo descartaba sin guardarlo en
+// game.total/game.run_line -- no habia ninguna forma de saber, mirando el resultado, si esas
+// dos cifras eran de verdad de bet365. Esto viola directamente la regla del proyecto ("cuando
+// bet365 no aparezca, no reemplaces su cuota con la de otro bookmaker, no promedies casas").
+// Arreglado quitando el fallback: si bet365 no esta en las filas de ESE mercado concreto,
+// devuelve null (mismo tratamiento que si no hubiera ninguna fila) en vez de otra casa.
 function pickBookmaker(rows, preferred) {
-  if (!rows.length) return null;
-  return rows.find((r) => r.bookmaker.toLowerCase() === preferred.toLowerCase()) || rows[0];
+  return rows.find((r) => r.bookmaker.toLowerCase() === preferred.toLowerCase()) || null;
 }
 
 // Lista agregada (antes de entrar en una línea concreta): cada línea de texto trae la
