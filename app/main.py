@@ -54,38 +54,25 @@ def _check_scrape_token(request: web.Request, cfg: Config) -> bool:
     return bool(cfg.scrape_endpoint_token) and token == cfg.scrape_endpoint_token
 
 
-async def _run_scrape_job(job_id: str, cfg: Config, league: str) -> None:
+async def _run_scrape_job(job_id: str, cfg: Config, league: str, bookmaker: str = "Bet365") -> None:
     try:
-        # 2026-07-11: prueba primero odds-api.io (API real, mas rapido y fiable).
-        # 2026-07-17 CORREGIDO: la condicion de exito original era "encontro partidos O
-        # termino sin errores" -- trataba "0 partidos, 0 errores" como exito terminal, sin caer
-        # nunca al scraper de Tor. Bug real confirmado en vivo: MiLB y LMB devolvian games=[]
-        # errors=[] con el mismo dia teniendo partidos reales de verdad (15 en MiLB, 10 en LMB
-        # segun statsapi.mlb.com/lmb_games) -- odds-api.io simplemente no tenia esos eventos con
-        # cuotas de Bet365/Betano todavia, no es lo mismo que "liga sin partidos hoy". Esto
-        # tambien contradecia el patron ya usado en odds_autofetch.autofetch_single_game(), que
-        # SIEMPRE cae a Tor si "values" viene vacio, sin mirar si hubo error explicito. Ahora el
-        # unico caso de exito rapido es "encontro partidos de verdad"; cualquier resultado vacio
-        # (con o sin errores) cae al scraper de Tor como respaldo, igual que el resto del
-        # proyecto -- el coste es que un dia sin partidos de verdad tarda lo mismo que un scrape
-        # completo de Tor en vez de responder al instante, pero es preferible a devolver "sin
-        # partidos" cuando en realidad los hay.
-        if cfg.odds_api_key:
-            try:
-                api_result = await get_league_odds(cfg.odds_api_key, league)
-            except Exception:
-                logger.exception("get_league_odds fallo de forma inesperada para %s", league)
-                api_result = None
-            if api_result is not None and api_result["games"]:
+        # 2026-07-18: odds-api.io tiene Bet365/Betano fijos en el plan (ver odds_api_client.py,
+        # BOOKMAKERS no es configurable por query) -- para cualquier casa que no sea Bet365 (ej.
+        # Winamax) la via rapida no puede servir de nada y hay que ir directo al scraper de Tor.
+        # No probarla igualmente "por si acaso" -- eso es justo el patron de mezcla de casas que
+        # se corrigio en pickBookmaker() el 2026-07-18 (nunca sustituir la casa pedida por otra).
+        if bookmaker.lower() == "bet365":
+            api_result = await _try_odds_api(cfg, league)
+            if api_result is not None:
                 _scrape_jobs[job_id]["status"] = "done"
                 _scrape_jobs[job_id]["result"] = api_result
                 return
-            logger.warning("odds-api.io sin partidos para %s, cae al scraper de Tor", league)
 
         async with _scrape_semaphore:
             result = await run_odds_scraper(
                 cfg.node_bin, cfg.vendor_dir, league,
                 cfg.proxy_server, cfg.proxy_username, cfg.proxy_password,
+                bookmaker=bookmaker,
             )
         _scrape_jobs[job_id]["status"] = "done"
         _scrape_jobs[job_id]["result"] = result
@@ -96,6 +83,30 @@ async def _run_scrape_job(job_id: str, cfg: Config, league: str) -> None:
         logger.exception("_run_scrape_job fallo de forma inesperada (job_id=%s)", job_id)
         _scrape_jobs[job_id]["status"] = "error"
         _scrape_jobs[job_id]["error"] = "error interno inesperado"
+
+
+async def _try_odds_api(cfg: Config, league: str) -> dict | None:
+    """Solo se llama cuando el bookmaker pedido es Bet365 (ver _run_scrape_job) -- odds-api.io
+    tiene Bet365/Betano fijos en el plan, nada mas.
+    2026-07-17 CORREGIDO: la condicion de exito original era "encontro partidos O termino sin
+    errores" -- trataba "0 partidos, 0 errores" como exito terminal, sin caer nunca al scraper
+    de Tor. Bug real confirmado en vivo: MiLB y LMB devolvian games=[] errors=[] con el mismo
+    dia teniendo partidos reales de verdad (15 en MiLB, 10 en LMB segun
+    statsapi.mlb.com/lmb_games) -- odds-api.io simplemente no tenia esos eventos con cuotas de
+    Bet365/Betano todavia, no es lo mismo que "liga sin partidos hoy". Ahora el unico caso de
+    exito rapido es "encontro partidos de verdad"; cualquier resultado vacio (con o sin errores)
+    cae al scraper de Tor como respaldo."""
+    if not cfg.odds_api_key:
+        return None
+    try:
+        api_result = await get_league_odds(cfg.odds_api_key, league)
+    except Exception:
+        logger.exception("get_league_odds fallo de forma inesperada para %s", league)
+        return None
+    if api_result is not None and api_result["games"]:
+        return api_result
+    logger.warning("odds-api.io sin partidos para %s, cae al scraper de Tor", league)
+    return None
 
 
 async def scrape_odds_start(request: web.Request) -> web.Response:
@@ -116,10 +127,18 @@ async def scrape_odds_start(request: web.Request) -> web.Response:
     if league not in ("MLB", "MiLB", "LMB"):
         return web.json_response({"error": "parametro 'league' debe ser MLB, MiLB o LMB"}, status=400)
 
+    # 2026-07-18: 'bookmaker' opcional, default Bet365 por compatibilidad con quien ya llamaba
+    # sin este parametro. Lista blanca explicita en vez de aceptar cualquier texto -- un typo
+    # aqui (ej. "Winamax") buscaria una casa que nunca aparece en cuotasahora.com y devolveria
+    # partidos vacios sin ningun aviso claro de por que.
+    bookmaker = request.query.get("bookmaker", "Bet365")
+    if bookmaker.lower() not in ("bet365", "winamax"):
+        return web.json_response({"error": "parametro 'bookmaker' debe ser Bet365 o Winamax"}, status=400)
+
     _prune_old_jobs()
     job_id = str(uuid.uuid4())
     _scrape_jobs[job_id] = {"status": "running", "created_at": dt.datetime.now(dt.timezone.utc)}
-    asyncio.create_task(_run_scrape_job(job_id, cfg, league))
+    asyncio.create_task(_run_scrape_job(job_id, cfg, league, bookmaker))
     return web.json_response({"job_id": job_id, "status": "running"})
 
 

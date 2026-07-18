@@ -47,6 +47,7 @@ async def run_odds_scraper(
     proxy_username: Optional[str] = None,
     proxy_password: Optional[str] = None,
     candidate_names: Optional[list[str]] = None,
+    bookmaker: str = "Bet365",
     timeout: float = 480.0,
 ) -> dict:
     """Scrapear una liga entera puede tardar varios minutos (varios partidos, cada uno con 2-3
@@ -68,7 +69,7 @@ async def run_odds_scraper(
         node_bin, script, league,
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
     )
-    stdin_payload = json.dumps({"candidateNames": candidate_names or []}).encode("utf-8")
+    stdin_payload = json.dumps({"candidateNames": candidate_names or [], "bookmaker": bookmaker}).encode("utf-8")
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(stdin_payload), timeout=timeout)
     except asyncio.TimeoutError:

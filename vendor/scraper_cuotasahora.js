@@ -9,7 +9,11 @@
 const { chromium } = require("patchright");
 const { parseBookmakerRows, pickBookmaker, parseAggregateLines, pickMainLine, parseMatchHeader } = require("./parser_cuotasahora");
 
-const PREFERRED_BOOKMAKER = "bet365";
+// 2026-07-18: se soporta pedir una casa distinta de bet365 (ej. Winamax) via el parametro
+// "bookmaker" de fetchLeagueOdds() -- comandos separados en Telegram ("cuotas mlb bet365" vs
+// "cuotas mlb winamax"), nunca mezclados ni con fallback entre ellas (ver pickBookmaker() en
+// parser_cuotasahora.js, ya no sustituye la casa pedida por otra si no la encuentra).
+const DEFAULT_BOOKMAKER = "bet365";
 
 // El MiLB AAA real se reparte en dos ligas (International League / Pacific Coast League) --
 // hay que combinar ambas para tener cobertura completa, a diferencia de bet365 donde era una
@@ -101,7 +105,7 @@ async function waitForBookmakerRows(page, timeout = 6000) {
 // (hay que elegir la principal, ver pickMainLine, y clicarla) -- pero cuando solo hay UNA línea
 // ofrecida, el sitio se salta la lista y muestra el desglose por casa directamente tras clicar
 // la pestaña.
-async function drillIntoMarket(page, tabLabel, opts) {
+async function drillIntoMarket(page, tabLabel, opts, bookmaker) {
   const tabLi = page.locator('li.odds-item:has-text("' + tabLabel + '")').first();
   if (!(await tabLi.isVisible({ timeout: 2000 }).catch(() => false))) return null;
   await tabLi.click({ force: true, timeout: 8000 });
@@ -128,7 +132,7 @@ async function drillIntoMarket(page, tabLabel, opts) {
   const drillIdx = lines.findIndex((l) => l === "Casas de apuestas");
   if (drillIdx === -1) return null;
   const rows = parseBookmakerRows(lines, drillIdx, Math.min(lines.length, drillIdx + 60));
-  const picked = pickBookmaker(rows, PREFERRED_BOOKMAKER);
+  const picked = pickBookmaker(rows, bookmaker);
   if (!picked || picked.line == null) return null;
   return { line: picked.line, odds1: picked.odds1, odds2: picked.odds2, bookmaker: picked.bookmaker };
 }
@@ -171,7 +175,7 @@ function matchesUrlSlug(url, candidateNames) {
   return names.some((n) => looseMatch(n, slugText));
 }
 
-async function scrapeMatch(league, url, shouldDrill) {
+async function scrapeMatch(league, url, shouldDrill, bookmaker) {
   const page = await context.newPage();
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
@@ -190,7 +194,7 @@ async function scrapeMatch(league, url, shouldDrill) {
     if (header.isLive) return { __skipped: "is_live", url, home: header.home_team, away: header.away_team };
 
     const mlRows = parseBookmakerRows(lines, header.tabIdx, Math.min(lines.length, header.tabIdx + 80));
-    const ml = pickBookmaker(mlRows, PREFERRED_BOOKMAKER);
+    const ml = pickBookmaker(mlRows, bookmaker);
     if (!ml) return { __skipped: "no_bookmaker_rows", url, home: header.home_team, away: header.away_team, mlRowsFound: mlRows.length };
 
     const game = {
@@ -201,8 +205,8 @@ async function scrapeMatch(league, url, shouldDrill) {
     };
 
     if (shouldDrill(header.away_team, header.home_team)) {
-      const total = await drillIntoMarket(page, "Más/Menos de", {});
-      const hc = await drillIntoMarket(page, "Hándicap asiático", { preferAbs: 1.5 });
+      const total = await drillIntoMarket(page, "Más/Menos de", {}, bookmaker);
+      const hc = await drillIntoMarket(page, "Hándicap asiático", { preferAbs: 1.5 }, bookmaker);
       if (total) game.total = { line: Math.abs(total.line), over_odds: total.odds1, under_odds: total.odds2 };
       if (hc) game.run_line = { home: { line: hc.line, odds: hc.odds1 }, away: { line: -hc.line, odds: hc.odds2 } };
     }
@@ -255,7 +259,8 @@ async function getExitGeo() {
   }
 }
 
-async function fetchLeagueOdds(league, candidateNames) {
+async function fetchLeagueOdds(league, candidateNames, bookmaker) {
+  bookmaker = bookmaker || DEFAULT_BOOKMAKER;
   const paths = LEAGUE_PATHS[league];
   if (!paths) throw new Error("Liga desconocida: " + league);
   await ensureBrowser();
@@ -309,7 +314,7 @@ async function fetchLeagueOdds(league, candidateNames) {
       }
     }
 
-    const results = await runWithConcurrency(matchLinks, CONCURRENCY, (link) => scrapeMatch(league, link, shouldDrill));
+    const results = await runWithConcurrency(matchLinks, CONCURRENCY, (link) => scrapeMatch(league, link, shouldDrill, bookmaker));
     for (const result of results) {
       if (!result) continue;
       if (result.error) { errors.push(result.error); continue; }
@@ -322,7 +327,7 @@ async function fetchLeagueOdds(league, candidateNames) {
     }
   }
 
-  return { league, games, errors, fetched_at: new Date().toISOString(), exit_geo: exitGeo, browser_timezone: browserTz, debug_counts: debugCounts };
+  return { league, bookmaker, games, errors, fetched_at: new Date().toISOString(), exit_geo: exitGeo, browser_timezone: browserTz, debug_counts: debugCounts };
 }
 
 // Concurrencia baja a proposito -- este contenedor no es una maquina potente y comparte
