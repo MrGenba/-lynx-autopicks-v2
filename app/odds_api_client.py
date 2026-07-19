@@ -1,10 +1,22 @@
 """Cliente de odds-api.io (2026-07-11) -- fuente de cuotas primaria nueva, API real (no
 scraping). Se probo en vivo: cubre las 3 ligas del proyecto con nombres de liga exactos, y el
-plan gratuito de esta cuenta trae Bet365 + Betano ya fijados (Bet365 es la casa con la que esta
-calibrado todo el proyecto). Si no encuentra el partido o ninguna de las 2 casas tiene cuotas
-todavia, devuelve None -- el llamador (odds_autofetch.py) cae al scraper de Tor como respaldo,
+plan gratuito de esta cuenta trae Bet365 + Betano ya fijados en la LLAMADA a la API (no se
+puede pedir menos), pero eso no significa que haya que aceptar cualquiera de las dos como
+respuesta valida. Si no encuentra el partido o la casa PEDIDA no tiene cuotas todavia, devuelve
+None -- el llamador (odds_autofetch.py o /scrape-odds/*) cae al scraper de Tor como respaldo,
 no se borra ese camino.
-"""
+
+2026-07-20 CORREGIDO: hasta ahora, si Bet365 no tenia mercados para un evento concreto, el
+codigo caia en silencio a Betano -- devolvia los valores igualmente (con bookmaker="Betano"
+guardado correctamente puertas adentro), pero nada rio abajo (el nodo n8n "Actualizar Cuotas
+bet365") comprobaba ese campo antes de mostrarlo bajo la cabecera "Bet365" para TODOS los
+partidos de la lista. Bug real reportado en vivo por el usuario comparando Baltimore Orioles @
+Houston Astros: las cuotas mostradas (RL 2.75/1.47, Tot 1.95/1.86, ML 2.00/1.83) no coincidian
+con bet365 real (RL 2.65/1.45, Tot 1.91/1.82, ML 2.01/1.76) -- consistente con Betano, no con
+cuotas movidas por el tiempo. Misma familia de bug que el arreglado el 2026-07-18 en
+pickBookmaker() (scraper de Tor), aqui sin tocar hasta ahora. Ahora get_odds_for_game() y
+get_league_odds() aceptan un parametro bookmaker explicito y SOLO devuelven esa casa -- nunca
+sustituyen por otra en silencio, igual que ya se exige en el scraper de Tor."""
 import datetime as dt
 import logging
 from typing import Optional
@@ -157,9 +169,11 @@ def _values_from_markets(markets: list[dict]) -> dict:
 
 async def get_odds_for_game(
     api_key: str, sport_id: int, away_team_name: str, home_team_name: str, game_dt: dt.datetime,
+    bookmaker: str = "Bet365",
 ) -> Optional[dict]:
-    """None si no se encuentra el partido, o si ninguna de las 2 casas fijadas (Bet365/Betano)
-    tiene cuotas todavia -- el llamador cae al scraper de Tor en ese caso."""
+    """None si no se encuentra el partido, o si la casa PEDIDA (bookmaker) no tiene cuotas
+    todavia -- el llamador cae al scraper de Tor en ese caso. Nunca sustituye por la otra casa
+    del plan (Betano) en silencio."""
     async with httpx.AsyncClient() as client:
         event_id = await _find_event_id(client, api_key, sport_id, away_team_name, home_team_name, game_dt)
         if event_id is None:
@@ -178,15 +192,12 @@ async def get_odds_for_game(
             return None
 
     bookmakers = data.get("bookmakers") or {}
-    # Bet365 primero (casa con la que esta calibrado el proyecto), Betano como respaldo --
-    # mismo patron PREFERRED_BOOKMAKER que ya usaba el scraper de cuotasahora.
-    for name in ("Bet365", "Betano"):
-        markets = bookmakers.get(name)
-        if not markets:
-            continue
-        values = _values_from_markets(markets)
-        if any(v is not None for v in values.values()):
-            return values
+    markets = bookmakers.get(bookmaker)
+    if not markets:
+        return None
+    values = _values_from_markets(markets)
+    if any(v is not None for v in values.values()):
+        return values
     return None
 
 
@@ -216,10 +227,13 @@ def _values_to_scraper_shape(values: dict, away_team: str, home_team: str, event
     return game
 
 
-async def get_league_odds(api_key: str, league_key: str) -> dict:
+async def get_league_odds(api_key: str, league_key: str, bookmaker: str = "Bet365") -> dict:
     """Equivalente a fetchLeagueOdds() del scraper de Tor, pero via odds-api.io -- mismo shape
     de vuelta ({league, games, errors, fetched_at}) para que /scrape-odds/* (main.py) pueda
-    usar esto como reemplazo directo sin que produccion (n8n) note la diferencia.
+    usar esto como reemplazo directo sin que produccion (n8n) note la diferencia. Solo se llama
+    con bookmaker="Bet365" en la practica (ver main.py:_run_scrape_job, que salta esta via
+    rapida por completo si se pide otra casa -- odds-api.io no tiene Winamax en el plan) pero se
+    deja parametrizado por si el plan cambia.
 
     Bug real encontrado en vivo: sin filtro de fecha, /events?status=pending devuelve TODOS los
     partidos futuros de la liga (semanas/meses vista, ~950 para MLB) -- una llamada a /odds por
@@ -265,15 +279,13 @@ async def get_league_odds(api_key: str, league_key: str) -> dict:
                 continue
 
             bookmakers = odata.get("bookmakers") or {}
-            for name in ("Bet365", "Betano"):
-                markets = bookmakers.get(name)
-                if not markets:
-                    continue
-                values = _values_from_markets(markets)
-                if any(v is not None for v in values.values()):
-                    game = _values_to_scraper_shape(values, ev.get("away", ""), ev.get("home", ""), ev.get("date", ""), name)
-                    game["league"] = league_key
-                    games.append(game)
-                break
+            markets = bookmakers.get(bookmaker)
+            if not markets:
+                continue  # esta casa no tiene cuotas para este partido todavia -- se omite, nunca se sustituye por otra
+            values = _values_from_markets(markets)
+            if any(v is not None for v in values.values()):
+                game = _values_to_scraper_shape(values, ev.get("away", ""), ev.get("home", ""), ev.get("date", ""), bookmaker)
+                game["league"] = league_key
+                games.append(game)
 
     return {"league": league_key, "games": games, "errors": errors, "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat()}

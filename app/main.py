@@ -99,7 +99,7 @@ async def _try_odds_api(cfg: Config, league: str) -> dict | None:
     if not cfg.odds_api_key:
         return None
     try:
-        api_result = await get_league_odds(cfg.odds_api_key, league)
+        api_result = await get_league_odds(cfg.odds_api_key, league, bookmaker="Bet365")
     except Exception:
         logger.exception("get_league_odds fallo de forma inesperada para %s", league)
         return None
