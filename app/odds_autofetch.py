@@ -28,7 +28,6 @@ import asyncpg
 from app import aliases
 from app.message_handler import _check_gates_and_fire, _store_odds
 from app.node_bridge import NodeBridgeError, run_odds_scraper
-from app.odds_api_client import get_odds_for_game
 from app.overround import check_overround
 from app.pipelines import LEAGUE_KEY, LEAGUE_LABEL, PipelineContext
 
@@ -237,23 +236,15 @@ async def autofetch_single_game(
     obligatorio -- sin el, _scrape_and_apply no puede descartar un partido ya jugado si el
     scrape (mas lento por Tor) termina tarde.
 
-    2026-07-11: prueba primero odds-api.io (API real, ver app/odds_api_client.py) -- mas rapido
-    y fiable que el scraper de Tor, sin riesgo de bloqueo. Si no encuentra el partido o ninguna
-    de las 2 casas fijadas (Bet365/Betano) tiene cuotas todavia, cae al scraper de Tor como
-    respaldo (comportamiento identico a antes de esto)."""
-    if ctx.odds_api_key:
-        try:
-            values = await get_odds_for_game(ctx.odds_api_key, sport_id, away_team_name, home_team_name, game_datetime_utc)
-        except Exception:
-            logger.exception("odds_api_client fallo para sport_id=%s game_pk=%s", sport_id, game_pk)
-            values = None
-        if values:
-            await _store_odds(ctx.pool, sport_id, game_pk, values, chat_id=0, message_id=0)
-            await _check_gates_and_fire(ctx, sport_id, game_pk, away_team_name, home_team_name)
-            logger.info("autofetch_single_game: odds-api.io encontro cuotas para game_pk=%s", game_pk)
-            return True
-        logger.info("autofetch_single_game: odds-api.io sin cuotas para game_pk=%s, cae al scraper de Tor", game_pk)
-
+    2026-07-20 DESACTIVADO el intento previo por odds-api.io (activo desde 2026-07-11): el
+    usuario comparo en vivo cuotas reales de bet365.com contra lo que devolvia odds-api.io
+    etiquetado como "Bet365" (dos partidos MLB, mismo dia) y no coincidian -- no era un bug de
+    mezcla de casas (eso se corrigio aparte el mismo dia), sino que el propio feed "Bet365" de
+    odds-api.io no refleja bet365.com en vivo con precision suficiente. Esta funcion alimenta
+    picks reales (_check_gates_and_fire), asi que la precision importa mas aqui que en el
+    comando manual de Telegram -- se salta odds-api.io por completo y se va directo al scraper
+    de Tor (mas lento, pero es la fuente que si se verifico que coincide con bet365.com real).
+    get_odds_for_game sigue existiendo en odds_api_client.py por si se recupera con otra fuente."""
     candidate = aliases.CandidateGame(
         sport_id=sport_id, game_pk=game_pk, away_team_id=None, home_team_id=None,
         away_team_name=away_team_name, home_team_name=home_team_name, game_datetime_utc=game_datetime_utc,

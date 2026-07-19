@@ -56,17 +56,18 @@ def _check_scrape_token(request: web.Request, cfg: Config) -> bool:
 
 async def _run_scrape_job(job_id: str, cfg: Config, league: str, bookmaker: str = "Bet365") -> None:
     try:
-        # 2026-07-18: odds-api.io tiene Bet365/Betano fijos en el plan (ver odds_api_client.py,
-        # BOOKMAKERS no es configurable por query) -- para cualquier casa que no sea Bet365 (ej.
-        # Winamax) la via rapida no puede servir de nada y hay que ir directo al scraper de Tor.
-        # No probarla igualmente "por si acaso" -- eso es justo el patron de mezcla de casas que
-        # se corrigio en pickBookmaker() el 2026-07-18 (nunca sustituir la casa pedida por otra).
-        if bookmaker.lower() == "bet365":
-            api_result = await _try_odds_api(cfg, league)
-            if api_result is not None:
-                _scrape_jobs[job_id]["status"] = "done"
-                _scrape_jobs[job_id]["result"] = api_result
-                return
+        # 2026-07-20 DESACTIVADO: odds-api.io ya no se usa como via rapida para Bet365. Aunque
+        # el fix del mismo dia en odds_api_client.py corrigio la mezcla de casas (Bet365 vs
+        # Betano), el usuario comparo en vivo dos partidos reales (Baltimore Orioles @ Houston
+        # Astros, Cincinnati Reds @ Colorado Rockies) contra bet365.com de verdad -- las cuotas
+        # de odds-api.io etiquetadas honestamente como "Bet365" seguian sin coincidir (RL/Tot/ML
+        # ligeramente distintos en los dos casos, de forma consistente). No es un bug de mezcla
+        # de casas -- es que el propio feed "Bet365" de odds-api.io no refleja bet365.com en
+        # vivo con precision suficiente. El scraper de Tor (lee cuotasahora.com directamente) SI
+        # se verifico varias veces el mismo dia que coincide. Decision del usuario: siempre Tor
+        # para Bet365, nunca odds-api.io -- mas lento (minutos en vez de segundos) pero fiable.
+        # _try_odds_api() se deja sin borrar (queda sin llamar desde aqui) por si se quiere
+        # recuperar la via rapida en el futuro con una fuente distinta.
 
         async with _scrape_semaphore:
             result = await run_odds_scraper(
