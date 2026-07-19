@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 from pathlib import Path
 from typing import Optional
 
@@ -15,18 +16,39 @@ class NodeBridgeError(Exception):
     pass
 
 
+def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """2026-07-19: diagnosticado en vivo -- pedir Winamax para MLB (sin cobertura en la mayoria
+    de partidos, perfora mucho antes de rendirse) agoto el timeout de run_odds_scraper() y dejo
+    el endpoint /scrape-odds/status devolviendo 502 varios minutos (mientras /healthz seguia
+    respondiendo 200 todo el rato -- no era el contenedor entero caido). proc.kill() solo mata
+    el proceso Node inmediato; el Chromium que Playwright lanza por debajo queda huerfano
+    (Node nunca llega a ejecutar su propio cleanup/shutdown() porque SIGKILL no da margen para
+    manejadores) y sigue consumiendo CPU/memoria, saturando el event loop del contenedor
+    compartido. Con start_new_session=True (ver create_subprocess_exec mas abajo) todo el
+    arbol de procesos del subproceso queda en su propio grupo -- se puede matar entero de una
+    vez con os.killpg en vez de solo el proceso Node."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        pass  # ya no existe (raro pero no es un fallo real)
+    except Exception:
+        logger.exception("no se pudo matar el grupo de procesos de pid=%s, fallback a proc.kill()", proc.pid)
+        proc.kill()
+
+
 async def run_quant(node_bin: str, vendor_dir: str, league: str, payload: dict, timeout: float = 15.0) -> dict:
     script = str(Path(vendor_dir) / "run_quant.js")
     proc = await asyncio.create_subprocess_exec(
         node_bin, script, league,
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
     try:
         stdout, stderr = await asyncio.wait_for(
             proc.communicate(json.dumps(payload).encode("utf-8")), timeout=timeout
         )
     except asyncio.TimeoutError:
-        proc.kill()
+        _kill_process_tree(proc)
         raise NodeBridgeError(f"run_quant.js ({league}) supero el timeout de {timeout}s")
 
     if proc.returncode != 0:
@@ -68,12 +90,13 @@ async def run_odds_scraper(
     proc = await asyncio.create_subprocess_exec(
         node_bin, script, league,
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
+        start_new_session=True,
     )
     stdin_payload = json.dumps({"candidateNames": candidate_names or [], "bookmaker": bookmaker}).encode("utf-8")
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(stdin_payload), timeout=timeout)
     except asyncio.TimeoutError:
-        proc.kill()
+        _kill_process_tree(proc)
         raise NodeBridgeError(f"run_odds_scraper.js ({league}) supero el timeout de {timeout}s")
 
     if proc.returncode != 0:
