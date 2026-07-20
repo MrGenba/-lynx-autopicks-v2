@@ -97,7 +97,10 @@ async function getLines(page) {
 // para cada fila de casa de apuestas -- en vez de alargar a ciegas el sleep fijo. Si no aparece
 // en el plazo, se sigue igual (puede que de verdad no haya ninguna casa con cuotas todavia para
 // ese partido, eso lo decide luego parseBookmakerRows/mlRowsFound, no esta funcion).
-async function waitForBookmakerRows(page, timeout = 6000) {
+async function waitForBookmakerRows(page, timeout = 15000) {
+  // Subido de 6s a 15s el 2026-07-20: confirmado en vivo que un dia de Tor mas lento de lo
+  // habitual (mismo sintoma "no_header" al 100% de los partidos, en MiLB Y LMB el mismo dia,
+  // asi que no era falta de datos reales) necesitaba mas margen que el 6s original.
   await page.locator("text=OBTENER BONO").first().waitFor({ timeout }).catch(() => {});
 }
 
@@ -287,8 +290,9 @@ async function fetchLeagueOdds(league, candidateNames, bookmaker) {
         // Diagnostico 2026-07-17: PCL devolvia 0 enlaces /baseball/h2h/ con la pagina cargada
         // (title correcto, 108 links totales) -- posible lista de partidos pintada via XHR
         // despues de domcontentloaded. Se espera a que aparezca al menos un enlace real antes
-        // de leerlos, en vez de fiarse de un sleep fijo.
-        await page.locator('a[href*="/baseball/h2h/"]').first().waitFor({ timeout: 6000 }).catch(() => {});
+        // de leerlos, en vez de fiarse de un sleep fijo. Subido de 6s a 15s el 2026-07-20 (ver
+        // waitForBookmakerRows) por el mismo motivo: un dia de Tor lento necesita mas margen.
+        await page.locator('a[href*="/baseball/h2h/"]').first().waitFor({ timeout: 15000 }).catch(() => {});
         const allLinks = await page.evaluate(() =>
           Array.from(document.querySelectorAll("a")).map((a) => a.href)
         );
