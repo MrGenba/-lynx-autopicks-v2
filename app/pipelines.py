@@ -11,8 +11,10 @@ restriccion UNIQUE de la base de datos, no en la logica de la aplicacion.
 import datetime as dt
 import json
 import logging
+import math
 from dataclasses import dataclass
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import asyncpg
 import httpx
@@ -120,22 +122,362 @@ def _lineup_incomplete(sport_id: int, pipeline: int, game_obj: dict) -> bool:
     return game_obj.get("lineup_factor_away") is None or game_obj.get("lineup_factor_home") is None
 
 
-def format_pick_message(league_label: str, pipeline: int, away_team: str, home_team: str, best_pick: dict, data_score: float, lineup_incomplete: bool = False) -> str:
-    market = best_pick.get("market")
-    pick_side = best_pick.get("pick_side")
-    odds = best_pick.get("odds")
-    edge = best_pick.get("edge")
-    prob = best_pick.get("prob_model") or best_pick.get("prob_estimated")
-    pipeline_label = "abridores" if pipeline == 1 else "lineup completo"
+_LEAGUE_HEADER = {
+    "MLB": "⚾️ *MLB* 🇺🇸",
+    "MiLB": "⚾️ *MiLB* 🇺🇸",
+    "LMB": "⚾️ *LMB* 🇲🇽",
+}
+
+
+def _n(v) -> Optional[float]:
+    if v is None or v == "":
+        return None
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return None
+    return n if math.isfinite(n) else None
+
+
+def _pct(v, d: int = 1) -> str:
+    n = _n(v)
+    return "N/A" if n is None else f"{n * 100:.{d}f} %"
+
+
+def _dec2(v) -> Optional[float]:
+    n = _n(v)
+    return None if n is None else round(n, 2)
+
+
+def _to_odds_decimal(v) -> Optional[float]:
+    o = _n(v)
+    if o is None or o == 0:
+        return None
+    if 1.01 <= o <= 15:
+        return _dec2(o)
+    return _dec2(o / 100 + 1 if o > 0 else 100 / abs(o) + 1)
+
+
+def _min_odds_for_target(prob_tip, push_prob=0, target: float = 0.18) -> Optional[float]:
+    p = _n(prob_tip)
+    pp = _n(push_prob) or 0
+    if p is None or p <= 0:
+        return None
+    return _dec2((1 + target - pp) / p)
+
+
+def _market_tag(c: dict) -> str:
+    m = str(c.get("market") or "").upper()
+    if m == "ML":
+        return "ML"
+    if m in ("HC", "HC_AWAY", "HC_HOME"):
+        return "HC"
+    if m in ("OVER", "UNDER", "OU"):
+        return "TOTAL"
+    return m or "N/A"
+
+
+def _pick_side_team(c: dict, away: str, home: str) -> str:
+    side = str(c.get("pick_side") or "").upper()
+    if c.get("pick_team"):
+        return c["pick_team"]
+    if "AWAY" in side:
+        return away
+    if "HOME" in side:
+        return home
+    return away
+
+
+def _handicap_line(c: dict, game_obj: dict, away: str, home: str) -> Optional[float]:
+    side = str(c.get("pick_side") or "").upper()
+    away_ln = _n(game_obj.get("away_hc_line") if game_obj.get("away_hc_line") is not None else game_obj.get("away_hc_val"))
+    home_ln = _n(game_obj.get("home_hc_line") if game_obj.get("home_hc_line") is not None else (game_obj.get("home_hc_val") if game_obj.get("home_hc_val") is not None else (-away_ln if away_ln is not None else None)))
+    side_line = _n(c.get("hc_value"))
+    if side_line is not None:
+        return side_line
+    if "AWAY" in side:
+        return away_ln
+    if "HOME" in side:
+        return home_ln
+    if c.get("pick_team") == away:
+        return away_ln
+    if c.get("pick_team") == home:
+        return home_ln
+    return None
+
+
+def _total_line(c: dict, game_obj: dict) -> Optional[float]:
+    return _n(c.get("total_line") if c.get("total_line") is not None else game_obj.get("total_line"))
+
+
+def _pick_label(c: dict, game_obj: dict, away: str, home: str) -> str:
+    m = _market_tag(c)
+    team = _pick_side_team(c, away, home)
+    if m == "ML":
+        return f"{team} ML"
+    if m == "HC":
+        ln = _handicap_line(c, game_obj, away, home)
+        ln_txt = "N/A" if ln is None else (f"+{_js_num_str(ln)}" if ln >= 0 else _js_num_str(ln))
+        return f"{team} Handicap {ln_txt}"
+    if m == "TOTAL":
+        side = str(c.get("pick_side") or "").upper()
+        tl = _total_line(c, game_obj)
+        tl_txt = _js_num_str(tl)
+        if str(c.get("market") or "").upper() == "UNDER" or "UNDER" in side:
+            return f"Under {tl_txt}"
+        return f"Over {tl_txt}"
+    return team
+
+
+def _js_num_str(v) -> str:
+    """JS interpola numeros sin ceros decimales sobrantes (7 en vez de 7.0, 7.5 se queda 7.5) --
+    replica ese comportamiento para que "Over 7"/"Handicap +1.5" salgan igual que en produccion,
+    en vez del 7.0/1.5 que da un f-string de Python sobre un float sin mas."""
+    if v is None:
+        return "N/A"
+    n = _n(v)
+    if n is None:
+        return str(v)
+    return str(int(n)) if n == int(n) else str(n)
+
+
+def _pf100(v) -> Optional[int]:
+    n = _n(v)
+    if n is None:
+        return None
+    return round(n * 100) if n <= 2 else round(n)
+
+
+def _build_metrics(game_obj: dict, result: dict, lead: dict) -> str:
+    parts = []
+    away_exp = _n(result.get("away_runs") if result.get("away_runs") is not None else result.get("away_mu"))
+    home_exp = _n(result.get("home_runs") if result.get("home_runs") is not None else result.get("home_mu"))
+    if away_exp is not None and home_exp is not None:
+        parts.append(f"score exp {away_exp:.2f}-{home_exp:.2f}")
+    sp_ax = _n(game_obj.get("away_p_opp_xwoba") if game_obj.get("away_p_opp_xwoba") is not None else game_obj.get("away_p_xwoba"))
+    sp_hx = _n(game_obj.get("home_p_opp_xwoba") if game_obj.get("home_p_opp_xwoba") is not None else game_obj.get("home_p_xwoba"))
+    if sp_ax is not None and sp_hx is not None:
+        parts.append(f"SP xwOBA {sp_ax:.3f} vs {sp_hx:.3f}")
+    bp_af = _n(game_obj.get("away_bullpen_fip"))
+    bp_hf = _n(game_obj.get("home_bullpen_fip"))
+    if bp_af is not None and bp_hf is not None:
+        parts.append(f"bullpen FIP {bp_af:.2f} vs {bp_hf:.2f}")
+    lx_a = _n(game_obj.get("away_team_xwoba") if game_obj.get("away_team_xwoba") is not None else game_obj.get("away_team_woba"))
+    lx_h = _n(game_obj.get("home_team_xwoba") if game_obj.get("home_team_xwoba") is not None else game_obj.get("home_team_woba"))
+    lx_label = "xwOBA" if (_n(game_obj.get("away_team_xwoba")) is not None or _n(game_obj.get("home_team_xwoba")) is not None) else "wOBA"
+    if lx_a is not None and lx_h is not None:
+        parts.append(f"lineup {lx_label} {lx_a:.3f} vs {lx_h:.3f}")
+    t = _n(game_obj.get("temperature_2m"))
+    tail = _n(game_obj.get("wind_tailwind"))
+    if t is not None or tail is not None:
+        env_t = f"{t:.0f}C" if t is not None else "?"
+        env_w = f"{tail:.1f}kmh" if tail is not None else "?"
+        parts.append(f"env {env_t} / tail {env_w}")
+    return " | ".join(parts) if parts else "N/A"
+
+
+def _date_only(v) -> Optional[str]:
+    if not v:
+        return None
+    s = str(v)
+    return s[:10] if len(s) >= 10 and s[4] == "-" and s[7] == "-" else None
+
+
+def _date_only_to_es(date_only: Optional[str]) -> Optional[str]:
+    if not date_only:
+        return None
+    parts = date_only.split("-")
+    if len(parts) != 3:
+        return date_only
+    return f"{parts[2]}/{parts[1]}/{parts[0]}"
+
+
+def _dt_parts(raw, tz_name: str) -> Optional[dict]:
+    if not raw:
+        return None
+    try:
+        s = str(raw).replace("Z", "+00:00")
+        d = dt.datetime.fromisoformat(s)
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        return None
+    local = d.astimezone(ZoneInfo(tz_name))
+    return {"date": local.strftime("%d/%m/%Y"), "time": local.strftime("%H:%M")}
+
+
+def _game_time_label(raw, date_only: Optional[str]) -> str:
+    es = _dt_parts(raw, "Europe/Madrid")
+    et = _dt_parts(raw, "America/New_York")
+    if es and et:
+        if es["date"] == et["date"]:
+            return f"{es['date']} · {es['time']}h ES / {et['time']}h ET"
+        return f"ES {es['date']} {es['time']}h / ET {et['date']} {et['time']}h"
+    d = _date_only_to_es(date_only)
+    if d and es:
+        return f"{d} · {es['time']}h ES / hora N/A ET"
+    if d:
+        return f"{d} · hora N/A ES / hora N/A ET"
+    return "hora N/A ES / hora N/A ET"
+
+
+def _build_lectura_simple(pick_txt, odds, edge_ev, prob_tip, prob_imp, pick_side) -> str:
+    edge_pct = f"{edge_ev * 100:.1f}%" if edge_ev is not None else "?"
+    odds_txt = f"{odds:.2f}" if odds is not None else "?"
+    prob_txt = f"{prob_tip * 100:.0f}%" if prob_tip is not None else "?"
+    side = " ".join(str(pick_side or pick_txt).split())
+    return f"{side} @{odds_txt} · ventaja {edge_pct} (modelo {prob_txt} vs {_pct(prob_imp)} mercado)"
+
+
+def _build_analisis_fallback(away_exp, home_exp, total_exp, data_score, edge_ev) -> str:
+    parts = []
+    if away_exp is not None and home_exp is not None:
+        total_txt = f"{total_exp:.1f}" if total_exp is not None else f"{away_exp + home_exp:.1f}"
+        parts.append(f"Proyección {away_exp:.2f}+{home_exp:.2f}={total_txt} carreras")
+    ds = _n(data_score)
+    if ds is not None:
+        parts.append(f"data score {round(ds * 100)}%")
+    if edge_ev is not None:
+        parts.append(f"edge {edge_ev * 100:.1f}%")
+    return (" · ".join(parts) + ".") if parts else "Análisis no disponible."
+
+
+def format_pick_message(
+    league_label: str, pipeline: int, away_team: str, home_team: str,
+    game_obj: dict, result: dict, lineup_incomplete: bool = False,
+) -> str:
+    """Mismo formato que ya usa producción (nodo n8n 'Formatear MLB'/'Formatear MiLB'/
+    'Formatear LMB') -- a petición del usuario 2026-07-21, para que los picks de Auto-Picks v2
+    (experimental) se lean igual que los de producción. No usa Claude (claudeRead en la versión
+    n8n) porque Auto-Picks v2 no tiene esa API key configurada -- usa directamente el fallback
+    local que la propia versión n8n ya tiene para cuando Claude no responde."""
+    best_pick = result.get("best_pick") or {}
+    candidates = sorted(result.get("candidates") or [], key=lambda c: (_n(c.get("edge")) if _n(c.get("edge")) is not None else -999), reverse=True)
+    lead = best_pick or (candidates[0] if candidates else {})
+
+    innings_raw = _n(game_obj.get("scheduled_innings"))
+    innings = round(innings_raw) if innings_raw is not None and innings_raw >= 5 else 9
+    dh = str(game_obj.get("double_header") or "N")
+    game_no = _n(game_obj.get("game_number"))
+    dh_label = f" DH G{round(game_no)}" if dh == "Y" and game_no is not None else (" DH" if dh == "Y" else "")
+
+    odds = _to_odds_decimal(lead.get("odds"))
+    prob_blended = _n(lead.get("prob_blended"))
+    prob_model = _n(lead.get("prob_model"))
+    prob_tip = _n(lead.get("prob_estimated") if lead.get("prob_estimated") is not None else (prob_blended if prob_blended is not None else prob_model))
+    prob_imp = _n(lead.get("prob_implied"))
+    push_prob = _n(lead.get("push_prob")) or 0
+    edge_ev = _n(lead.get("edge"))
+    if edge_ev is None and prob_tip is not None and odds is not None:
+        edge_ev = prob_tip * odds + push_prob - 1
+    edge_model = (prob_model * odds + push_prob - 1) if (prob_model is not None and odds is not None) else None
+    edge_prob = (prob_tip - prob_imp) if (prob_tip is not None and prob_imp is not None) else None
+    fair_tip = _dec2(1 / prob_tip) if (prob_tip is not None and prob_tip > 0) else None
+    min_odds_18 = _min_odds_for_target(prob_tip, push_prob, 0.18)
+    stake = 0.25  # stake fijo hasta nueva calibración, igual que produccion
+
+    pick_txt = _pick_label(lead, game_obj, away_team, home_team)
+    market = _market_tag(lead)
+    away_pitcher = game_obj.get("away_pitcher_name") or "N/A"
+    home_pitcher = game_obj.get("home_pitcher_name") or "N/A"
+    stadium = game_obj.get("venue_name") or game_obj.get("stadium_name") or "N/A"
+    pf_runs = _pf100(game_obj.get("park_factor_runs") if game_obj.get("park_factor_runs") is not None else game_obj.get("park_factor"))
+    pf_hr_raw = game_obj.get("park_factor_hr")
+    if pf_hr_raw is None and league_label == "LMB":
+        pf_hr_raw = game_obj.get("park_factor") if game_obj.get("park_factor") is not None else game_obj.get("park_factor_runs")
+    pf_hr = _pf100(pf_hr_raw)
+    alt = _n(game_obj.get("altitude_m"))
+    temp = _n(game_obj.get("temperature_2m"))
+    tail = _n(game_obj.get("wind_tailwind"))
+    wdir = _n(game_obj.get("wind_direction") if game_obj.get("wind_direction") is not None else game_obj.get("wind_direction_10m"))
+    wspeed = _n(game_obj.get("wind_speed_10m"))
+    has_weather = any(x is not None for x in (temp, tail, wspeed, wdir))
+    env_parts = []
+    if alt is not None:
+        env_parts.append(f"{alt:.0f}m alt")
+    if has_weather:
+        if tail is not None:
+            wind_txt = (f"favor +{tail:.1f}" if tail >= 0 else f"frente {tail:.1f}") + "km/h"
+        elif wspeed is not None:
+            wind_txt = f"{wspeed:.1f}km/h dir" + (f" {wdir:.0f}°" if wdir is not None else "")
+        else:
+            wind_txt = None
+        if wind_txt:
+            env_parts.append(f"viento {wind_txt}")
+        elif wdir is not None:
+            env_parts.append(f"{wdir:.0f}°")
+        if temp is not None:
+            env_parts.append(f"{temp:.0f}°C")
+    env_line = ", ".join(env_parts) if env_parts else "sin datos climáticos"
+
+    metrics = _build_metrics(game_obj, result, lead)
+    away_runs_exp = _n(result.get("away_runs") if result.get("away_runs") is not None else result.get("away_mu"))
+    home_runs_exp = _n(result.get("home_runs") if result.get("home_runs") is not None else result.get("home_mu"))
+    total_runs_exp = _n(result.get("total_runs"))
+    if total_runs_exp is None and away_runs_exp is not None and home_runs_exp is not None:
+        total_runs_exp = round((away_runs_exp + home_runs_exp) * 10) / 10
+
+    lectura_simple = _build_lectura_simple(pick_txt, odds, edge_ev, prob_tip, prob_imp, lead.get("pick_side"))
+    analisis = _build_analisis_fallback(away_runs_exp, home_runs_exp, total_runs_exp, result.get("data_score"), edge_ev)
+
+    game_date_only = _date_only(game_obj.get("game_date"))
+    game_datetime_raw = game_obj.get("game_datetime_utc") or game_obj.get("forecast_time_utc")
+
+    # Produccion (n8n) no tiene el concepto de "pipeline" -- esto es especifico de Auto-Picks v2
+    # (2 pasadas por partido: abridores confirmados, luego lineup completo). El usuario pidio
+    # explicitamente ver "(lineup pick)" en el encabezado para distinguir de que pasada viene.
+    pipeline_tag = " (lineup pick)" if pipeline == 2 else " (abridores pick)"
     lines = [
-        f"🧪 PICK [Auto-Picks v2 — experimental] ({league_label} · {pipeline_label})",
-        f"{away_team} @ {home_team}",
-        f"Mercado: {market} — {pick_side}",
-        f"Cuota: {_fmt_odds(odds)}  |  Edge: {edge * 100:.1f}%  |  Prob. modelo: {(prob or 0) * 100:.1f}%",
-        f"data_score: {data_score:.2f}",
+        _LEAGUE_HEADER.get(league_label, f"⚾️ *{league_label}*") + pipeline_tag,
+        f"⚾️ {away_team} @ {home_team} ({innings}inn{dh_label})",
+        f"📅 {_game_time_label(game_datetime_raw, game_date_only)}",
+        "",
+        f"🎯 Mercado: {market}",
+        f"🎰 Apuesta: {pick_txt}",
+        f"💰 Cuota: {odds:.2f}" if odds is not None else "💰 Cuota: N/A",
+        "📊 Prob. modelo: " + _pct(prob_model) + (
+            f" → blend {_pct(prob_blended)}" if (prob_blended is not None and prob_model is not None and abs(prob_blended - prob_model) > 0.005) else ""
+        ),
+        f"📊 Prob. mercado: {_pct(prob_imp)}",
+        f"💰 Cuota justa: {fair_tip:.2f}" if fair_tip is not None else "💰 Cuota justa: -",
+        "📈 Edge EV (blend): " + _pct(edge_ev) + (
+            f" · bruto {_pct(edge_model)}" if (edge_model is not None and edge_ev is not None and abs(edge_model - edge_ev) > 0.005) else ""
+        ),
+        f"📈 Ventaja prob.: {edge_prob * 100:.1f} pp" if edge_prob is not None else "📈 Ventaja prob.: -",
+        f"🔢 Stake: {stake:.2f}/1.0",
+        "",
+        f"👥 Lanzadores: {away_pitcher} vs {home_pitcher}",
+        "🏟 Campo: " + stadium + " (" + (f"pf {pf_runs}" + (f" · HR {pf_hr}" if pf_hr is not None else "") if pf_runs is not None else "pf neutral") + ")",
+        f"🌡 Entorno: {env_line}",
+        f"📊 Métricas clave: {metrics}",
+        f"🧠 Lectura simple: {lectura_simple}",
+        "",
+        f"📉 Cuota mínima EV +18%: {min_odds_18:.2f}" if min_odds_18 is not None else "📉 Cuota mínima EV +18%: N/A",
+        "",
     ]
+
+    ds_display = f"{round(_n(result.get('data_score')) * 100)}%" if _n(result.get("data_score")) is not None else "N/A"
+    lines.append(f"📊 {ds_display} ·")
+    for c in candidates:
+        c_odds = _to_odds_decimal(c.get("odds"))
+        c_prob = _n(c.get("prob_estimated") if c.get("prob_estimated") is not None else (c.get("prob_blended") if c.get("prob_blended") is not None else c.get("prob_model")))
+        c_push = _n(c.get("push_prob")) or 0
+        c_ev = _n(c.get("edge"))
+        if c_ev is None and c_prob is not None and c_odds is not None:
+            c_ev = c_prob * c_odds + c_push - 1
+        thr = _n(c.get("edge_threshold")) or 0.18
+        icon = "✅" if (c_ev is not None and c_ev >= thr) else "-"
+        c_odds_txt = f"{c_odds:.2f}" if c_odds is not None else "N/A"
+        c_ev_txt = f"{c_ev * 100:.1f}" if c_ev is not None else "N/A"
+        lines.append(f"{icon} {_pick_label(c, game_obj, away_team, home_team)} @{c_odds_txt} · EV {c_ev_txt}% (min {thr * 100:.0f}%)")
+    lines.append("")
+    lines.append(f"📋 {analisis}")
+    lines.append(f"🧮 data_score: {_n(result.get('data_score')) or 0:.2f}")
+
     if lineup_incomplete:
+        lines.append("")
         lines.append("⚠️ lineup_factor aún sin calcular en producción — este pick NO llevó ajuste por calidad real del lineup.")
+
     return "\n".join(lines)
 
 
@@ -337,7 +679,7 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
     await ctx.telegram.send_message(ctx.admin_chat_id, full_text)
 
     if published:
-        text = format_pick_message(league_label, pipeline, away_team, home_team, best_pick, data_score, lineup_incomplete)
+        text = format_pick_message(league_label, pipeline, away_team, home_team, game_obj, result, lineup_incomplete)
         await ctx.picks_telegram.send_message(ctx.picks_channel_id, text)
 
     async with ctx.pool.acquire() as conn:
