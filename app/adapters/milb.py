@@ -195,6 +195,11 @@ class MilbAdapter:
             "home_bullpen_xwoba": home_bull.get("xwoba_allowed"),
             "park_factor_runs": park.get("park_factor_runs"), "park_factor_hr": park.get("park_factor_hr"),
             "altitude_m": park.get("altitude_m"),
+            # 2026-07-21: vw_matchups_enriched no trae venue_name/stadium_name (solo venue_id) --
+            # _park_factor() ya consultaba stadium_name de la tabla park_factors pero se
+            # descartaba aqui sin copiarlo al dict final. Encontrado al portar el formato rico
+            # de picks (format_pick_message espera venue_name/stadium_name para "Campo: ...").
+            "venue_name": park.get("stadium_name"),
             "temperature_2m": fresh_weather.get("temperature_2m") or weather.get("temperature_2m") or base.get("temperature_2m"),
             "wind_speed_10m": fresh_weather.get("wind_speed_10m") or weather.get("wind_speed_10m") or base.get("wind_speed_10m"),
             "wind_tailwind": fresh_weather.get("wind_tailwind") or weather.get("wind_tailwind") or base.get("wind_tailwind"),
