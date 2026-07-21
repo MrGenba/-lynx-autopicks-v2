@@ -9,6 +9,7 @@ import httpx
 
 from app.adapters import Mode
 from app.supabase_client import SupabaseClient
+from app.weather_client import fetch_fresh_weather
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,14 @@ class MlbAdapter:
                 game["lineup_factor_home"] = lineup_row.get("lineup_factor_home")
                 game["lineup_woba_away"] = lineup_row.get("lineup_woba_away")
                 game["lineup_woba_home"] = lineup_row.get("lineup_woba_home")
+            # 2026-07-21: volver a consultar el clima real en este momento (en vez de conformarse
+            # con el snapshot que ya trajo vw_mlb_matchups_ready) -- decision del usuario. Si
+            # falla o el estadio no tiene lat/lon conocidas, se conserva el snapshot previo.
+            fresh_weather = await fetch_fresh_weather(
+                self.http_client, self.supabase, game.get("venue_id"), game.get("game_date")
+            )
+            if fresh_weather:
+                game.update(fresh_weather)
         else:
             game["lineup_factor_away"] = None
             game["lineup_factor_home"] = None

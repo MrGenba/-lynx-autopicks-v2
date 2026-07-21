@@ -14,6 +14,7 @@ import httpx
 
 from app.adapters import Mode
 from app.supabase_client import SupabaseClient
+from app.weather_client import fetch_fresh_weather
 
 logger = logging.getLogger(__name__)
 
@@ -146,12 +147,20 @@ class MilbAdapter:
         )
 
         lineup = {}
+        fresh_weather = {}
         if mode == "full_lineup":
             lineup_row = await self.supabase.select_one(
                 self.http_client, "lineup_watch",
                 {"game_pk": f"eq.{game_pk}", "select": "lineup_factor_away,lineup_factor_home,lineup_woba_away,lineup_woba_home"},
             )
             lineup = lineup_row or {}
+            # 2026-07-21: volver a consultar el clima real en este momento (en vez de conformarse
+            # con el snapshot de game_weather/vw_matchups_enriched) -- decision del usuario. Si
+            # falla o el estadio no tiene lat/lon conocidas, se conserva el snapshot previo (mas
+            # abajo, weather.get(...) or base.get(...) sigue siendo el fallback final).
+            fresh_weather = await fetch_fresh_weather(
+                self.http_client, self.supabase, base.get("venue_id"), base.get("game_date")
+            ) or {}
 
         game = {
             **base,
@@ -186,9 +195,9 @@ class MilbAdapter:
             "home_bullpen_xwoba": home_bull.get("xwoba_allowed"),
             "park_factor_runs": park.get("park_factor_runs"), "park_factor_hr": park.get("park_factor_hr"),
             "altitude_m": park.get("altitude_m"),
-            "temperature_2m": weather.get("temperature_2m") or base.get("temperature_2m"),
-            "wind_speed_10m": weather.get("wind_speed_10m") or base.get("wind_speed_10m"),
-            "wind_tailwind": weather.get("wind_tailwind") or base.get("wind_tailwind"),
+            "temperature_2m": fresh_weather.get("temperature_2m") or weather.get("temperature_2m") or base.get("temperature_2m"),
+            "wind_speed_10m": fresh_weather.get("wind_speed_10m") or weather.get("wind_speed_10m") or base.get("wind_speed_10m"),
+            "wind_tailwind": fresh_weather.get("wind_tailwind") or weather.get("wind_tailwind") or base.get("wind_tailwind"),
         }
 
         if any(game.get(f) is None for f in REQUIRED_FIELDS):

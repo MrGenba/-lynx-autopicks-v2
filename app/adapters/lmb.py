@@ -12,6 +12,7 @@ import httpx
 from app.adapters import Mode
 from app.mlb_stats_client import fetch_with_fallback
 from app.supabase_client import SupabaseClient
+from app.weather_client import fetch_fresh_weather
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,14 @@ class LmbAdapter:
             )
             if lineup_row:
                 game.update(lineup_row)
+            # 2026-07-21: volver a consultar el clima real en este momento -- decision del
+            # usuario. Si falla o el estadio no tiene lat/lon conocidas, se conserva lo que ya
+            # se cargo arriba (lmb_game_weather / vw_lmb_matchups_ready).
+            fresh_weather = await fetch_fresh_weather(
+                self.http_client, self.supabase, game.get("venue_id"), game.get("game_date")
+            )
+            if fresh_weather:
+                game.update(fresh_weather)
 
         if any(game.get(f) is None for f in REQUIRED_FIELDS):
             logger.info("game_pk=%s sin ERA de abridores todavia (ni con fallback), se omite", game_pk)
