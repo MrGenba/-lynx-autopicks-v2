@@ -54,6 +54,138 @@ CANDIDATES_HISTORY_COLUMNS = {
     },
 }
 
+# Tabla de picks PUBLICADOS por liga (Fix A, 2026-07-25). Cada tabla tiene su propio encoding de
+# market/side (verificado con filas reales antes de escribir, mismo criterio que candidates):
+#   - mlb_picks_history : market ML/HC/OU, pick_side 'AWAY'/'OVER 8.5'/'AWAY +1.5' (igual que best_pick)
+#   - picks_history     : market ML/OVER/UNDER/HC_AWAY/HC_HOME, columna 'side' minuscula, 'liga'
+#   - lmb_picks_history : market ML/OVER/UNDER/HC_AWAY/HC_HOME, pick_side minuscula, cols *_pred (no *_predicted)
+PICKS_HISTORY_TABLE = {1: "mlb_picks_history", 11: "picks_history", 23: "lmb_picks_history"}
+PICKS_HISTORY_COLUMNS = {
+    "mlb_picks_history": {
+        "game_pk", "game_id", "game_date", "away_team", "home_team", "market", "pick_side",
+        "odds", "hc_value", "total_line", "prob_model", "prob_implied", "prob_edge", "edge",
+        "edge_threshold", "data_score", "confidence", "stake", "stake_recommended", "published",
+        "result", "notes", "away_runs_predicted", "home_runs_predicted",
+    },
+    "picks_history": {
+        "game_id", "game_date", "matchup_label", "market", "side", "team_label", "odds",
+        "prob_estimated", "prob_implied", "prob_blended", "edge", "stake", "stake_recommended",
+        "total_line", "hc_value", "data_score", "confidence", "liga", "published", "result",
+        "away_team", "home_team", "source",
+    },
+    "lmb_picks_history": {
+        "game_id", "game_date", "market", "pick_side", "pick_team", "odds", "hc_value",
+        "total_line", "prob_estimated", "prob_implied", "prob_edge", "edge", "edge_threshold",
+        "data_score", "confidence", "result", "stake", "stake_recommended", "matchup_label",
+        "published", "away_team", "home_team", "source", "away_runs_pred", "home_runs_pred",
+    },
+}
+
+# Stake fijo 0.25u (entero x4 = 1) hasta recalibracion -- mismo valor que produccion n8n.
+STAKE_FIXED = 1
+
+
+def _norm_market_side(market: Optional[str], pick_side: Optional[str]) -> tuple[str, str]:
+    """Convierte la forma canonica del quant (market ML/HC/OU + pick_side 'AWAY'/'OVER 8.5'/'AWAY +1.5')
+    al encoding normalizado de picks_history (MiLB) y lmb_picks_history:
+    market -> ML / OVER / UNDER / HC_AWAY / HC_HOME ; side -> away/home/over/under."""
+    m = (market or "").upper()
+    ps = (pick_side or "").upper()
+    if ps.startswith("OVER"):
+        side = "over"
+    elif ps.startswith("UNDER"):
+        side = "under"
+    elif ps.startswith("HOME"):
+        side = "home"
+    else:
+        side = "away"
+    if m == "OU":
+        norm = "OVER" if side == "over" else "UNDER"
+    elif m == "HC":
+        norm = "HC_AWAY" if side == "away" else "HC_HOME"
+    else:
+        norm = "ML"
+    return norm, side
+
+
+def build_picks_history_row(
+    sport_id: int, game_pk: int, game_date, away_team: str, home_team: str,
+    result: dict, pub_cand: dict, pipeline: int,
+) -> tuple[str, dict]:
+    """Construye la fila de *_picks_history para el pick PUBLICADO (best_pick / su candidato).
+    Solo se envian columnas que existen de verdad en cada tabla (PICKS_HISTORY_COLUMNS) para no
+    reintroducir el fallo de 'columna inexistente'. Ver CLAUDE.md/KNOWN_ISSUES (Fix A 2026-07-25)."""
+    table = PICKS_HISTORY_TABLE[sport_id]
+    allowed = PICKS_HISTORY_COLUMNS[table]
+    market = pub_cand.get("market")
+    pick_side = pub_cand.get("pick_side")
+    odds = pub_cand.get("odds")
+    prob_model = pub_cand.get("prob_model") or pub_cand.get("prob_estimated")
+    prob_implied = pub_cand.get("prob_implied")
+    prob_blended = pub_cand.get("prob_blended")
+    prob_final = prob_blended if prob_blended is not None else prob_model
+    prob_edge = (prob_final - prob_implied) if (prob_final is not None and prob_implied is not None) else None
+    total_line = pub_cand.get("total_line")
+    hc_value = pub_cand.get("hc_value")
+    edge = pub_cand.get("edge")
+    edge_threshold = pub_cand.get("edge_threshold")
+    data_score = result.get("data_score")
+    confidence = pub_cand.get("confidence")
+    away_mu = result.get("away_mu")
+    home_mu = result.get("home_mu")
+    matchup = f"{away_team} @ {home_team}"
+    pick_team = pub_cand.get("pick_team") or _pick_team_for(pick_side, away_team, home_team)
+    notes = f"autopicks_v2 p{pipeline}"
+
+    if table == "mlb_picks_history":
+        # MLB: market ML/HC/OU + pick_side con linea/signo embebidos ("UNDER 8.5", "AWAY +1.5").
+        # Se reconstruye desde la base + total_line/hc_value en vez de confiar en el pick_side crudo,
+        # que puede venir inconsistente ("UNDER" vs "UNDER 8.5") segun quien escribio el candidato.
+        base = (pick_side or "").upper().split(" ")[0]  # AWAY/HOME/OVER/UNDER
+        if market == "OU":
+            pick_side_db = base + (f" {total_line}" if total_line is not None else "")
+        elif market == "HC":
+            sign = "+" if (hc_value is not None and hc_value >= 0) else ""
+            pick_side_db = base + (f" {sign}{hc_value}" if hc_value is not None else "")
+        else:
+            pick_side_db = base
+        full = {
+            "game_pk": game_pk, "game_id": str(game_pk), "game_date": game_date,
+            "away_team": away_team, "home_team": home_team,
+            "market": market, "pick_side": pick_side_db, "odds": odds,
+            "hc_value": hc_value, "total_line": total_line,
+            "prob_model": prob_model, "prob_implied": prob_implied, "prob_edge": prob_edge,
+            "edge": edge, "edge_threshold": edge_threshold, "data_score": data_score,
+            "confidence": confidence, "stake": STAKE_FIXED, "stake_recommended": STAKE_FIXED,
+            "published": True, "result": "PENDING", "notes": notes,
+            "away_runs_predicted": away_mu, "home_runs_predicted": home_mu,
+        }
+    elif table == "picks_history":
+        norm_market, side = _norm_market_side(market, pick_side)
+        full = {
+            "game_id": game_pk, "game_date": game_date, "matchup_label": matchup,
+            "market": norm_market, "side": side, "team_label": pick_team, "odds": odds,
+            "prob_estimated": prob_final, "prob_implied": prob_implied, "prob_blended": prob_blended,
+            "edge": edge, "stake": STAKE_FIXED, "stake_recommended": STAKE_FIXED,
+            "total_line": total_line, "hc_value": hc_value, "data_score": data_score,
+            "confidence": confidence, "liga": "MiLB", "published": True, "result": "PENDING",
+            "away_team": away_team, "home_team": home_team, "source": "autopicks_v2",
+        }
+    else:  # lmb_picks_history
+        norm_market, side = _norm_market_side(market, pick_side)
+        full = {
+            "game_id": game_pk, "game_date": game_date,
+            "market": norm_market, "pick_side": side, "pick_team": pick_team, "odds": odds,
+            "hc_value": hc_value, "total_line": total_line,
+            "prob_estimated": prob_final, "prob_implied": prob_implied, "prob_edge": prob_edge,
+            "edge": edge, "edge_threshold": edge_threshold, "data_score": data_score,
+            "confidence": confidence, "result": "PENDING",
+            "stake": STAKE_FIXED, "stake_recommended": STAKE_FIXED, "matchup_label": matchup,
+            "published": True, "away_team": away_team, "home_team": home_team, "source": "autopicks_v2",
+            "away_runs_pred": away_mu, "home_runs_pred": home_mu,
+        }
+    return table, {k: v for k, v in full.items() if k in allowed}
+
 
 @dataclass
 class PipelineContext:
@@ -681,6 +813,44 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
     if published:
         text = format_pick_message(league_label, pipeline, away_team, home_team, game_obj, result, lineup_incomplete)
         await ctx.picks_telegram.send_message(ctx.picks_channel_id, text)
+
+        # Fix A (2026-07-25): ademas de publicar en el canal, PERSISTIR el pick en *_picks_history
+        # para que aparezca en el dashboard y lo resuelva LYNX_RESOLVE_PICKS. Antes Auto-Picks v2
+        # solo escribia el candidato (published=true) pero nunca el pick -> ~29% de picks publicados
+        # quedaban huerfanos. Idempotente: no reinserta si ya existe ese (game, market, side).
+        try:
+            pub_cand = next(
+                (c for c in (result.get("candidates") or [])
+                 if (c.get("market"), c.get("pick_side")) == published_key),
+                best_pick,
+            )
+            picks_table, pick_row = build_picks_history_row(
+                sport_id, game_pk, game_obj.get("game_date"), away_team, home_team, result, pub_cand, pipeline,
+            )
+            id_col = "game_pk" if picks_table == "mlb_picks_history" else "game_id"
+            side_col = "side" if picks_table == "picks_history" else "pick_side"
+            existing = await ctx.supabase.select(
+                ctx.http_client, picks_table,
+                {id_col: f"eq.{pick_row[id_col]}", "market": f"eq.{pick_row['market']}",
+                 side_col: f"eq.{pick_row[side_col]}", "select": "id", "limit": "1"},
+            )
+            if existing:
+                logger.info("pick ya presente en %s (game=%s %s %s), no se duplica",
+                            picks_table, pick_row[id_col], pick_row["market"], pick_row[side_col])
+            else:
+                await ctx.supabase.insert(ctx.http_client, picks_table, [pick_row])
+        except Exception as e:
+            # Fix B: NO tragar el fallo en silencio -- un pick publicado que no se guarda no aparece
+            # en el dashboard ni se resuelve. Log + aviso explicito al admin.
+            logger.exception("FALLO guardando el pick publicado en *_picks_history game_pk=%s pipeline=%s", game_pk, pipeline)
+            try:
+                await ctx.telegram.send_message(
+                    ctx.admin_chat_id,
+                    f"❌ Pick PUBLICADO no guardado en tabla de picks (game_pk={game_pk}, "
+                    f"{league_label} p{pipeline}): {str(e)[:180]} -- no aparecera en dashboard ni se resolvera.",
+                )
+            except Exception:
+                logger.exception("ademas fallo el aviso al admin del pick no guardado")
 
     async with ctx.pool.acquire() as conn:
         await conn.execute(

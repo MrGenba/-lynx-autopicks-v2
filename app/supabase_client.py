@@ -1,10 +1,13 @@
 """Cliente minimo de Supabase REST -- de LECTURA para las vistas enriquecidas de produccion
 (vw_mlb_matchups_ready, lineup_watch, etc). Desde 2026-07-11, con aprobacion explicita del
-usuario, tambien de ESCRITURA pero UNICAMENTE hacia *_candidates_history (mlb_candidates_history/
+usuario, tambien de ESCRITURA hacia *_candidates_history (mlb_candidates_history/
 candidates_history/lmb_candidates_history), para que los candidatos evaluados por Auto-Picks v2
 entren en el mismo pool de datos de calibracion que produccion (marcados con source='autopicks_v2'
-para poder distinguirlos). No escribe en ninguna otra tabla de produccion (picks_history,
-mlb_games, etc)."""
+para poder distinguirlos). Desde 2026-07-25, tambien hacia *_picks_history (mlb_picks_history/
+picks_history/lmb_picks_history) para el pick PUBLICADO: hasta esa fecha Auto-Picks v2 publicaba
+el pick en el canal pero NO lo escribia en la tabla de picks, dejando ~29% de picks publicados
+huerfanos (sin aparecer en el dashboard ni resolverse). No escribe en ninguna otra tabla de
+produccion (mlb_games, etc)."""
 import httpx
 
 
