@@ -177,6 +177,13 @@ class MilbAdapter:
             "home_p_era_season": hp.get("era"), "home_p_fip_season": hp.get("fip"),
             "home_p_ip_season": hp.get("innings_pitched"), "home_p_k_9": hp.get("k_9"), "home_p_bb_9": hp.get("bb_9"),
             "home_p_xwoba": hp.get("xwoba"),
+            # 2026-07-25 (fix data_score): el motor (quant_engine.js) pondera las stats del abridor
+            # por recencia de temporada via *_stats_season / *_statcast_season. Sin estos campos,
+            # starterSampleScore=0 -> se anula el 54% del data_score (bajaba a ~0.45 en vez de ~0.93,
+            # penalizando el peso del modelo en el blend y colapsando los edges). El adaptador ya
+            # consultaba 'season' en _pitcher_stats/_pitcher_statcast; solo faltaba copiarlo aqui.
+            "away_p_stats_season": ap.get("season"), "home_p_stats_season": hp.get("season"),
+            "away_p_statcast_season": apsc.get("season"), "home_p_statcast_season": hpsc.get("season"),
             "away_p_k_pct": apsc.get("k_percent"), "away_p_bb_pct": apsc.get("bb_percent"),
             "away_p_hard_hit": apsc.get("hard_hit_pct"), "away_p_barrel": apsc.get("barrel_pct"),
             "home_p_k_pct": hpsc.get("k_percent"), "home_p_bb_pct": hpsc.get("bb_percent"),

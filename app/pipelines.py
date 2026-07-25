@@ -682,6 +682,11 @@ def build_candidates_history_rows(
     away_mu = result.get("away_mu")
     home_mu = result.get("home_mu")
     now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
+    # 2026-07-25 (fix telemetria): el motor devuelve data_score a nivel de RESULTADO, no por
+    # candidato -> antes se guardaba c.get("data_score")=None -> 0 en la tabla, ocultando la
+    # calidad de datos real (se veian todos los candidatos MiLB con data_score=0). Usar el del
+    # resultado como respaldo cuando el candidato no lo trae.
+    result_ds = result.get("data_score")
 
     rows = []
     for c in result.get("candidates") or []:
@@ -698,7 +703,7 @@ def build_candidates_history_rows(
             "prob_estimated": prob_final, "prob_implied": prob_implied,
             "prob_edge": (prob_final - prob_implied) if (prob_final is not None and prob_implied is not None) else None,
             "edge": c.get("edge"), "edge_threshold": c.get("edge_threshold"),
-            "data_score": c.get("data_score"),
+            "data_score": c.get("data_score") if c.get("data_score") is not None else result_ds,
             "published": (market, pick_side) == published_key,
             "result": "PENDING",
             "total_line": c.get("total_line"), "hc_value": c.get("hc_value"),
