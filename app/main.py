@@ -15,6 +15,7 @@ from app import aliases, db
 from app.adapters.mlb import MlbAdapter
 from app.adapters.milb import MilbAdapter
 from app.adapters.lmb import LmbAdapter
+from app.clv import capture_closing_lines_tick
 from app.config import Config
 from app.detector import detector_tick
 from app.logging_setup import setup_logging
@@ -225,6 +226,15 @@ async def main() -> None:
         )
     else:
         logger.info("odds_autofetch_enabled=false -- job automatico NO registrado, solo /fetchodds manual")
+    # Captura de linea de cierre para CLV (desactivada por defecto -- ver clv.py/config.py).
+    if cfg.clv_capture_enabled:
+        scheduler.add_job(
+            capture_closing_lines_tick, "interval", seconds=cfg.clv_capture_interval_seconds, args=[ctx],
+            max_instances=1, next_run_time=dt.datetime.now() + dt.timedelta(seconds=60),
+        )
+        logger.info("clv_capture_enabled=true -- captura de cierre cada %ss", cfg.clv_capture_interval_seconds)
+    else:
+        logger.info("clv_capture_enabled=false -- captura de CLV NO registrada")
     scheduler.start()
 
     await telegram.send_message(cfg.tg_admin_chat_id, "🟢 Auto-Picks v2 arrancado y en marcha.")

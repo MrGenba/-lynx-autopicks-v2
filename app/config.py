@@ -26,6 +26,12 @@ class Config:
     detector_interval_seconds: int
     odds_autofetch_interval_seconds: int
     odds_autofetch_enabled: bool
+    # Captura de linea de cierre para medir CLV (2026-07-25). Cerca del inicio de cada partido
+    # con pick publicado, scrapea la linea Bet365 de cierre (misma fuente que la cuota de
+    # apuesta) y la guarda en Supabase pick_closing_lines. Desactivada por defecto: anade
+    # scrapes de Tor extra cerca del cierre -- activar tras revisar el gasto de proxy.
+    clv_capture_enabled: bool
+    clv_capture_interval_seconds: int
     # Proxy opcional para el scraper de cuotas (vendor/run_odds_scraper.js) -- el VPS de
     # Francia esta bloqueado por cuotasahora.com, asi que sin esto el scraper falla igual que
     # el de produccion. None = sin proxy (mismo comportamiento que antes de 2026-07-09).
@@ -63,6 +69,8 @@ class Config:
             # para disparar un ciclo manual a proposito -- reactivar aqui cuando se confirme
             # cuanto gasta realmente el ciclo ya optimizado.
             odds_autofetch_enabled=os.environ.get("ODDS_AUTOFETCH_ENABLED", "false").lower() == "true",
+            clv_capture_enabled=os.environ.get("CLV_CAPTURE_ENABLED", "false").lower() == "true",
+            clv_capture_interval_seconds=int(os.environ.get("CLV_CAPTURE_INTERVAL_SECONDS", "300")),
             proxy_server=os.environ.get("PROXY_SERVER") or None,
             proxy_username=os.environ.get("PROXY_USERNAME") or None,
             proxy_password=os.environ.get("PROXY_PASSWORD") or None,
