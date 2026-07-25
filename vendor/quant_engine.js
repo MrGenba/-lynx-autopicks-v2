@@ -916,6 +916,12 @@ function buildCandidate(details) {
     edge,
     push_prob: round3(pushProb),
     edge_threshold: marketEdgeThreshold(details.market),
+    // 2026-07-25 (fix "Under N/A"): propagar la linea al candidato. El motor la exige no-nula para
+    // construir el candidato OU/HC (ver callers) pero no la incluia en la salida -> total_line/
+    // hc_value llegaban null a candidates_history/picks_history y al mensaje. Fix de salida puro:
+    // NO cambia edge/prob (que ya se calcularon contra game.total_line/game.away_hc_val).
+    total_line: toNumber(details.total_line),
+    hc_value: toNumber(details.hc_value),
   };
 }
 
@@ -1375,6 +1381,7 @@ function analyzeMatchup(input) {
       prob_estimated: probabilities.away_hc_win,
       prob_implied: fairMap.HC.away,
       push_prob: probabilities.away_hc_push,
+      hc_value: game.away_hc_val,
     }));
   }
 
@@ -1387,6 +1394,7 @@ function analyzeMatchup(input) {
       prob_estimated: probabilities.home_hc_win,
       prob_implied: fairMap.HC.home,
       push_prob: probabilities.home_hc_push,
+      hc_value: game.home_hc_val,
     }));
   }
 
@@ -1399,6 +1407,7 @@ function analyzeMatchup(input) {
       prob_estimated: probabilities.over_win,
       prob_implied: fairMap.TOTAL.over,
       push_prob: probabilities.over_push,
+      total_line: game.total_line,
     }));
   }
 
@@ -1411,6 +1420,7 @@ function analyzeMatchup(input) {
       prob_estimated: probabilities.under_win,
       prob_implied: fairMap.TOTAL.under,
       push_prob: probabilities.under_push,
+      total_line: game.total_line,
     }));
   }
 

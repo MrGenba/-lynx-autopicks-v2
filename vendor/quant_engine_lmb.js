@@ -542,6 +542,9 @@ function buildCandidate(d) {
     odds: round3(odds), prob_estimated: round3(wp), prob_implied: round3(imp),
     prob_edge: round3(wp - imp), fair_odds: computeFairOdds(wp),
     edge, push_prob: round3(push), edge_threshold: marketEdgeThreshold(d.market),
+    // 2026-07-25 (fix "Under N/A"): propagar la linea al candidato (mismo bug que quant_engine.js).
+    // Salida pura: NO cambia edge/prob (calculados contra game.total_line/game.*_hc_val).
+    total_line: toNumber(d.total_line), hc_value: toNumber(d.hc_value),
   };
 }
 
@@ -652,17 +655,17 @@ function analyzeMatchup(input) {
   // La proteccion real para no PUBLICAR picks HC de bajo margen ya existe en selectPublicableCandidates()
   // (rechaza HC si prob_estimated < 0.52), asi que este gate adicional solo perdia datos de calibracion.
   if (lines.away_hc_odds != null && hcFair?.first != null && game.away_hc_val != null) {
-    rawCandidates.push(buildCandidate({ market: "HC_AWAY", pick_side: "away", pick_team: away, odds: lines.away_hc_odds, prob_estimated: probs.away_hc_win, prob_implied: hcFair.first, push_prob: probs.away_hc_push }));
+    rawCandidates.push(buildCandidate({ market: "HC_AWAY", pick_side: "away", pick_team: away, odds: lines.away_hc_odds, prob_estimated: probs.away_hc_win, prob_implied: hcFair.first, push_prob: probs.away_hc_push, hc_value: game.away_hc_val }));
   }
   if (lines.home_hc_odds != null && hcFair?.second != null && game.home_hc_val != null) {
-    rawCandidates.push(buildCandidate({ market: "HC_HOME", pick_side: "home", pick_team: home, odds: lines.home_hc_odds, prob_estimated: probs.home_hc_win, prob_implied: hcFair.second, push_prob: probs.home_hc_push }));
+    rawCandidates.push(buildCandidate({ market: "HC_HOME", pick_side: "home", pick_team: home, odds: lines.home_hc_odds, prob_estimated: probs.home_hc_win, prob_implied: hcFair.second, push_prob: probs.home_hc_push, hc_value: game.home_hc_val }));
   }
 
   if (lines.over_odds != null && totFair?.first != null && game.total_line != null) {
-    rawCandidates.push(buildCandidate({ market: "OVER", pick_side: "over", odds: lines.over_odds, prob_estimated: probs.over_win, prob_implied: totFair.first, push_prob: probs.over_push }));
+    rawCandidates.push(buildCandidate({ market: "OVER", pick_side: "over", odds: lines.over_odds, prob_estimated: probs.over_win, prob_implied: totFair.first, push_prob: probs.over_push, total_line: game.total_line }));
   }
   if (lines.under_odds != null && totFair?.second != null && game.total_line != null) {
-    rawCandidates.push(buildCandidate({ market: "UNDER", pick_side: "under", odds: lines.under_odds, prob_estimated: probs.under_win, prob_implied: totFair.second, push_prob: probs.under_push }));
+    rawCandidates.push(buildCandidate({ market: "UNDER", pick_side: "under", odds: lines.under_odds, prob_estimated: probs.under_win, prob_implied: totFair.second, push_prob: probs.under_push, total_line: game.total_line }));
   }
 
   const candidates = rawCandidates.filter(Boolean).map(c => {
