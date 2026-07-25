@@ -86,26 +86,44 @@ STAKE_FIXED = 1
 
 
 def _norm_market_side(market: Optional[str], pick_side: Optional[str]) -> tuple[str, str]:
-    """Convierte la forma canonica del quant (market ML/HC/OU + pick_side 'AWAY'/'OVER 8.5'/'AWAY +1.5')
-    al encoding normalizado de picks_history (MiLB) y lmb_picks_history:
-    market -> ML / OVER / UNDER / HC_AWAY / HC_HOME ; side -> away/home/over/under."""
+    """Normaliza market/pick_side a (market, side) para picks_history (MiLB) y lmb_picks_history:
+    market -> ML / OVER / UNDER / HC_AWAY / HC_HOME ; side -> away/home/over/under.
+    Acepta AMBOS encodings: el ya-normalizado del motor MiLB/LMB (market 'OVER'/'UNDER'/'HC_AWAY'/
+    'HC_HOME'/'ML') y el canonico de MLB ('OU'/'HC'/'ML' con la linea/signo en pick_side).
+    Fix 2026-07-25: antes solo miraba 'OU'/'HC' y caia al else -> 'ML' para los 'OVER'/'UNDER'
+    reales de MiLB (un pick UNDER se guardaba como market='ML')."""
     m = (market or "").upper()
-    ps = (pick_side or "").upper()
-    if ps.startswith("OVER"):
+    ps = (pick_side or "").lower().split(" ")[0]
+    if ps in ("over", "under", "home", "away"):
+        side = ps
+    elif m == "OVER":
         side = "over"
-    elif ps.startswith("UNDER"):
+    elif m == "UNDER":
         side = "under"
-    elif ps.startswith("HOME"):
+    elif m == "HC_HOME":
         side = "home"
+    elif m == "HC_AWAY":
+        side = "away"
     else:
         side = "away"
-    if m == "OU":
+    if m in ("OU", "OVER", "UNDER"):
         norm = "OVER" if side == "over" else "UNDER"
-    elif m == "HC":
+    elif m in ("HC", "HC_AWAY", "HC_HOME"):
         norm = "HC_AWAY" if side == "away" else "HC_HOME"
     else:
         norm = "ML"
     return norm, side
+
+
+def _pick_missing_line(cand: dict) -> bool:
+    """True si el pick es impublicable por falta de numero: un OU sin total_line o un HC sin
+    hc_value. ML no necesita linea. Usado como guard antes de publicar (2026-07-25)."""
+    m = (cand.get("market") or "").upper()
+    if m in ("OU", "OVER", "UNDER"):
+        return cand.get("total_line") is None
+    if m in ("HC", "HC_AWAY", "HC_HOME"):
+        return cand.get("hc_value") is None
+    return False
 
 
 def build_picks_history_row(
@@ -799,6 +817,28 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
 
     league_label = LEAGUE_LABEL.get(sport_id, str(sport_id))
     lineup_incomplete = _lineup_incomplete(sport_id, pipeline, game_obj)
+
+    # Guard 2026-07-25: no publicar un OU sin linea de totales ni un HC sin handicap -- la cuota es
+    # impublicable sin el numero (bug real: se publico "Under N/A" en un DH de 7 entradas cuando las
+    # cuotas trajeron el precio over/under pero no la linea). El candidato SI se guarda igualmente
+    # (para calibracion); solo se suprime la publicacion.
+    if best_pick:
+        _pc = next((c for c in (result.get("candidates") or [])
+                    if (c.get("market"), c.get("pick_side")) == published_key), best_pick)
+        _m = (_pc.get("market") or "").upper()
+        if _pick_missing_line(_pc):
+            logger.warning("pick NO publicado por falta de linea: game_pk=%s market=%s", game_pk, _m)
+            try:
+                await ctx.telegram.send_message(
+                    ctx.admin_chat_id,
+                    f"⚠️ {league_label} {away_team} @ {home_team}: pick {_m} NO publicado -- las cuotas "
+                    f"llegaron sin la línea (total/hándicap). No se puede apostar sin el número.",
+                )
+            except Exception:
+                logger.exception("fallo avisando del pick sin linea")
+            best_pick = None
+            published = False
+            published_key = None
 
     # Candidatos evaluados -> mismo pool de calibracion que produccion (*_candidates_history en
     # Supabase, source='autopicks_v2'). No critico: si falla, no bloquea el envio de mensajes.

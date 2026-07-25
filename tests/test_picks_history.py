@@ -2,7 +2,20 @@ from app.pipelines import (
     PICKS_HISTORY_COLUMNS,
     build_picks_history_row,
     _norm_market_side,
+    _pick_missing_line,
 )
+
+
+def test_pick_missing_line_guard():
+    # OU/HC sin numero = impublicable
+    assert _pick_missing_line({"market": "UNDER", "total_line": None}) is True
+    assert _pick_missing_line({"market": "OU", "total_line": None}) is True
+    assert _pick_missing_line({"market": "HC_AWAY", "hc_value": None}) is True
+    # con numero, OK
+    assert _pick_missing_line({"market": "UNDER", "total_line": 7.0}) is False
+    assert _pick_missing_line({"market": "HC_AWAY", "hc_value": 1.5}) is False
+    # ML nunca necesita linea
+    assert _pick_missing_line({"market": "ML", "total_line": None}) is False
 
 
 def test_norm_market_side_ml():
@@ -62,6 +75,26 @@ def test_build_mlb_hc_row_embeds_sign_in_pick_side():
                "prob_model": 0.5, "prob_implied": 0.42, "total_line": None, "hc_value": 1.5, "pick_team": "X"}
     _, row = build_picks_history_row(1, 901, "2026-05-27", "A", "B", RESULT, cand_hc, 1)
     assert row["market"] == "HC" and row["pick_side"] == "AWAY +1.5" and row["hc_value"] == 1.5
+
+
+def test_norm_market_side_acepta_encoding_real_milb():
+    # el motor MiLB/LMB da el market YA normalizado (OVER/UNDER/HC_AWAY/HC_HOME/ML), no 'OU'/'HC'
+    assert _norm_market_side("UNDER", "under") == ("UNDER", "under")
+    assert _norm_market_side("OVER", "over") == ("OVER", "over")
+    assert _norm_market_side("HC_AWAY", "away") == ("HC_AWAY", "away")
+    assert _norm_market_side("HC_HOME", "home") == ("HC_HOME", "home")
+    assert _norm_market_side("ML", "away") == ("ML", "away")
+    # y sigue aceptando el canonico de MLB
+    assert _norm_market_side("OU", "OVER 8.5") == ("OVER", "over")
+
+
+def test_build_milb_under_real_encoding_no_se_guarda_como_ml():
+    # regresion del bug 2026-07-25: UNDER real de MiLB se guardaba como market='ML'
+    cand = {"market": "UNDER", "pick_side": "under", "odds": 2.0, "edge": 0.186,
+            "edge_threshold": 0.18, "prob_estimated": 0.593, "prob_implied": 0.461, "total_line": 7.0}
+    _t, row = build_picks_history_row(11, 814826, "2026-07-25", "Nashville", "Sugar Land", RESULT, cand, 1)
+    assert row["market"] == "UNDER" and row["side"] == "under"
+    assert row["total_line"] == 7.0
 
 
 def test_build_milb_ou_row_normalizes_market_side():
