@@ -184,7 +184,11 @@ async function scrapeMatch(league, url, shouldDrill, bookmaker) {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
     await sleep(1500);
     await dismissOverlays(page);
-    await waitForBookmakerRows(page);
+    // 2026-07-26: espera de contenido MAYOR para MiLB/LMB. Sus páginas están menos cacheadas en
+    // cuotasahora y tardan más en pintar las cuotas via XHR -> con Tor lento superaban los 15s y
+    // devolvían no_header al 100%. MLB (más popular/cacheada) sigue con 15s (waitFor sale en
+    // cuanto aparece el contenido, así que el margen extra solo se usa cuando de verdad tarda).
+    await waitForBookmakerRows(page, (league === "MiLB" || league === "LMB") ? 30000 : 15000);
 
     let lines = await getLines(page);
     const header = parseMatchHeader(lines);
