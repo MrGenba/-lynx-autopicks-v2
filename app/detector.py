@@ -112,24 +112,53 @@ async def notify_missing_odds_once(ctx: PipelineContext, sport_id: int, game_pk:
     )
 
 
-async def _autofetch_or_notify(
-    ctx: PipelineContext, sport_id: int, game_pk: int, gate_col: str, away: str, home: str,
+# Cooldown entre reintentos de cuotas al confirmarse el lineup -- evita re-scrapear en CADA tick de
+# 180s (martilleo -> throttle de cuotasahora, lección 2026-07-26).
+ODDS_REFRESH_COOLDOWN = dt.timedelta(minutes=8)
+
+
+async def cooldown_elapsed(pool: asyncpg.Pool, sport_id: int, game_pk: int, cooldown: dt.timedelta) -> bool:
+    async with pool.acquire() as conn:
+        last = await conn.fetchval(
+            "SELECT last_odds_attempt_at FROM games_gate_state WHERE sport_id=$1 AND game_pk=$2",
+            sport_id, game_pk,
+        )
+    if last is None:
+        return True
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=dt.timezone.utc)
+    return dt.datetime.now(dt.timezone.utc) - last >= cooldown
+
+
+async def mark_odds_attempt(pool: asyncpg.Pool, sport_id: int, game_pk: int) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE games_gate_state SET last_odds_attempt_at = now() WHERE sport_id=$1 AND game_pk=$2",
+            sport_id, game_pk,
+        )
+
+
+async def _refresh_odds_and_forecast(
+    ctx: PipelineContext, sport_id: int, game_pk: int, away: str, home: str,
     minutes_to_start: int, game_dt: dt.datetime,
 ) -> None:
-    """Disparo puntual de cuotas (un scrape acotado a este partido) en el momento exacto en que
-    un gate se confirma por primera vez -- esto es lo que se pidio originalmente ("manda las
-    cuotas cuando se confirmen las alineaciones"), no un sondeo periodico de la liga entera.
-    Corre en segundo plano (create_task en el llamador) para no bloquear el resto del tick del
-    detector mientras dura el scrape (hasta 300s). game_dt se le pasa a autofetch_single_game
-    para que pueda descartar el resultado si el scrape termina despues de que el partido ya
-    haya acabado (ver MAX_GAME_AGE en odds_autofetch.py)."""
+    """"Fresco siempre" al confirmarse el lineup completo (2026-07-26): re-scrape de cuotas FRESCAS
+    (autofetch, con retry-on-empty). Si las consigue, autofetch ya dispara pipeline 2 vía
+    _check_gates_and_fire. Si NO consigue frescas pero había cuotas previas, no perder el pronóstico
+    -> dispara pipeline 2 con las que haya. Si no hay ninguna, avisa (el cooldown reintentará en
+    ticks posteriores hasta lograrlo o hasta que empiece el partido)."""
     try:
-        found = await autofetch_single_game(ctx, sport_id, game_pk, away, home, game_dt)
+        got_fresh = await autofetch_single_game(ctx, sport_id, game_pk, away, home, game_dt)
     except Exception:
-        logger.exception("autofetch_single_game fallo para sport_id=%s game_pk=%s", sport_id, game_pk)
-        found = False
-    if not found:
-        await notify_missing_odds_once(ctx, sport_id, game_pk, gate_col, away, home, minutes_to_start)
+        logger.exception("_refresh_odds_and_forecast: autofetch falló sport_id=%s game_pk=%s", sport_id, game_pk)
+        got_fresh = False
+    if got_fresh:
+        return
+    odds = await get_odds(ctx.pool, sport_id, game_pk)
+    if odds is not None:
+        await try_fire_pipeline(ctx, sport_id, game_pk, 2, "full_lineup", away, home)
+    else:
+        await notify_missing_odds_once(ctx, sport_id, game_pk, "lineup_no_odds_notice_at", away, home, minutes_to_start)
 
 
 async def detector_tick(ctx: PipelineContext) -> None:
@@ -205,11 +234,19 @@ async def detector_tick(ctx: PipelineContext) -> None:
                     await fill_pitcher_ids_from_lineup(
                         ctx.pool, sport_id, g.game_pk, away_lineup.pitcher_id, home_lineup.pitcher_id,
                     )
-                    odds = await get_odds(ctx.pool, sport_id, g.game_pk)
-                    if odds is not None:
-                        await try_fire_pipeline(ctx, sport_id, g.game_pk, 2, "full_lineup", g.away_team_name, g.home_team_name)
-                    elif first_time:
-                        asyncio.create_task(_autofetch_or_notify(
-                            ctx, sport_id, g.game_pk, "lineup_no_odds_notice_at",
-                            g.away_team_name, g.home_team_name, minutes_to_start, game_dt,
+                    # "Fresco siempre" (2026-07-26): al confirmarse el lineup (o en reintento con
+                    # cooldown si el intento anterior falló) se re-scrapean cuotas FRESCAS -- las
+                    # líneas se mueven justo cuando salen los lineups. Solo se llega aquí si pipeline
+                    # 2 aún no corrió (ver chequeo pipeline2_done arriba). El cooldown evita
+                    # re-scrapear en cada tick (martilleo -> throttle).
+                    if first_time or await cooldown_elapsed(ctx.pool, sport_id, g.game_pk, ODDS_REFRESH_COOLDOWN):
+                        await mark_odds_attempt(ctx.pool, sport_id, g.game_pk)
+                        asyncio.create_task(_refresh_odds_and_forecast(
+                            ctx, sport_id, g.game_pk, g.away_team_name, g.home_team_name,
+                            minutes_to_start, game_dt,
                         ))
+                    else:
+                        # aún en cooldown: si ya hay cuotas y pipeline 2 no corrió, pronosticar con ellas
+                        odds = await get_odds(ctx.pool, sport_id, g.game_pk)
+                        if odds is not None:
+                            await try_fire_pipeline(ctx, sport_id, g.game_pk, 2, "full_lineup", g.away_team_name, g.home_team_name)

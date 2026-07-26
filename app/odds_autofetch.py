@@ -64,6 +64,20 @@ _last_status: dict[int, bool] = {}
 # interno y tumbar el contenedor.
 _scrape_semaphore = asyncio.Semaphore(1)
 
+# Retry del disparo puntual cuando el scrape vuelve VACÍO (no_bookmaker_rows/no_header transitorio,
+# cuotas que SÍ existen -- lección 2026-07-26). Bounded + backoff amplio: NO martillear, porque
+# `no_bookmaker_rows` suele ser señal de throttle de cuotasahora y reintentar rápido lo empeora.
+# Solo se reintenta el caso "empty" (transitorio); una caída dura del scraper (NodeBridgeError) NO
+# se reintenta in-place (el detector reintentará en un tick posterior con cooldown, cuando Tor
+# probablemente se haya recuperado).
+AUTOFETCH_RETRIES = 2               # reintentos extra -> 3 intentos totales por llamada
+AUTOFETCH_BACKOFF_S = (60, 150)     # espera antes de cada reintento
+# Espaciado GLOBAL entre scrapes reales. Con "cuotas frescas siempre", cuando salen muchos lineups
+# casi a la vez el detector encola N scrapes -- el semáforo los serializa pero back-to-back, y ese
+# burst es justo lo que throttlea cuotasahora. Este hueco mínimo los separa.
+_MIN_SCRAPE_GAP_S = 25.0
+_last_scrape = [0.0]  # holder mutable (evita declarar 'global' dentro del bloque del semáforo)
+
 
 async def _candidates_needing_odds(pool: asyncpg.Pool, sport_id: int) -> list[aliases.CandidateGame]:
     async with pool.acquire() as conn:
@@ -160,26 +174,31 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
     consiguieron cuotas. Usado tanto por el disparo puntual (1 candidato) como por el
     sondeo periodico (N candidatos)."""
     if not candidates:
-        return 0
+        return 0, "empty"
 
     league_key = SCRAPER_LEAGUE[sport_id]
     candidate_names = [n for c in candidates for n in (c.away_team_name, c.home_team_name) if n]
     try:
         async with _scrape_semaphore:
+            # Espaciado global anti-throttle: separa scrapes back-to-back (ver _MIN_SCRAPE_GAP_S).
+            gap = _MIN_SCRAPE_GAP_S - (dt.datetime.now(dt.timezone.utc).timestamp() - _last_scrape[0])
+            if gap > 0:
+                await asyncio.sleep(gap)
             result = await run_odds_scraper(
                 ctx.node_bin, ctx.vendor_dir, league_key,
                 ctx.proxy_server, ctx.proxy_username, ctx.proxy_password,
                 candidate_names=candidate_names,
             )
+            _last_scrape[0] = dt.datetime.now(dt.timezone.utc).timestamp()
     except NodeBridgeError as e:
         logger.warning("run_odds_scraper fallo para %s: %s", league_key, e)
         await _notify_status_change(ctx, sport_id, False, f"scraper falló: {str(e)[:200]}")
-        return 0
+        return 0, "scraper_failed"
 
     games = result.get("games") or []
     if not games and result.get("errors"):
         await _notify_status_change(ctx, sport_id, False, f"sin partidos, {result['errors'][0][:180]}")
-        return 0
+        return 0, "empty"
     await _notify_status_change(ctx, sport_id, True, "")
 
     now = dt.datetime.now(dt.timezone.utc)
@@ -223,7 +242,7 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
         "autofetch %s: %s candidatos, %s partidos scrapeados, %s asignados",
         league_key, len(candidates), len(games), matched_count,
     )
-    return matched_count
+    return matched_count, ("ok" if matched_count else "empty")
 
 
 async def autofetch_single_game(
@@ -249,8 +268,25 @@ async def autofetch_single_game(
         sport_id=sport_id, game_pk=game_pk, away_team_id=None, home_team_id=None,
         away_team_name=away_team_name, home_team_name=home_team_name, game_datetime_utc=game_datetime_utc,
     )
-    matched = await _scrape_and_apply(ctx, sport_id, [candidate])
-    return matched > 0
+    # Retry-on-empty in-place (2026-07-26): un scrape que vuelve VACÍO (no_bookmaker_rows/no_header)
+    # con cuotas que sí existen es transitorio (Tor lento/throttle) -> reintentar con backoff amplio.
+    # Caída dura del scraper -> no insistir aquí (el detector reintenta en un tick posterior con
+    # cooldown, cuando Tor probablemente se haya recuperado).
+    for attempt in range(1 + AUTOFETCH_RETRIES):
+        matched, status = await _scrape_and_apply(ctx, sport_id, [candidate])
+        if matched > 0:
+            return True
+        if status != "empty":
+            return False
+        if attempt >= AUTOFETCH_RETRIES:
+            break
+        if game_datetime_utc is not None:
+            gdt = game_datetime_utc if game_datetime_utc.tzinfo else game_datetime_utc.replace(tzinfo=dt.timezone.utc)
+            if gdt - dt.datetime.now(dt.timezone.utc) < dt.timedelta(minutes=2):
+                break  # demasiado cerca del inicio para seguir reintentando
+        logger.info("autofetch retry %s/%s (scrape vacío) game_pk=%s", attempt + 1, AUTOFETCH_RETRIES, game_pk)
+        await asyncio.sleep(AUTOFETCH_BACKOFF_S[attempt])
+    return False
 
 
 async def autofetch_league(ctx: PipelineContext, sport_id: int) -> None:
