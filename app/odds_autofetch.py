@@ -202,12 +202,29 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
     await _notify_status_change(ctx, sport_id, True, "")
 
     now = dt.datetime.now(dt.timezone.utc)
-    remaining = list(candidates)
-    matched_count = 0
+    cand_by_pk = {c.game_pk: c for c in candidates}
+
+    # 2026-07-27 (fix B): agrupar los scrapes POR candidato real antes de aplicar. cuotasahora a
+    # veces lista el MISMO partido dos veces con cuotas distintas (p.ej. el de hoy y el de manana,
+    # o un fantasma con el mismo matchup). El bucle anterior asignaba "el primero del scrape" y
+    # eliminaba el candidato -> podia guardar cuotas del partido equivocado, y un scrape que
+    # deberia ir al candidato A podia caer en B tras liberarse A. Ahora: cada scrape se empareja
+    # contra la lista COMPLETA de candidatos; si 2+ scrapes caen en el mismo candidato con cuotas
+    # que DIFIEREN, no se aplica ninguna (fail-safe, misma filosofia que _match_scraped_game:
+    # "mejor perder una cuota que asignarla al partido equivocado"). Si coinciden, se aplica.
+    by_cand: dict[int, list[tuple[dict, dict]]] = {}
     for scraped in games:
-        cand = _match_scraped_game(scraped, remaining)
+        cand = _match_scraped_game(scraped, candidates)
         if cand is None:
             continue
+        values = _values_from_scraped(scraped)
+        if all(v is None for v in values.values()):
+            continue
+        by_cand.setdefault(cand.game_pk, []).append((scraped, values))
+
+    matched_count = 0
+    for game_pk, entries in by_cand.items():
+        cand = cand_by_pk[game_pk]
 
         if cand.game_datetime_utc is not None:
             game_dt = cand.game_datetime_utc
@@ -218,16 +235,20 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
                     "autofetch: descartado game_pk=%s (%s @ %s) -- empezo hace %s, probablemente ya termino",
                     cand.game_pk, cand.away_team_name, cand.home_team_name, now - game_dt,
                 )
-                remaining = [c for c in remaining if c.game_pk != cand.game_pk]
                 continue
 
-        values = _values_from_scraped(scraped)
-        if all(v is None for v in values.values()):
+        # Fail-safe ante duplicados conflictivos: mismo partido real scrapeado 2+ veces con cuotas
+        # distintas -> no fiarse de ninguna (probable partido erroneo/duplicado de cuotasahora).
+        if len(entries) > 1 and any(e[1] != entries[0][1] for e in entries[1:]):
+            logger.warning(
+                "autofetch: %s scrapes matchean game_pk=%s (%s @ %s) con cuotas DISTINTAS -- no se aplica ninguna (duplicado/partido erroneo de cuotasahora)",
+                len(entries), cand.game_pk, cand.away_team_name, cand.home_team_name,
+            )
             continue
 
+        scraped, values = entries[0]
         await _store_odds(ctx.pool, cand.sport_id, cand.game_pk, values, chat_id=0, message_id=0)
         matched_count += 1
-        remaining = [c for c in remaining if c.game_pk != cand.game_pk]
 
         learn_away = cand.away_team_id
         learn_home = cand.home_team_id
