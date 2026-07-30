@@ -55,7 +55,7 @@ def _check_scrape_token(request: web.Request, cfg: Config) -> bool:
     return bool(cfg.scrape_endpoint_token) and token == cfg.scrape_endpoint_token
 
 
-async def _run_scrape_job(job_id: str, cfg: Config, league: str, bookmaker: str = "Bet365") -> None:
+async def _run_scrape_job(job_id: str, cfg: Config, league: str, bookmaker: str = "Bet365", candidate_names: list[str] | None = None) -> None:
     try:
         # 2026-07-20 DESACTIVADO: odds-api.io ya no se usa como via rapida para Bet365. Aunque
         # el fix del mismo dia en odds_api_client.py corrigio la mezcla de casas (Bet365 vs
@@ -74,6 +74,7 @@ async def _run_scrape_job(job_id: str, cfg: Config, league: str, bookmaker: str 
             result = await run_odds_scraper(
                 cfg.node_bin, cfg.vendor_dir, league,
                 cfg.proxy_server, cfg.proxy_username, cfg.proxy_password,
+                candidate_names=candidate_names,
                 bookmaker=bookmaker,
             )
         _scrape_jobs[job_id]["status"] = "done"
@@ -137,10 +138,19 @@ async def scrape_odds_start(request: web.Request) -> web.Response:
     if bookmaker.lower() not in ("bet365", "winamax"):
         return web.json_response({"error": "parametro 'bookmaker' debe ser Bet365 o Winamax"}, status=400)
 
+    # 2026-07-30: 'teams' opcional (lista de nombres de equipo separados por coma). Si se pasa, el
+    # scraper solo visita/perfora las URLs que matchean esos equipos (candidate_names -> matchesUrlSlug),
+    # en vez de la liga ENTERA. MiLB tiene ~30 partidos/dia; scrapearlos todos por Tor serial roza el
+    # timeout de 600s. Pasando solo los partidos reales de hoy (n8n los saca del calendario) baja a
+    # ~13-15 -> la mitad de tiempo y sin tocar el techo. Vacio/ausente = comportamiento anterior (liga
+    # entera), asi que si n8n no puede leer el calendario sigue funcionando.
+    teams_raw = request.query.get("teams", "")
+    candidate_names = [t.strip() for t in teams_raw.split(",") if t.strip()] or None
+
     _prune_old_jobs()
     job_id = str(uuid.uuid4())
     _scrape_jobs[job_id] = {"status": "running", "created_at": dt.datetime.now(dt.timezone.utc)}
-    asyncio.create_task(_run_scrape_job(job_id, cfg, league, bookmaker))
+    asyncio.create_task(_run_scrape_job(job_id, cfg, league, bookmaker, candidate_names))
     return web.json_response({"job_id": job_id, "status": "running"})
 
 
