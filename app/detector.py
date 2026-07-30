@@ -195,10 +195,25 @@ async def detector_tick(ctx: PipelineContext) -> None:
                 # Solo dispara pipeline 1 si las cuotas YA existen (enviadas a mano, o ya obtenidas
                 # por el autofetch real de Gate B en un tick anterior) -- nunca pide cuotas nuevas.
                 if g.away_pitcher_id and g.home_pitcher_id:
-                    await mark_pitchers_confirmed(ctx.pool, sport_id, g.game_pk)
+                    first_pitchers = await mark_pitchers_confirmed(ctx.pool, sport_id, g.game_pk)
                     odds = await get_odds(ctx.pool, sport_id, g.game_pk)
                     if odds is not None:
                         await try_fire_pipeline(ctx, sport_id, g.game_pk, 1, "pitchers_only", g.away_team_name, g.home_team_name)
+                    elif sport_id == 23:
+                        # LMB (2026-07-31): StatsAPI NO publica el lineup completo pre-partido (solo al
+                        # empezar el juego) -> LMB nunca llega a Gate B, y el auto-fetch "fresco siempre"
+                        # cuelga de Gate B, asi que LMB nunca pedia cuotas solo. Su unica senal
+                        # pre-partido son los abridores (probablePitcher, si presentes). Aqui, con
+                        # abridores confirmados, sin cuotas aun y dentro de LOOKAHEAD (3h), se dispara el
+                        # auto-fetch: al guardar cuotas, _check_gates_and_fire dispara pipeline 1
+                        # (pitchers_only). Cooldown para no martillear Tor. Esto revive LMB en automatico
+                        # (se paro el ~15-jun al dejar de subir cuotas LMB a mano). MLB/MiLB NO entran
+                        # aqui (van por Gate B/lineup, que si tienen a tiempo).
+                        if first_pitchers or await cooldown_elapsed(ctx.pool, sport_id, g.game_pk, ODDS_REFRESH_COOLDOWN):
+                            await mark_odds_attempt(ctx.pool, sport_id, g.game_pk)
+                            asyncio.create_task(autofetch_single_game(
+                                ctx, sport_id, g.game_pk, g.away_team_name, g.home_team_name, game_dt,
+                            ))
 
                 # Gate B -- lineup completo (9 bateadores en ambos lados). Si ya se confirmo en
                 # un tick anterior, no hace falta volver a pedir el boxscore -- esto era una
