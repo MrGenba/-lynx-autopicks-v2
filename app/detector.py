@@ -199,21 +199,41 @@ async def detector_tick(ctx: PipelineContext) -> None:
                     odds = await get_odds(ctx.pool, sport_id, g.game_pk)
                     if odds is not None:
                         await try_fire_pipeline(ctx, sport_id, g.game_pk, 1, "pitchers_only", g.away_team_name, g.home_team_name)
-                    elif sport_id == 23:
+                    if sport_id == 23:
                         # LMB (2026-07-31): StatsAPI NO publica el lineup completo pre-partido (solo al
-                        # empezar el juego) -> LMB nunca llega a Gate B, y el auto-fetch "fresco siempre"
-                        # cuelga de Gate B, asi que LMB nunca pedia cuotas solo. Su unica senal
-                        # pre-partido son los abridores (probablePitcher, si presentes). Aqui, con
-                        # abridores confirmados, sin cuotas aun y dentro de LOOKAHEAD (3h), se dispara el
-                        # auto-fetch: al guardar cuotas, _check_gates_and_fire dispara pipeline 1
-                        # (pitchers_only). Cooldown para no martillear Tor. Esto revive LMB en automatico
-                        # (se paro el ~15-jun al dejar de subir cuotas LMB a mano). MLB/MiLB NO entran
-                        # aqui (van por Gate B/lineup, que si tienen a tiempo).
-                        if first_pitchers or await cooldown_elapsed(ctx.pool, sport_id, g.game_pk, ODDS_REFRESH_COOLDOWN):
+                        # empezar el juego) -> LMB no confirma lineup por la via normal (Gate B con
+                        # boxscore). Se gestiona LMB aqui, con DOS versiones que coexisten como MLB/MiLB:
+                        #  (1) ABRIDORES (Gate A, su unica senal temprana): auto-fetch de cuotas ->
+                        #      _check_gates_and_fire dispara pipeline 1 (version abridores).
+                        #  (2) LINEUP via lineup_watch: el Lineup Watcher de n8n SI detecta el lineup LMB
+                        #      ~30min antes y guarda su woba en lineup_watch (que el adapter full_lineup
+                        #      ya consume). Al aparecer, se confirma -> autofetch fresco -> pipeline 2.
+                        # Antes LMB colgaba de un lineup StatsAPI que no llega -> se paro el ~15-jun al
+                        # dejar de subir cuotas a mano. MLB/MiLB NO entran aqui (Gate B normal les vale).
+                        first_lineup = False
+                        async with ctx.pool.acquire() as conn:
+                            lineup_ready = await conn.fetchval(
+                                "SELECT 1 FROM lineup_watch WHERE game_pk=$1 "
+                                "AND lineup_away_detected_at IS NOT NULL AND lineup_home_detected_at IS NOT NULL "
+                                "AND lineup_woba_away IS NOT NULL AND lineup_woba_home IS NOT NULL",
+                                g.game_pk,
+                            )
+                        if lineup_ready:
+                            first_lineup = await mark_lineup_confirmed(ctx.pool, sport_id, g.game_pk)
+                        # Re-scrapea solo cuando hace falta: sin cuotas aun (con cooldown), o justo al
+                        # confirmarse el lineup (cuotas frescas para pipeline 2). Evita martillear Tor.
+                        need_fetch = (odds is None and (first_pitchers or await cooldown_elapsed(
+                            ctx.pool, sport_id, g.game_pk, ODDS_REFRESH_COOLDOWN))) or first_lineup
+                        if need_fetch:
                             await mark_odds_attempt(ctx.pool, sport_id, g.game_pk)
                             asyncio.create_task(autofetch_single_game(
                                 ctx, sport_id, g.game_pk, g.away_team_name, g.home_team_name, game_dt,
                             ))
+                        elif lineup_ready and odds is not None:
+                            # lineup ya confirmado y hay cuotas -> asegurar pipeline 2 (por si el fetch
+                            # fresco fallo en el tick que confirmo el lineup).
+                            await try_fire_pipeline(ctx, sport_id, g.game_pk, 2, "full_lineup", g.away_team_name, g.home_team_name)
+                        continue  # LMB no usa el Gate B de StatsAPI (boxscore vacio pre-partido)
 
                 # Gate B -- lineup completo (9 bateadores en ambos lados). Si ya se confirmo en
                 # un tick anterior, no hace falta volver a pedir el boxscore -- esto era una
