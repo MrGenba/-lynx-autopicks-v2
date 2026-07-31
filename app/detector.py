@@ -180,7 +180,16 @@ async def detector_tick(ctx: PipelineContext) -> None:
             for g in games:
                 if g.status not in ACTIVE_STATUSES:
                     continue
-                game_dt = dt.datetime.fromisoformat(g.game_datetime_utc.replace("Z", "+00:00"))
+                # Guardia 2026-07-31: un partido activo sin game_datetime_utc (o con formato raro)
+                # reventaba aqui (.replace sobre None -> AttributeError) y, sin try/except por
+                # partido, tumbaba el TICK ENTERO -> 0 candidatos en todas las ligas. Se salta.
+                if not g.game_datetime_utc:
+                    continue
+                try:
+                    game_dt = dt.datetime.fromisoformat(g.game_datetime_utc.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    logger.warning("detector: game_datetime_utc invalido para game_pk=%s: %r", g.game_pk, g.game_datetime_utc)
+                    continue
                 now = dt.datetime.now(dt.timezone.utc)
                 if game_dt - now > LOOKAHEAD or game_dt < now:
                     continue
@@ -216,13 +225,23 @@ async def detector_tick(ctx: PipelineContext) -> None:
                         # desde lineup_watch (el Lineup Watcher de n8n lo detecta ~30min antes y
                         # guarda su woba, que el adapter full_lineup ya consume) -> pipeline 2. MiLB
                         # NO entra: usa el Gate B normal de StatsAPI mas abajo (su lineup si llega).
-                        async with ctx.pool.acquire() as conn:
-                            lineup_ready = bool(await conn.fetchval(
-                                "SELECT 1 FROM lineup_watch WHERE game_pk=$1 "
-                                "AND lineup_away_detected_at IS NOT NULL AND lineup_home_detected_at IS NOT NULL "
-                                "AND lineup_woba_away IS NOT NULL AND lineup_woba_home IS NOT NULL",
-                                g.game_pk,
-                            ))
+                        # BUGFIX 2026-07-31: lineup_watch vive en SUPABASE (no en la DB interna de
+                        # asyncpg) -> hay que consultarla con ctx.supabase, NO ctx.pool. La version
+                        # anterior (ctx.pool) lanzaba UndefinedTable y, sin try/except por partido,
+                        # tumbaba el tick. try/except defensivo para que nunca vuelva a pasar.
+                        lineup_ready = False
+                        try:
+                            lw = await ctx.supabase.select_one(ctx.http_client, "lineup_watch", {
+                                "game_pk": f"eq.{g.game_pk}",
+                                "lineup_away_detected_at": "not.is.null",
+                                "lineup_home_detected_at": "not.is.null",
+                                "lineup_woba_away": "not.is.null",
+                                "lineup_woba_home": "not.is.null",
+                                "select": "game_pk",
+                            })
+                            lineup_ready = lw is not None
+                        except Exception:
+                            logger.warning("detector: fallo consultando lineup_watch para game_pk=%s", g.game_pk)
                         if lineup_ready:
                             first_lineup = await mark_lineup_confirmed(ctx.pool, sport_id, g.game_pk)
                         if first_lineup:
