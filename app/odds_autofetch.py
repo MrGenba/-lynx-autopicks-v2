@@ -27,6 +27,7 @@ import asyncpg
 
 from app import aliases
 from app.message_handler import _check_gates_and_fire, _store_odds
+from app.tor_control import rotate_tor_circuit
 from app.node_bridge import NodeBridgeError, run_odds_scraper
 from app.overround import check_overround
 from app.pipelines import LEAGUE_KEY, LEAGUE_LABEL, PipelineContext
@@ -297,7 +298,11 @@ async def autofetch_single_game(
         matched, status = await _scrape_and_apply(ctx, sport_id, [candidate])
         if matched > 0:
             return True
-        if status != "empty":
+        # 2026-08-01: reintentar tanto en "empty" (no_header/no_bookmaker_rows) como en
+        # "scraper_failed" (timeout/goto) -> ambos suelen ser un EXIT DE TOR bloqueado/lento por
+        # cuotasahora. Antes de reintentar se rota el circuito (SIGNAL NEWNYM) para salir por otro
+        # exit; el usuario confirma que Tor funciona con exits buenos, asi ciclamos hasta dar con uno.
+        if status not in ("empty", "scraper_failed"):
             return False
         if attempt >= AUTOFETCH_RETRIES:
             break
@@ -305,7 +310,8 @@ async def autofetch_single_game(
             gdt = game_datetime_utc if game_datetime_utc.tzinfo else game_datetime_utc.replace(tzinfo=dt.timezone.utc)
             if gdt - dt.datetime.now(dt.timezone.utc) < dt.timedelta(minutes=2):
                 break  # demasiado cerca del inicio para seguir reintentando
-        logger.info("autofetch retry %s/%s (scrape vacío) game_pk=%s", attempt + 1, AUTOFETCH_RETRIES, game_pk)
+        logger.info("autofetch retry %s/%s (%s) game_pk=%s -- rotando circuito Tor", attempt + 1, AUTOFETCH_RETRIES, status, game_pk)
+        await rotate_tor_circuit()
         await asyncio.sleep(AUTOFETCH_BACKOFF_S[attempt])
     return False
 

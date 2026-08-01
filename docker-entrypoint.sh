@@ -15,6 +15,18 @@
 # forma fiable con la hora ocasionalmente desfasada 1h que uno roto la mayoria de las veces. Si
 # se retoma esto en el futuro, probar con un timeout de goto mas alto en vez de restringir el
 # pool de nodos.
-tor --RunAsDaemon 1
-sleep 5
+# 2026-08-01: rotar el circuito/exit de Tor MUCHO mas a menudo. Por defecto MaxCircuitDirtiness
+# son 600s (10 min): si el exit que toca esta bloqueado/throttled por cuotasahora, TODO el scraping
+# falla durante 10 min pegado a ese mismo exit (visto en vivo: pipeline 24h+ sin cuotas pese a
+# reinicios). Con MaxCircuitDirtiness=30 cada scrape nuevo (>30s) usa un circuito/exit distinto ->
+# ciclamos rapido por exits hasta dar con uno que cuotasahora no bloquee (el usuario confirma que
+# Tor SI funciona con exits buenos). ControlPort+CookieAuthentication habilitan ademas rotar bajo
+# demanda (SIGNAL NEWNYM) desde la app tras un scrape fallido.
+tor --RunAsDaemon 1 \
+    --MaxCircuitDirtiness 30 \
+    --NewCircuitPeriod 20 \
+    --ControlPort 9051 \
+    --CookieAuthentication 1 \
+    --CookieAuthFile /tmp/tor.cookie
+sleep 8
 exec python -m app.main
