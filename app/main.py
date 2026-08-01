@@ -26,6 +26,9 @@ from app.odds_autofetch import _scrape_semaphore, autofetch_tick
 from app.pipelines import PipelineContext
 from app.supabase_client import SupabaseClient
 from app.telegram import TelegramClient, poll_loop
+from app.tor_control import rotate_tor_circuit
+
+MANUAL_SCRAPE_RETRIES = 2  # reintentos del comando manual si el exit de Tor sirve pagina sin partidos
 
 logger = logging.getLogger(__name__)
 
@@ -70,18 +73,34 @@ async def _run_scrape_job(job_id: str, cfg: Config, league: str, bookmaker: str 
         # _try_odds_api() se deja sin borrar (queda sin llamar desde aqui) por si se quiere
         # recuperar la via rapida en el futuro con una fuente distinta.
 
-        async with _scrape_semaphore:
-            result = await run_odds_scraper(
-                cfg.node_bin, cfg.vendor_dir, league,
-                cfg.proxy_server, cfg.proxy_username, cfg.proxy_password,
-                candidate_names=candidate_names,
-                bookmaker=bookmaker,
-            )
+        # 2026-08-01: retry+rotacion de Tor tambien en el comando manual (antes solo en el autofetch
+        # del pipeline). cuotasahora sirve una pagina "decoy" (sin partidos) a la mayoria de exits de
+        # Tor; si el scrape vuelve SIN partidos, se rota el exit (SIGNAL NEWNYM) y se reintenta hasta
+        # dar con uno bueno. NO se reintenta en timeout/caida dura (NodeBridgeError) para no exceder
+        # el poll de n8n (~11min) -- ese caso se reporta como error y ya.
+        result = None
+        for attempt in range(1 + MANUAL_SCRAPE_RETRIES):
+            try:
+                async with _scrape_semaphore:
+                    result = await run_odds_scraper(
+                        cfg.node_bin, cfg.vendor_dir, league,
+                        cfg.proxy_server, cfg.proxy_username, cfg.proxy_password,
+                        candidate_names=candidate_names,
+                        bookmaker=bookmaker,
+                    )
+            except NodeBridgeError as e:
+                _scrape_jobs[job_id]["status"] = "error"
+                _scrape_jobs[job_id]["error"] = str(e)
+                return
+            if result.get("games"):
+                break  # trajo partidos -> suficiente
+            if attempt < MANUAL_SCRAPE_RETRIES:
+                logger.info("scrape manual %s sin partidos (intento %s/%s), rotando circuito Tor",
+                            league, attempt + 1, MANUAL_SCRAPE_RETRIES)
+                await rotate_tor_circuit()
+                await asyncio.sleep(12)
         _scrape_jobs[job_id]["status"] = "done"
         _scrape_jobs[job_id]["result"] = result
-    except NodeBridgeError as e:
-        _scrape_jobs[job_id]["status"] = "error"
-        _scrape_jobs[job_id]["error"] = str(e)
     except Exception:
         logger.exception("_run_scrape_job fallo de forma inesperada (job_id=%s)", job_id)
         _scrape_jobs[job_id]["status"] = "error"

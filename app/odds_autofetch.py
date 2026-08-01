@@ -71,8 +71,14 @@ _scrape_semaphore = asyncio.Semaphore(1)
 # Solo se reintenta el caso "empty" (transitorio); una caída dura del scraper (NodeBridgeError) NO
 # se reintenta in-place (el detector reintentará en un tick posterior con cooldown, cuando Tor
 # probablemente se haya recuperado).
-AUTOFETCH_RETRIES = 2               # reintentos extra -> 3 intentos totales por llamada
-AUTOFETCH_BACKOFF_S = (60, 150)     # espera antes de cada reintento
+# 2026-08-01: subido de 2 a 6 reintentos y backoff MUCHO mas corto. cuotasahora sirve una pagina
+# "decoy" (sin partidos) a la mayoria de exits de Tor -> solo ~1 de cada 5-6 exits sirve la pagina
+# real. Antes de cada reintento se rota el circuito (NEWNYM, ver autofetch loop) -> con 7 intentos
+# la probabilidad de dar con un exit bueno sube a ~75-80%. El backoff largo (60-150s) sobraba: era
+# para "Tor lento", pero NEWNYM da exit nuevo al instante -> basta ~10-25s para que el circuito se
+# establezca. Asi cada llamada cicla rapido por exits.
+AUTOFETCH_RETRIES = 6               # reintentos extra -> 7 intentos totales por llamada
+AUTOFETCH_BACKOFF_S = (10, 12, 15, 18, 22, 26)  # espera antes de cada reintento (tras rotar exit)
 # Espaciado GLOBAL entre scrapes reales. Con "cuotas frescas siempre", cuando salen muchos lineups
 # casi a la vez el detector encola N scrapes -- el semáforo los serializa pero back-to-back, y ese
 # burst es justo lo que throttlea cuotasahora. Este hueco mínimo los separa.
