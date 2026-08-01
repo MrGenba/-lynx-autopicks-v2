@@ -218,7 +218,11 @@ async def detector_tick(ctx: PipelineContext) -> None:
                     # falten cuotas (con cooldown) -> no se martillea Tor.
                     lineup_ready = False
                     first_lineup = False
-                    fetch_needed = sport_id in (11, 23) and odds is None and (first_pitchers or await cooldown_elapsed(
+                    # 2026-08-01: REVERTIDO MiLB (sport 11) de aqui. Pedir cuotas por abridores para
+                    # sus ~30 partidos/dia martilleaba Tor (throttled) y agravaba el corte del
+                    # pipeline. MiLB vuelve a su Gate B (lineup) de siempre. Solo LMB (sport 23)
+                    # mantiene el fetch por abridores: es su unica via de cuotas temprana.
+                    fetch_needed = sport_id == 23 and odds is None and (first_pitchers or await cooldown_elapsed(
                         ctx.pool, sport_id, g.game_pk, ODDS_REFRESH_COOLDOWN))
                     if sport_id == 23:
                         # LMB-ONLY: StatsAPI no da el lineup LMB pre-partido -> confirmar el lineup
