@@ -183,13 +183,49 @@ async def tor_rotate(request: web.Request) -> web.Response:
     return web.json_response({"rotated": ok, "detail": detail})
 
 
-async def run_health_server(cfg: Config, port: int = 8080) -> None:
+async def diag(request: web.Request) -> web.Response:
+    """Diagnostico 2026-08-02: lee el estado INTERNO del pipeline (DB de autopicks, no accesible
+    de fuera) para localizar donde se atasca: partidos en ventana, gates confirmados, cuotas
+    guardadas, pipelines disparados y errores recientes. Protegido por token."""
+    cfg: Config = request.app["cfg"]
+    if not _check_scrape_token(request, cfg):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    ctx: PipelineContext = request.app["ctx"]
+    out: dict = {}
+    async def _try(name, sql):
+        try:
+            async with ctx.pool.acquire() as conn:
+                rows = await conn.fetch(sql)
+            out[name] = [dict(r) for r in rows]
+        except Exception as e:
+            out[name] = f"ERR: {e}"
+    win = "game_datetime_utc BETWEEN now() - interval '1 hour' AND now() + interval '6 hours'"
+    await _try("gates_en_ventana",
+        f"SELECT sport_id, count(*) n, count(*) FILTER (WHERE pitchers_confirmed_at IS NOT NULL) pitchers, "
+        f"count(*) FILTER (WHERE lineup_confirmed_at IS NOT NULL) lineup, "
+        f"count(*) FILTER (WHERE last_odds_attempt_at IS NOT NULL) intento_odds "
+        f"FROM games_gate_state WHERE {win} GROUP BY sport_id ORDER BY sport_id")
+    await _try("con_odds",
+        f"SELECT g.sport_id, count(*) n FROM game_odds o JOIN games_gate_state g ON g.sport_id=o.sport_id AND g.game_pk=o.game_pk "
+        f"WHERE g.{win} AND o.away_ml IS NOT NULL GROUP BY g.sport_id ORDER BY g.sport_id")
+    await _try("pipeline_runs_3h",
+        "SELECT sport_id, pipeline, count(*) n, count(*) FILTER (WHERE error IS NOT NULL) con_error, max(created_at) ultimo "
+        "FROM pipeline_runs WHERE created_at > now() - interval '3 hours' GROUP BY sport_id, pipeline ORDER BY sport_id, pipeline")
+    await _try("errores_recientes",
+        "SELECT sport_id, game_pk, left(error, 200) error, created_at FROM pipeline_runs "
+        "WHERE error IS NOT NULL AND created_at > now() - interval '3 hours' ORDER BY created_at DESC LIMIT 6")
+    return web.json_response(out, dumps=lambda o: __import__("json").dumps(o, default=str))
+
+
+async def run_health_server(cfg: Config, ctx: "PipelineContext", port: int = 8080) -> None:
     app = web.Application()
     app["cfg"] = cfg
+    app["ctx"] = ctx
     app.router.add_get("/healthz", health)
     app.router.add_get("/scrape-odds/start", scrape_odds_start)
     app.router.add_get("/scrape-odds/status/{job_id}", scrape_odds_status)
     app.router.add_get("/tor-rotate", tor_rotate)
+    app.router.add_get("/diag", diag)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
@@ -263,7 +299,7 @@ async def main() -> None:
     await telegram.send_message(cfg.tg_admin_chat_id, "🟢 Auto-Picks v2 arrancado y en marcha.")
 
     await asyncio.gather(
-        run_health_server(cfg),
+        run_health_server(cfg, ctx),
         poll_loop(telegram, pool, lambda chat_id, text, msg_id: handle_message(ctx, chat_id, text, msg_id)),
     )
 
