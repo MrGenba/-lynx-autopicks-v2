@@ -116,8 +116,12 @@ class LmbAdapter:
         away_pitcher_id: Optional[int] = None,
         home_pitcher_id: Optional[int] = None,
     ) -> Optional[dict]:
+        # La vista se indexa por game_id (NO game_pk); filtrar por game_pk daba un 400 de PostgREST
+        # ("column game_pk does not exist") que, via select->raise_for_status, tumbaba
+        # build_game_object con excepcion -> LMB no reclamaba pipeline_run y NUNCA produjo un
+        # candidato desde que se reactivo. Mismo criterio que el adapter MiLB (que ya usa game_id).
         base = await self.supabase.select_one(
-            self.http_client, "vw_lmb_matchups_ready", {"game_pk": f"eq.{game_pk}", "select": "*"}
+            self.http_client, "vw_lmb_matchups_ready", {"game_id": f"eq.{game_pk}", "select": "*"}
         )
         if base is None:
             logger.warning("vw_lmb_matchups_ready sin fila para game_pk=%s", game_pk)
