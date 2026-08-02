@@ -218,6 +218,12 @@ async def diag(request: web.Request) -> web.Response:
         f"SELECT r.sport_id, r.game_pk, left(r.error, 250) error FROM pipeline_runs r "
         f"JOIN games_gate_state g ON g.sport_id=r.sport_id AND g.game_pk=r.game_pk "
         f"WHERE g.{win} AND r.error IS NOT NULL LIMIT 6")
+    await _try("runs_detalle",
+        f"SELECT r.sport_id, r.pipeline, r.game_pk, r.data_score, (r.best_pick IS NOT NULL) tiene_best, "
+        f"r.published, jsonb_array_length(COALESCE((r.quant_result::jsonb)->'candidates', '[]'::jsonb)) n_cands, "
+        f"left(r.quant_result::text, 120) quant_preview "
+        f"FROM pipeline_runs r JOIN games_gate_state g ON g.sport_id=r.sport_id AND g.game_pk=r.game_pk "
+        f"WHERE g.{win} ORDER BY r.claimed_at DESC LIMIT 6")
     out["supabase_url"] = ctx.supabase.base_url
     out["supabase_key_prefix"] = ctx.supabase.headers.get("apikey", "")[:18]
     try:
