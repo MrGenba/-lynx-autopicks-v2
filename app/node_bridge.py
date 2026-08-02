@@ -44,8 +44,12 @@ async def run_quant(node_bin: str, vendor_dir: str, league: str, payload: dict, 
         start_new_session=True,
     )
     try:
+        # default=str: si un campo del payload (p.ej. un datetime o Decimal que se cuele en game)
+        # no es JSON-serializable, se degrada a string en vez de lanzar TypeError sin capturar. Ese
+        # TypeError mataba el pipeline en silencio (la fila pipeline_runs quedaba claimed sin
+        # quant_result ni error). Belt-and-suspenders sobre el fix del datetime en build_game_object.
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(json.dumps(payload).encode("utf-8")), timeout=timeout
+            proc.communicate(json.dumps(payload, default=str).encode("utf-8")), timeout=timeout
         )
     except asyncio.TimeoutError:
         _kill_process_tree(proc)

@@ -779,7 +779,11 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
     # hora real (game_datetime_utc, con la que dispara el gate). Aplica a MLB/MiLB/LMB y ambos
     # pipelines. 2026-07-31.
     if gate_row and gate_row.get("game_datetime_utc") and not game_obj.get("game_datetime_utc"):
-        game_obj["game_datetime_utc"] = gate_row["game_datetime_utc"]
+        # ISO string, NO el datetime crudo de asyncpg: game_obj se serializa entero con json.dumps
+        # dentro de build_quant_payload -> run_quant, y un datetime revienta json.dumps con TypeError
+        # (fallo silencioso que dejaba la fila pipeline_runs claimed pero sin quant_result ni error,
+        # 0 picks del 30-jul al 02-ago). _dt_parts hace str()+fromisoformat, asi que el ISO va bien.
+        game_obj["game_datetime_utc"] = gate_row["game_datetime_utc"].isoformat()
 
     # Punto de reclamo atomico -- a partir de aqui, cualquier llamada concurrente para el
     # mismo (sport_id, game_pk, pipeline) recibira claim=None y no hara nada.
