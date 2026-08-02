@@ -26,7 +26,6 @@ from app.odds_autofetch import _scrape_semaphore, autofetch_tick
 from app.pipelines import PipelineContext
 from app.supabase_client import SupabaseClient
 from app.telegram import TelegramClient, poll_loop
-from app.tor_control import rotate_tor_circuit
 
 logger = logging.getLogger(__name__)
 
@@ -172,102 +171,12 @@ async def scrape_odds_status(request: web.Request) -> web.Response:
     return web.json_response({"status": "done", "result": job["result"]})
 
 
-async def tor_rotate(request: web.Request) -> web.Response:
-    """Diagnostico 2026-08-02: fuerza una rotacion de circuito (SIGNAL NEWNYM) y devuelve si Tor la
-    acepto. Sirve para VERIFICAR que el ControlPort/cookie estan bien y que la rotacion (de la que
-    depende el retry del autofetch) funciona de verdad. Protegido por el mismo token."""
-    cfg: Config = request.app["cfg"]
-    if not _check_scrape_token(request, cfg):
-        return web.json_response({"error": "unauthorized"}, status=401)
-    ok, detail = await rotate_tor_circuit()
-    return web.json_response({"rotated": ok, "detail": detail})
-
-
-async def diag(request: web.Request) -> web.Response:
-    """Diagnostico 2026-08-02: lee el estado INTERNO del pipeline (DB de autopicks, no accesible
-    de fuera) para localizar donde se atasca: partidos en ventana, gates confirmados, cuotas
-    guardadas, pipelines disparados y errores recientes. Protegido por token."""
-    cfg: Config = request.app["cfg"]
-    if not _check_scrape_token(request, cfg):
-        return web.json_response({"error": "unauthorized"}, status=401)
-    ctx: PipelineContext = request.app["ctx"]
-    out: dict = {}
-    async def _try(name, sql):
-        try:
-            async with ctx.pool.acquire() as conn:
-                rows = await conn.fetch(sql)
-            out[name] = [dict(r) for r in rows]
-        except Exception as e:
-            out[name] = f"ERR: {e}"
-    win = "game_datetime_utc BETWEEN now() - interval '1 hour' AND now() + interval '6 hours'"
-    await _try("gates_en_ventana",
-        f"SELECT sport_id, count(*) n, count(*) FILTER (WHERE pitchers_confirmed_at IS NOT NULL) pitchers, "
-        f"count(*) FILTER (WHERE lineup_confirmed_at IS NOT NULL) lineup, "
-        f"count(*) FILTER (WHERE last_odds_attempt_at IS NOT NULL) intento_odds "
-        f"FROM games_gate_state WHERE {win} GROUP BY sport_id ORDER BY sport_id")
-    await _try("con_odds",
-        f"SELECT g.sport_id, count(*) n FROM game_odds o JOIN games_gate_state g ON g.sport_id=o.sport_id AND g.game_pk=o.game_pk "
-        f"WHERE g.{win} AND o.away_ml IS NOT NULL GROUP BY g.sport_id ORDER BY g.sport_id")
-    await _try("pipeline_runs_cols",
-        "SELECT column_name FROM information_schema.columns WHERE table_name='pipeline_runs' ORDER BY ordinal_position")
-    await _try("pipeline_runs_ventana",
-        f"SELECT r.sport_id, r.pipeline, count(*) n, count(*) FILTER (WHERE r.error IS NOT NULL) con_error "
-        f"FROM pipeline_runs r JOIN games_gate_state g ON g.sport_id=r.sport_id AND g.game_pk=r.game_pk "
-        f"WHERE g.{win} GROUP BY r.sport_id, r.pipeline ORDER BY r.sport_id, r.pipeline")
-    await _try("errores",
-        f"SELECT r.sport_id, r.game_pk, left(r.error, 250) error FROM pipeline_runs r "
-        f"JOIN games_gate_state g ON g.sport_id=r.sport_id AND g.game_pk=r.game_pk "
-        f"WHERE g.{win} AND r.error IS NOT NULL LIMIT 6")
-    await _try("runs_detalle",
-        f"SELECT r.sport_id, r.pipeline, r.game_pk, r.data_score, (r.best_pick IS NOT NULL) tiene_best, "
-        f"r.published, jsonb_array_length(COALESCE((r.quant_result::jsonb)->'candidates', '[]'::jsonb)) n_cands, "
-        f"left(r.quant_result::text, 120) quant_preview "
-        f"FROM pipeline_runs r JOIN games_gate_state g ON g.sport_id=r.sport_id AND g.game_pk=r.game_pk "
-        f"WHERE g.{win} ORDER BY r.claimed_at DESC LIMIT 6")
-    out["supabase_url"] = ctx.supabase.base_url
-    out["supabase_key_prefix"] = ctx.supabase.headers.get("apikey", "")[:18]
-    # ?cleanup=1 -> borra las filas pipeline_runs ENVENENADAS (claimed pero sin quant_result ni
-    # error: el bug del datetime en json.dumps las dejaba a medias). try_fire_pipeline retorna
-    # temprano si ya existe la fila, asi que sin borrarlas el partido no se re-dispara. Al borrarlas,
-    # el detector las vuelve a procesar con el fix aplicado. Solo toca filas rotas, nunca picks buenos.
-    if request.query.get("cleanup"):
-        try:
-            async with ctx.pool.acquire() as conn:
-                res = await conn.execute(
-                    "DELETE FROM pipeline_runs r USING games_gate_state g "
-                    "WHERE g.sport_id=r.sport_id AND g.game_pk=r.game_pk "
-                    "AND g.game_datetime_utc BETWEEN now() - interval '3 hours' AND now() + interval '9 hours' "
-                    "AND r.quant_result IS NULL AND r.error IS NULL AND r.published = false")
-            out["cleanup"] = res  # "DELETE n"
-        except Exception as e:
-            out["cleanup"] = f"ERR: {type(e).__name__}: {e}"
-    # test-insert solo bajo demanda (?testinsert=1): mete una fila basura (source='diag_test') en el
-    # pool de calibracion, no debe correr en cada llamada.
-    if request.query.get("testinsert"):
-        try:
-            _tr = [{"game_id": -999, "game_date": "2026-08-02", "market": "ML", "pick_side": "away",
-                    "odds": 2.0, "edge": 0.0, "result": "DIAGTEST", "source": "diag_test",
-                    "created_at": dt.datetime.now(dt.timezone.utc).isoformat(), "league": "MLB",
-                    "matchup_label": "X @ Y", "prob_estimated": 0.5, "prob_implied": 0.5}]
-            _resp = await ctx.http_client.post(
-                f"{ctx.supabase.base_url}/rest/v1/mlb_candidates_history",
-                headers={**ctx.supabase.headers, "Content-Type": "application/json", "Prefer": "return=minimal"},
-                json=_tr, timeout=15.0)
-            out["test_insert_via_ctx"] = {"status": _resp.status_code, "body": _resp.text[:400]}
-        except Exception as e:
-            out["test_insert_via_ctx"] = f"ERR: {type(e).__name__}: {e}"
-    return web.json_response(out, dumps=lambda o: __import__("json").dumps(o, default=str))
-
-
-async def run_health_server(cfg: Config, ctx: "PipelineContext", port: int = 8080) -> None:
+async def run_health_server(cfg: Config, port: int = 8080) -> None:
     app = web.Application()
     app["cfg"] = cfg
-    app["ctx"] = ctx
     app.router.add_get("/healthz", health)
     app.router.add_get("/scrape-odds/start", scrape_odds_start)
     app.router.add_get("/scrape-odds/status/{job_id}", scrape_odds_status)
-    app.router.add_get("/tor-rotate", tor_rotate)
-    app.router.add_get("/diag", diag)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
@@ -341,7 +250,7 @@ async def main() -> None:
     await telegram.send_message(cfg.tg_admin_chat_id, "🟢 Auto-Picks v2 arrancado y en marcha.")
 
     await asyncio.gather(
-        run_health_server(cfg, ctx),
+        run_health_server(cfg),
         poll_loop(telegram, pool, lambda chat_id, text, msg_id: handle_message(ctx, chat_id, text, msg_id)),
     )
 
