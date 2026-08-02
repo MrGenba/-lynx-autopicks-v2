@@ -27,7 +27,6 @@ import asyncpg
 
 from app import aliases
 from app.message_handler import _check_gates_and_fire, _store_odds
-from app.tor_control import rotate_tor_circuit
 from app.node_bridge import NodeBridgeError, run_odds_scraper
 from app.overround import check_overround
 from app.pipelines import LEAGUE_KEY, LEAGUE_LABEL, PipelineContext
@@ -71,14 +70,8 @@ _scrape_semaphore = asyncio.Semaphore(1)
 # Solo se reintenta el caso "empty" (transitorio); una caída dura del scraper (NodeBridgeError) NO
 # se reintenta in-place (el detector reintentará en un tick posterior con cooldown, cuando Tor
 # probablemente se haya recuperado).
-# 2026-08-01: subido de 2 a 6 reintentos y backoff MUCHO mas corto. cuotasahora sirve una pagina
-# "decoy" (sin partidos) a la mayoria de exits de Tor -> solo ~1 de cada 5-6 exits sirve la pagina
-# real. Antes de cada reintento se rota el circuito (NEWNYM, ver autofetch loop) -> con 7 intentos
-# la probabilidad de dar con un exit bueno sube a ~75-80%. El backoff largo (60-150s) sobraba: era
-# para "Tor lento", pero NEWNYM da exit nuevo al instante -> basta ~10-25s para que el circuito se
-# establezca. Asi cada llamada cicla rapido por exits.
-AUTOFETCH_RETRIES = 6               # reintentos extra -> 7 intentos totales por llamada
-AUTOFETCH_BACKOFF_S = (10, 12, 15, 18, 22, 26)  # espera antes de cada reintento (tras rotar exit)
+AUTOFETCH_RETRIES = 2               # reintentos extra -> 3 intentos totales por llamada
+AUTOFETCH_BACKOFF_S = (60, 150)     # espera antes de cada reintento
 # Espaciado GLOBAL entre scrapes reales. Con "cuotas frescas siempre", cuando salen muchos lineups
 # casi a la vez el detector encola N scrapes -- el semáforo los serializa pero back-to-back, y ese
 # burst es justo lo que throttlea cuotasahora. Este hueco mínimo los separa.
@@ -304,11 +297,7 @@ async def autofetch_single_game(
         matched, status = await _scrape_and_apply(ctx, sport_id, [candidate])
         if matched > 0:
             return True
-        # 2026-08-01: reintentar tanto en "empty" (no_header/no_bookmaker_rows) como en
-        # "scraper_failed" (timeout/goto) -> ambos suelen ser un EXIT DE TOR bloqueado/lento por
-        # cuotasahora. Antes de reintentar se rota el circuito (SIGNAL NEWNYM) para salir por otro
-        # exit; el usuario confirma que Tor funciona con exits buenos, asi ciclamos hasta dar con uno.
-        if status not in ("empty", "scraper_failed"):
+        if status != "empty":
             return False
         if attempt >= AUTOFETCH_RETRIES:
             break
@@ -316,8 +305,7 @@ async def autofetch_single_game(
             gdt = game_datetime_utc if game_datetime_utc.tzinfo else game_datetime_utc.replace(tzinfo=dt.timezone.utc)
             if gdt - dt.datetime.now(dt.timezone.utc) < dt.timedelta(minutes=2):
                 break  # demasiado cerca del inicio para seguir reintentando
-        logger.info("autofetch retry %s/%s (%s) game_pk=%s -- rotando circuito Tor", attempt + 1, AUTOFETCH_RETRIES, status, game_pk)
-        await rotate_tor_circuit()
+        logger.info("autofetch retry %s/%s (scrape vacío) game_pk=%s", attempt + 1, AUTOFETCH_RETRIES, game_pk)
         await asyncio.sleep(AUTOFETCH_BACKOFF_S[attempt])
     return False
 
