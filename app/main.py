@@ -226,18 +226,36 @@ async def diag(request: web.Request) -> web.Response:
         f"WHERE g.{win} ORDER BY r.claimed_at DESC LIMIT 6")
     out["supabase_url"] = ctx.supabase.base_url
     out["supabase_key_prefix"] = ctx.supabase.headers.get("apikey", "")[:18]
-    try:
-        _tr = [{"game_id": -999, "game_date": "2026-08-02", "market": "ML", "pick_side": "away",
-                "odds": 2.0, "edge": 0.0, "result": "DIAGTEST", "source": "diag_test",
-                "created_at": dt.datetime.now(dt.timezone.utc).isoformat(), "league": "MLB",
-                "matchup_label": "X @ Y", "prob_estimated": 0.5, "prob_implied": 0.5}]
-        _resp = await ctx.http_client.post(
-            f"{ctx.supabase.base_url}/rest/v1/mlb_candidates_history",
-            headers={**ctx.supabase.headers, "Content-Type": "application/json", "Prefer": "return=minimal"},
-            json=_tr, timeout=15.0)
-        out["test_insert_via_ctx"] = {"status": _resp.status_code, "body": _resp.text[:400]}
-    except Exception as e:
-        out["test_insert_via_ctx"] = f"ERR: {type(e).__name__}: {e}"
+    # ?cleanup=1 -> borra las filas pipeline_runs ENVENENADAS (claimed pero sin quant_result ni
+    # error: el bug del datetime en json.dumps las dejaba a medias). try_fire_pipeline retorna
+    # temprano si ya existe la fila, asi que sin borrarlas el partido no se re-dispara. Al borrarlas,
+    # el detector las vuelve a procesar con el fix aplicado. Solo toca filas rotas, nunca picks buenos.
+    if request.query.get("cleanup"):
+        try:
+            async with ctx.pool.acquire() as conn:
+                res = await conn.execute(
+                    "DELETE FROM pipeline_runs r USING games_gate_state g "
+                    "WHERE g.sport_id=r.sport_id AND g.game_pk=r.game_pk "
+                    "AND g.game_datetime_utc BETWEEN now() - interval '3 hours' AND now() + interval '9 hours' "
+                    "AND r.quant_result IS NULL AND r.error IS NULL AND r.published = false")
+            out["cleanup"] = res  # "DELETE n"
+        except Exception as e:
+            out["cleanup"] = f"ERR: {type(e).__name__}: {e}"
+    # test-insert solo bajo demanda (?testinsert=1): mete una fila basura (source='diag_test') en el
+    # pool de calibracion, no debe correr en cada llamada.
+    if request.query.get("testinsert"):
+        try:
+            _tr = [{"game_id": -999, "game_date": "2026-08-02", "market": "ML", "pick_side": "away",
+                    "odds": 2.0, "edge": 0.0, "result": "DIAGTEST", "source": "diag_test",
+                    "created_at": dt.datetime.now(dt.timezone.utc).isoformat(), "league": "MLB",
+                    "matchup_label": "X @ Y", "prob_estimated": 0.5, "prob_implied": 0.5}]
+            _resp = await ctx.http_client.post(
+                f"{ctx.supabase.base_url}/rest/v1/mlb_candidates_history",
+                headers={**ctx.supabase.headers, "Content-Type": "application/json", "Prefer": "return=minimal"},
+                json=_tr, timeout=15.0)
+            out["test_insert_via_ctx"] = {"status": _resp.status_code, "body": _resp.text[:400]}
+        except Exception as e:
+            out["test_insert_via_ctx"] = f"ERR: {type(e).__name__}: {e}"
     return web.json_response(out, dumps=lambda o: __import__("json").dumps(o, default=str))
 
 
