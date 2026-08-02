@@ -663,7 +663,19 @@ def format_full_analysis(league_label: str, pipeline: int, away_team: str, home_
         published_mark = "  📣 PUBLICADO" if published_key == key else ""
         blended_txt = f"  |  Prob. blend: {prob_blended * 100:.1f}%" if prob_blended is not None else ""
         conf_txt = f"  |  Confianza: {confidence}" if confidence else ""
-        lines.append(f"{mark} {market} — {pick_side}{published_mark}")
+        # La linea (total de OU / handicap de HC) en la etiqueta del mercado -- el usuario la pidio
+        # explicitamente: "UNDER — under" no dice el numero, "UNDER 8.5 — under" si. ML no lleva
+        # linea. Se usa el total_line/hc_value del propio candidato (mismos nombres de mercado que
+        # _pick_missing_line) y _js_num_str para no arrastrar el .0 (8.5 pero 8, no 8.0).
+        _m_up = (market or "").upper()
+        if _m_up in ("OU", "OVER", "UNDER") and c.get("total_line") is not None:
+            market_lbl = f"{market} {_js_num_str(c.get('total_line'))}"
+        elif _m_up in ("HC", "HC_AWAY", "HC_HOME") and c.get("hc_value") is not None:
+            _hv = c.get("hc_value")
+            market_lbl = f"{market} {'+' if _hv >= 0 else ''}{_js_num_str(_hv)}"
+        else:
+            market_lbl = market
+        lines.append(f"{mark} {market_lbl} — {pick_side}{published_mark}")
         lines.append(
             f"   Cuota: {_fmt_odds(odds)}  |  Prob. modelo: {prob_model * 100:.1f}%  |  "
             f"Prob. mercado: {prob_implied * 100:.1f}%{blended_txt}"
