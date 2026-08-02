@@ -208,12 +208,16 @@ async def diag(request: web.Request) -> web.Response:
     await _try("con_odds",
         f"SELECT g.sport_id, count(*) n FROM game_odds o JOIN games_gate_state g ON g.sport_id=o.sport_id AND g.game_pk=o.game_pk "
         f"WHERE g.{win} AND o.away_ml IS NOT NULL GROUP BY g.sport_id ORDER BY g.sport_id")
-    await _try("pipeline_runs_3h",
-        "SELECT sport_id, pipeline, count(*) n, count(*) FILTER (WHERE error IS NOT NULL) con_error, max(created_at) ultimo "
-        "FROM pipeline_runs WHERE created_at > now() - interval '3 hours' GROUP BY sport_id, pipeline ORDER BY sport_id, pipeline")
-    await _try("errores_recientes",
-        "SELECT sport_id, game_pk, left(error, 200) error, created_at FROM pipeline_runs "
-        "WHERE error IS NOT NULL AND created_at > now() - interval '3 hours' ORDER BY created_at DESC LIMIT 6")
+    await _try("pipeline_runs_cols",
+        "SELECT column_name FROM information_schema.columns WHERE table_name='pipeline_runs' ORDER BY ordinal_position")
+    await _try("pipeline_runs_ventana",
+        f"SELECT r.sport_id, r.pipeline, count(*) n, count(*) FILTER (WHERE r.error IS NOT NULL) con_error "
+        f"FROM pipeline_runs r JOIN games_gate_state g ON g.sport_id=r.sport_id AND g.game_pk=r.game_pk "
+        f"WHERE g.{win} GROUP BY r.sport_id, r.pipeline ORDER BY r.sport_id, r.pipeline")
+    await _try("errores",
+        f"SELECT r.sport_id, r.game_pk, left(r.error, 250) error FROM pipeline_runs r "
+        f"JOIN games_gate_state g ON g.sport_id=r.sport_id AND g.game_pk=r.game_pk "
+        f"WHERE g.{win} AND r.error IS NOT NULL LIMIT 6")
     return web.json_response(out, dumps=lambda o: __import__("json").dumps(o, default=str))
 
 
