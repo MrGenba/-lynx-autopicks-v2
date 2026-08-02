@@ -15,6 +15,14 @@
 # forma fiable con la hora ocasionalmente desfasada 1h que uno roto la mayoria de las veces. Si
 # se retoma esto en el futuro, probar con un timeout de goto mas alto en vez de restringir el
 # pool de nodos.
-tor --RunAsDaemon 1
-sleep 5
+# 2026-08-02: ControlPort + CookieAuthentication para poder rotar el circuito bajo demanda
+# (SIGNAL NEWNYM desde app/tor_control.py) tras un scrape fallido. NO se toca MaxCircuitDirtiness
+# (se queda en el default 600s): el circuito debe ser ESTABLE durante cada scrape -- rotarlo a
+# mitad rompe la sesion del navegador (error de la iteracion anterior). Solo se rota entre
+# reintentos, cuando cuotasahora sirvio el "decoy" (indice sin partidos) por un circuito malo.
+tor --RunAsDaemon 1 \
+    --ControlPort 9051 \
+    --CookieAuthentication 1 \
+    --CookieAuthFile /tmp/tor.cookie
+sleep 8
 exec python -m app.main

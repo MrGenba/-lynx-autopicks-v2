@@ -27,6 +27,7 @@ import asyncpg
 
 from app import aliases
 from app.message_handler import _check_gates_and_fire, _store_odds
+from app.tor_control import rotate_tor_circuit
 from app.node_bridge import NodeBridgeError, run_odds_scraper
 from app.overround import check_overround
 from app.pipelines import LEAGUE_KEY, LEAGUE_LABEL, PipelineContext
@@ -70,8 +71,12 @@ _scrape_semaphore = asyncio.Semaphore(1)
 # Solo se reintenta el caso "empty" (transitorio); una caída dura del scraper (NodeBridgeError) NO
 # se reintenta in-place (el detector reintentará en un tick posterior con cooldown, cuando Tor
 # probablemente se haya recuperado).
-AUTOFETCH_RETRIES = 2               # reintentos extra -> 3 intentos totales por llamada
-AUTOFETCH_BACKOFF_S = (60, 150)     # espera antes de cada reintento
+AUTOFETCH_RETRIES = 5               # reintentos extra -> 6 intentos totales por llamada
+# 2026-08-02: backoff corto porque entre reintentos se ROTA el circuito de Tor (NEWNYM). El circuito
+# se mantiene estable DURANTE cada scrape; solo rota entre intentos. cuotasahora sirve un "decoy"
+# (indice sin partidos) a algunos circuitos -> con 6 intentos rotando circuito, ~80% de dar con uno
+# bueno. El backoff da tiempo a que Tor construya el circuito nuevo antes del siguiente intento.
+AUTOFETCH_BACKOFF_S = (15, 15, 20, 20, 25)  # espera antes de cada reintento (tras rotar circuito)
 # Espaciado GLOBAL entre scrapes reales. Con "cuotas frescas siempre", cuando salen muchos lineups
 # casi a la vez el detector encola N scrapes -- el semáforo los serializa pero back-to-back, y ese
 # burst es justo lo que throttlea cuotasahora. Este hueco mínimo los separa.
@@ -297,7 +302,11 @@ async def autofetch_single_game(
         matched, status = await _scrape_and_apply(ctx, sport_id, [candidate])
         if matched > 0:
             return True
-        if status != "empty":
+        # 2026-08-02: reintentar en "empty" (decoy/no_header) Y "scraper_failed" (timeout) -> ambos
+        # suelen ser un CIRCUITO de Tor por el que cuotasahora sirve el decoy. Antes de reintentar se
+        # ROTA el circuito (NEWNYM) para salir por otro; con circuito estable durante cada scrape y
+        # rotacion entre intentos, se cicla hasta un circuito bueno.
+        if status not in ("empty", "scraper_failed"):
             return False
         if attempt >= AUTOFETCH_RETRIES:
             break
@@ -305,7 +314,9 @@ async def autofetch_single_game(
             gdt = game_datetime_utc if game_datetime_utc.tzinfo else game_datetime_utc.replace(tzinfo=dt.timezone.utc)
             if gdt - dt.datetime.now(dt.timezone.utc) < dt.timedelta(minutes=2):
                 break  # demasiado cerca del inicio para seguir reintentando
-        logger.info("autofetch retry %s/%s (scrape vacío) game_pk=%s", attempt + 1, AUTOFETCH_RETRIES, game_pk)
+        ok, detail = await rotate_tor_circuit()
+        logger.info("autofetch retry %s/%s (%s) game_pk=%s -- NEWNYM %s (%s)",
+                    attempt + 1, AUTOFETCH_RETRIES, status, game_pk, "ok" if ok else "FALLO", detail)
         await asyncio.sleep(AUTOFETCH_BACKOFF_S[attempt])
     return False
 

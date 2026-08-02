@@ -26,6 +26,7 @@ from app.odds_autofetch import _scrape_semaphore, autofetch_tick
 from app.pipelines import PipelineContext
 from app.supabase_client import SupabaseClient
 from app.telegram import TelegramClient, poll_loop
+from app.tor_control import rotate_tor_circuit
 
 logger = logging.getLogger(__name__)
 
@@ -171,12 +172,24 @@ async def scrape_odds_status(request: web.Request) -> web.Response:
     return web.json_response({"status": "done", "result": job["result"]})
 
 
+async def tor_rotate(request: web.Request) -> web.Response:
+    """Diagnostico 2026-08-02: fuerza una rotacion de circuito (SIGNAL NEWNYM) y devuelve si Tor la
+    acepto. Sirve para VERIFICAR que el ControlPort/cookie estan bien y que la rotacion (de la que
+    depende el retry del autofetch) funciona de verdad. Protegido por el mismo token."""
+    cfg: Config = request.app["cfg"]
+    if not _check_scrape_token(request, cfg):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    ok, detail = await rotate_tor_circuit()
+    return web.json_response({"rotated": ok, "detail": detail})
+
+
 async def run_health_server(cfg: Config, port: int = 8080) -> None:
     app = web.Application()
     app["cfg"] = cfg
     app.router.add_get("/healthz", health)
     app.router.add_get("/scrape-odds/start", scrape_odds_start)
     app.router.add_get("/scrape-odds/status/{job_id}", scrape_odds_status)
+    app.router.add_get("/tor-rotate", tor_rotate)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
