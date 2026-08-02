@@ -218,6 +218,20 @@ async def diag(request: web.Request) -> web.Response:
         f"SELECT r.sport_id, r.game_pk, left(r.error, 250) error FROM pipeline_runs r "
         f"JOIN games_gate_state g ON g.sport_id=r.sport_id AND g.game_pk=r.game_pk "
         f"WHERE g.{win} AND r.error IS NOT NULL LIMIT 6")
+    out["supabase_url"] = ctx.supabase.base_url
+    out["supabase_key_prefix"] = ctx.supabase.headers.get("apikey", "")[:18]
+    try:
+        _tr = [{"game_id": -999, "game_date": "2026-08-02", "market": "ML", "pick_side": "away",
+                "odds": 2.0, "edge": 0.0, "result": "DIAGTEST", "source": "diag_test",
+                "created_at": dt.datetime.now(dt.timezone.utc).isoformat(), "league": "MLB",
+                "matchup_label": "X @ Y", "prob_estimated": 0.5, "prob_implied": 0.5}]
+        _resp = await ctx.http_client.post(
+            f"{ctx.supabase.base_url}/rest/v1/mlb_candidates_history",
+            headers={**ctx.supabase.headers, "Content-Type": "application/json", "Prefer": "return=minimal"},
+            json=_tr, timeout=15.0)
+        out["test_insert_via_ctx"] = {"status": _resp.status_code, "body": _resp.text[:400]}
+    except Exception as e:
+        out["test_insert_via_ctx"] = f"ERR: {type(e).__name__}: {e}"
     return web.json_response(out, dumps=lambda o: __import__("json").dumps(o, default=str))
 
 
