@@ -171,12 +171,66 @@ async def scrape_odds_status(request: web.Request) -> web.Response:
     return web.json_response({"status": "done", "result": job["result"]})
 
 
-async def run_health_server(cfg: Config, port: int = 8080) -> None:
+async def diagmilb(request: web.Request) -> web.Response:
+    """Diagnostico TEMPORAL 2026-08-02 (MiLB no produce picks): por cada partido MiLB (sport 11) en
+    ventana muestra gate, cuotas, estado del pipeline_run y -clave- el ERA de temporada de sus
+    abridores en player_stats (si falta, build_game_object devuelve None -> 'datos insuficientes' ->
+    0 candidatos). Solo lectura. Quitar tras diagnosticar."""
+    cfg: Config = request.app["cfg"]
+    if not _check_scrape_token(request, cfg):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    ctx: PipelineContext = request.app["ctx"]
+    win = "game_datetime_utc BETWEEN now() - interval '3 hours' AND now() + interval '12 hours'"
+    async with ctx.pool.acquire() as conn:
+        games = await conn.fetch(
+            f"SELECT g.game_pk, g.away_pitcher_id, g.home_pitcher_id, "
+            f"(g.pitchers_confirmed_at IS NOT NULL) pitchers_ok, (g.lineup_confirmed_at IS NOT NULL) lineup_ok, "
+            f"(o.away_ml IS NOT NULL) has_odds "
+            f"FROM games_gate_state g LEFT JOIN game_odds o ON o.sport_id=g.sport_id AND o.game_pk=g.game_pk "
+            f"WHERE g.sport_id=11 AND g.{win} ORDER BY g.game_datetime_utc")
+        runs = await conn.fetch(
+            "SELECT game_pk, pipeline, (quant_result IS NULL) qnull, (error IS NOT NULL) has_err, "
+            "left(error,200) err, jsonb_array_length(COALESCE((quant_result::jsonb)->'candidates','[]'::jsonb)) n_cands "
+            "FROM pipeline_runs WHERE sport_id=11")
+    runs_by_pk: dict = {}
+    for r in runs:
+        runs_by_pk.setdefault(r["game_pk"], []).append(
+            f"p{r['pipeline']}:{'QNULL' if r['qnull'] else 'ncands='+str(r['n_cands'])}{' ERR:'+r['err'] if r['has_err'] else ''}")
+
+    async def era_of(pid):
+        if not pid:
+            return "no_pid"
+        try:
+            rows = await ctx.supabase.select(
+                ctx.http_client, "player_stats",
+                {"player_id": f"eq.{pid}", "order": "season.desc", "limit": "1", "select": "era,season"})
+            if not rows:
+                return "SIN_FILA"
+            return f"era={rows[0].get('era')}(s{rows[0].get('season')})"
+        except Exception as e:
+            return f"ERR:{e}"
+
+    out = []
+    for g in games:
+        ae = await era_of(g["away_pitcher_id"])
+        he = await era_of(g["home_pitcher_id"])
+        out.append({
+            "game_pk": g["game_pk"], "pitchers_ok": g["pitchers_ok"], "lineup_ok": g["lineup_ok"],
+            "has_odds": g["has_odds"], "away_pid": g["away_pitcher_id"], "home_pid": g["home_pitcher_id"],
+            "away_era": ae, "home_era": he, "runs": runs_by_pk.get(g["game_pk"], []),
+        })
+    return web.json_response({"milb_en_ventana": out},
+                             dumps=lambda o: __import__("json").dumps(o, default=str))
+
+
+async def run_health_server(cfg: Config, ctx: "PipelineContext", port: int = 8080) -> None:
     app = web.Application()
     app["cfg"] = cfg
+    app["ctx"] = ctx
     app.router.add_get("/healthz", health)
     app.router.add_get("/scrape-odds/start", scrape_odds_start)
     app.router.add_get("/scrape-odds/status/{job_id}", scrape_odds_status)
+    app.router.add_get("/diagmilb", diagmilb)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
@@ -250,7 +304,7 @@ async def main() -> None:
     await telegram.send_message(cfg.tg_admin_chat_id, "🟢 Auto-Picks v2 arrancado y en marcha.")
 
     await asyncio.gather(
-        run_health_server(cfg),
+        run_health_server(cfg, ctx),
         poll_loop(telegram, pool, lambda chat_id, text, msg_id: handle_message(ctx, chat_id, text, msg_id)),
     )
 
