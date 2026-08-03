@@ -70,8 +70,6 @@ async def run_odds_scraper(
     vendor_dir: str,
     league: str,
     proxy_server: Optional[str] = None,
-    proxy_username: Optional[str] = None,
-    proxy_password: Optional[str] = None,
     candidate_names: Optional[list[str]] = None,
     bookmaker: str = "Bet365",
     timeout: float = 600.0,
@@ -90,10 +88,6 @@ async def run_odds_scraper(
     env = dict(os.environ)
     if proxy_server:
         env["PROXY_SERVER"] = proxy_server
-        if proxy_username:
-            env["PROXY_USERNAME"] = proxy_username
-        if proxy_password:
-            env["PROXY_PASSWORD"] = proxy_password
     proc = await asyncio.create_subprocess_exec(
         node_bin, script, league,
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,

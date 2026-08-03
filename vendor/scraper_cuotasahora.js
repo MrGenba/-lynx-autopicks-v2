@@ -1,11 +1,10 @@
 // Vendorizado desde D:\Milb\odds_bet365\scraper_cuotasahora.js (sha256 original:
 // f61bcf7b7ae4d06d8ad5dd45d350d2f8d93657ad248109c11e3be673b25b56a1), con UN cambio respecto
-// al original: ensureBrowser() lee PROXY_SERVER/PROXY_USERNAME/PROXY_PASSWORD del entorno y
-// los pasa a chromium.launch() si estan presentes -- el VPS de Francia donde corre este
-// contenedor esta bloqueado por cuotasahora.com (confirmado 2026-07-08 con una peticion HTTP
-// plana desde n8n, timeout), asi que hace falta salir por una IP residencial distinta (proxy
-// IPRoyal, pais ES) para que el scraping funcione en absoluto. Sin proxy configurado, se
-// comporta exactamente igual que el original (mismo bloqueo esperado).
+// al original: ensureBrowser() lee PROXY_SERVER del entorno y lo pasa a chromium.launch() si
+// esta presente -- el VPS de Francia donde corre este contenedor esta bloqueado por
+// cuotasahora.com (confirmado 2026-07-08 con una peticion HTTP plana desde n8n, timeout), asi
+// que hace falta salir por Tor (SOCKS local) para que el scraping funcione. Sin proxy
+// configurado, se comporta exactamente igual que el original (mismo bloqueo esperado).
 const { chromium } = require("patchright");
 const { parseBookmakerRows, pickBookmaker, parseAggregateLines, pickMainLine, parseMatchHeader } = require("./parser_cuotasahora");
 
@@ -36,10 +35,7 @@ let cookiesAccepted = false;
 function proxyFromEnv() {
   const server = process.env.PROXY_SERVER;
   if (!server) return undefined;
-  const proxy = { server };
-  if (process.env.PROXY_USERNAME) proxy.username = process.env.PROXY_USERNAME;
-  if (process.env.PROXY_PASSWORD) proxy.password = process.env.PROXY_PASSWORD;
-  return proxy;
+  return { server };  // Tor SOCKS local, sin auth
 }
 
 async function ensureBrowser() {

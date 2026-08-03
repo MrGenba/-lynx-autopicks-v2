@@ -7,7 +7,7 @@
 // buscar -- nunca se sustituye por otra si no se encuentra, ver pickBookmaker() en
 // parser_cuotasahora.js. Sin stdin o con campos ausentes, defaults: candidateNames=[],
 // bookmaker="Bet365" (comportamiento igual que antes de este cambio). El proxy (si hace falta)
-// se lee de PROXY_SERVER/PROXY_USERNAME/PROXY_PASSWORD dentro de scraper_cuotasahora.js, no aqui.
+// se lee de PROXY_SERVER (Tor SOCKS) dentro de scraper_cuotasahora.js, no aqui.
 const { fetchLeagueOdds, shutdown } = require("./scraper_cuotasahora");
 
 const league = process.argv[2];

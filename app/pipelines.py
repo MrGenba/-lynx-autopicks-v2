@@ -219,11 +219,11 @@ class PipelineContext:
     vendor_dir: str
     supabase: SupabaseClient  # lectura de vistas + escritura SOLO en *_candidates_history (ver supabase_client.py)
     http_client: httpx.AsyncClient
-    # Proxy opcional para vendor/run_odds_scraper.js -- ver app/odds_autofetch.py. None = sin
+    # Proxy para vendor/run_odds_scraper.js (Tor local) -- ver app/odds_autofetch.py. None = sin
     # proxy (el scraper fallara igual que produccion, bloqueado por cuotasahora.com).
     proxy_server: Optional[str] = None
-    proxy_username: Optional[str] = None
-    proxy_password: Optional[str] = None
+    # Proxy SEPARADO solo para LMB (2a instancia Tor con salida en Mexico) -- ver Config. 2026-08-02.
+    proxy_server_lmb: Optional[str] = None
     # odds-api.io (2026-07-11) -- fuente primaria nueva, ver app/odds_api_client.py. None =
     # desactivada, cae directo al scraper de Tor (comportamiento identico a antes de esto).
     odds_api_key: Optional[str] = None

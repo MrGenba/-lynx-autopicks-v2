@@ -70,10 +70,12 @@ async def _run_scrape_job(job_id: str, cfg: Config, league: str, bookmaker: str 
         # _try_odds_api() se deja sin borrar (queda sin llamar desde aqui) por si se quiere
         # recuperar la via rapida en el futuro con una fuente distinta.
 
+        # LMB sale por su Tor mexicano si esta configurado (ver Config.proxy_server_lmb).
+        proxy = cfg.proxy_server_lmb if (league == "LMB" and cfg.proxy_server_lmb) else cfg.proxy_server
         async with _scrape_semaphore:
             result = await run_odds_scraper(
                 cfg.node_bin, cfg.vendor_dir, league,
-                cfg.proxy_server, cfg.proxy_username, cfg.proxy_password,
+                proxy,
                 candidate_names=candidate_names,
                 bookmaker=bookmaker,
             )
@@ -216,7 +218,7 @@ async def main() -> None:
         admin_chat_id=cfg.tg_admin_chat_id, picks_channel_id=cfg.tg_picks_channel_id,
         node_bin=cfg.node_bin, vendor_dir=cfg.vendor_dir,
         supabase=supabase, http_client=http_client,
-        proxy_server=cfg.proxy_server, proxy_username=cfg.proxy_username, proxy_password=cfg.proxy_password,
+        proxy_server=cfg.proxy_server, proxy_server_lmb=cfg.proxy_server_lmb,
         odds_api_key=cfg.odds_api_key,
     )
 

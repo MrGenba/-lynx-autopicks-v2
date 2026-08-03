@@ -189,9 +189,12 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
             gap = _MIN_SCRAPE_GAP_S - (dt.datetime.now(dt.timezone.utc).timestamp() - _last_scrape[0])
             if gap > 0:
                 await asyncio.sleep(gap)
+            # LMB (sport 23) sale por su Tor MEXICANO si esta configurado (cuotasahora sirve un muro
+            # de login/decoy a los circuitos Tor no-MX en la seccion LMB); el resto por el Tor normal.
+            proxy = ctx.proxy_server_lmb if (sport_id == 23 and ctx.proxy_server_lmb) else ctx.proxy_server
             result = await run_odds_scraper(
                 ctx.node_bin, ctx.vendor_dir, league_key,
-                ctx.proxy_server, ctx.proxy_username, ctx.proxy_password,
+                proxy,
                 candidate_names=candidate_names,
             )
             _last_scrape[0] = dt.datetime.now(dt.timezone.utc).timestamp()

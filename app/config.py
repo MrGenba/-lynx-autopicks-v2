@@ -32,12 +32,15 @@ class Config:
     # scrapes de Tor extra cerca del cierre -- activar tras revisar el gasto de proxy.
     clv_capture_enabled: bool
     clv_capture_interval_seconds: int
-    # Proxy opcional para el scraper de cuotas (vendor/run_odds_scraper.js) -- el VPS de
-    # Francia esta bloqueado por cuotasahora.com, asi que sin esto el scraper falla igual que
-    # el de produccion. None = sin proxy (mismo comportamiento que antes de 2026-07-09).
+    # Proxy del scraper de cuotas (vendor/run_odds_scraper.js) -- el VPS de Francia esta bloqueado
+    # por cuotasahora.com por IP directa, asi que se sale por el Tor local (SOCKS 127.0.0.1:9050,
+    # arrancado en docker-entrypoint.sh). None = sin proxy (salida directa, falla en el VPS).
     proxy_server: str | None
-    proxy_username: str | None
-    proxy_password: str | None
+    # Proxy SEPARADO solo para LMB (sport 23): 2a instancia Tor con ExitNodes {mx} (127.0.0.1:9052).
+    # cuotasahora sirve un muro de login/decoy a la mayoria de circuitos Tor NO mexicanos en la
+    # seccion de LMB -> con salida en Mexico carga la pagina real. Aislado del Tor principal para no
+    # afectar a MLB/MiLB. None = LMB usa proxy_server (el Tor normal). 2026-08-02.
+    proxy_server_lmb: str | None
     # Token compartido para /scrape-odds -- endpoint HTTP que produccion (n8n, proyecto
     # EasyPanel distinto, sin red interna compartida con este) llama para reusar el scraper
     # con Tor de este contenedor en vez de duplicar Tor+Chrome en producción. None = endpoint
@@ -63,17 +66,11 @@ class Config:
             log_dir=os.environ.get("LOG_DIR", "/app/logs"),
             detector_interval_seconds=int(os.environ.get("DETECTOR_INTERVAL_SECONDS", "180")),
             odds_autofetch_interval_seconds=int(os.environ.get("ODDS_AUTOFETCH_INTERVAL_SECONDS", "900")),
-            # Pausado por defecto 2026-07-09: el proxy IPRoyal (pago por GB) se comio >4GB
-            # durante la depuracion de esta funcionalidad, casi todo ANTES de que el filtro por
-            # URL y el bloqueo de imagenes estuvieran desplegados. /fetchodds sigue disponible
-            # para disparar un ciclo manual a proposito -- reactivar aqui cuando se confirme
-            # cuanto gasta realmente el ciclo ya optimizado.
             odds_autofetch_enabled=os.environ.get("ODDS_AUTOFETCH_ENABLED", "false").lower() == "true",
             clv_capture_enabled=os.environ.get("CLV_CAPTURE_ENABLED", "false").lower() == "true",
             clv_capture_interval_seconds=int(os.environ.get("CLV_CAPTURE_INTERVAL_SECONDS", "300")),
             proxy_server=os.environ.get("PROXY_SERVER") or None,
-            proxy_username=os.environ.get("PROXY_USERNAME") or None,
-            proxy_password=os.environ.get("PROXY_PASSWORD") or None,
+            proxy_server_lmb=os.environ.get("PROXY_SERVER_LMB") or None,
             scrape_endpoint_token=os.environ.get("SCRAPE_ENDPOINT_TOKEN") or None,
             odds_api_key=os.environ.get("ODDS_API_KEY") or None,
         )

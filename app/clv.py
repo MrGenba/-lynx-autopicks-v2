@@ -104,11 +104,12 @@ async def _capture_league(ctx: PipelineContext, sport_id: int, picks: list[dict]
         ) for p in picks
     ]
     names = [n for c in cands for n in (c.away_team_name, c.home_team_name) if n]
+    proxy = ctx.proxy_server_lmb if (sport_id == 23 and ctx.proxy_server_lmb) else ctx.proxy_server
     try:
         async with _scrape_semaphore:
             result = await run_odds_scraper(
                 ctx.node_bin, ctx.vendor_dir, league_key,
-                ctx.proxy_server, ctx.proxy_username, ctx.proxy_password, candidate_names=names,
+                proxy, candidate_names=names,
             )
     except NodeBridgeError as e:
         logger.warning("CLV: scraper fallo para %s: %s", league_key, e)
