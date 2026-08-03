@@ -25,20 +25,12 @@ tor --RunAsDaemon 1 \
     --CookieAuthentication 1 \
     --CookieAuthFile /tmp/tor.cookie
 
-# 2026-08-02: 2a instancia de Tor SOLO para LMB (sport 23), con salida en MEXICO. cuotasahora
-# sirve un muro de login/decoy ("INICIO DE SESION"/"REGISTRO") a la mayoria de circuitos Tor
-# NO mexicanos en la seccion de LMB -> con un exit mexicano carga la pagina real de cuotas.
-# AISLADA del Tor principal (otro SocksPort 9052 + su propio DataDirectory) para NO afectar a
-# MLB/MiLB, que siguen por el 9050. La app enruta LMB aqui solo si PROXY_SERVER_LMB=
-# socks5://127.0.0.1:9052 esta en el entorno (si no, LMB cae al Tor normal). Aviso: la red Tor
-# solo tiene ~1 exit MX (TrujillosExit) -> StrictNodes lo fuerza; si ese nodo cae, LMB se queda
-# sin cuotas (aceptable, ya estaba a 0) y MLB/MiLB quedan intactos. Si falla al arrancar, el
-# script sigue igual (LMB simplemente no tendra el 9052 disponible).
-tor --RunAsDaemon 1 \
-    --SocksPort 9052 \
-    --DataDirectory /tmp/tor-mx \
-    --ExitNodes '{mx}' \
-    --StrictNodes 1 || echo "AVISO: Tor MX (LMB) no arranco; LMB caera al Tor normal"
+# 2026-08-03: se PROBO una 2a instancia Tor con ExitNodes {mx} (StrictNodes) para LMB, porque
+# cuotasahora sirve un muro de login/decoy a los circuitos no-MX en la seccion de LMB. NO FUNCIONO:
+# la red Tor solo tiene ~1 exit MX (TrujillosExit) y forzarlo daba net::ERR_TIMED_OUT en page.goto
+# (mismo fallo que restringir a {es}, ver arriba). Retirada. La app conserva el hook
+# PROXY_SERVER_LMB (Config.proxy_server_lmb): si algun dia hay un proxy MEXICANO fiable (residencial
+# de pago, u otra via), basta con apuntar ese env a el y LMB saldra por ahi sin tocar codigo.
 
 sleep 8
 exec python -m app.main
