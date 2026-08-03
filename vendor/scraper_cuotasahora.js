@@ -184,7 +184,7 @@ async function scrapeMatch(league, url, shouldDrill, bookmaker) {
     // cuotasahora y tardan más en pintar las cuotas via XHR -> con Tor lento superaban los 15s y
     // devolvían no_header al 100%. MLB (más popular/cacheada) sigue con 15s (waitFor sale en
     // cuanto aparece el contenido, así que el margen extra solo se usa cuando de verdad tarda).
-    await waitForBookmakerRows(page, (league === "MiLB" || league === "LMB") ? 30000 : 15000);
+    await waitForBookmakerRows(page, league === "LMB" ? 40000 : (league === "MiLB" ? 30000 : 15000));
 
     let lines = await getLines(page);
     const header = parseMatchHeader(lines);
@@ -292,13 +292,24 @@ async function fetchLeagueOdds(league, candidateNames, bookmaker) {
         // despues de domcontentloaded. Se espera a que aparezca al menos un enlace real antes
         // de leerlos, en vez de fiarse de un sleep fijo. Subido de 6s a 15s el 2026-07-20 (ver
         // waitForBookmakerRows) por el mismo motivo: un dia de Tor lento necesita mas margen.
-        await page.locator('a[href*="/baseball/h2h/"]').first().waitFor({ timeout: 15000 }).catch(() => {});
+        // 2026-08-03: espera de enlaces league-aware. LMB/MiLB estan menos cacheadas y su lista de
+        // partidos (pintada via XHR) tarda mas en aparecer con Tor lento -> 15s daba "sin NINGUN
+        // enlace" en LMB. Se sube a 30s para esas dos; MLB (mas cacheada) sigue en 15s. La espera
+        // sale en cuanto aparece el 1er enlace, asi que el margen extra solo se gasta si de verdad tarda.
+        const linkWait = (league === "MiLB" || league === "LMB") ? 30000 : 15000;
+        await page.locator('a[href*="/baseball/h2h/"]').first().waitFor({ timeout: linkWait }).catch(() => {});
         const allLinks = await page.evaluate(() =>
           Array.from(document.querySelectorAll("a")).map((a) => a.href)
         );
         const rawH2hLinks = [...new Set(allLinks.filter((h) => h.includes("/baseball/h2h/")))];
         matchLinks = rawH2hLinks.filter((link) => matchesUrlSlug(link, candidateNames));
         debugCounts.push({ path, attempt, totalLinks: allLinks.length, rawH2hLinks: rawH2hLinks.length, matchLinks: matchLinks.length });
+        // 2026-08-03: si NO aparecio ningun enlace de partido y aun queda intento, reintentar (la
+        // lista XHR puede no haberse pintado todavia) en vez de darla por vacia -- antes solo se
+        // reintentaba ante excepcion, asi que un "0 enlaces" transitorio (tipico en LMB) se perdia.
+        if (rawH2hLinks.length === 0 && attempt < 2) {
+          continue;  // el finally cierra esta page; se reintenta con una nueva
+        }
         // Diagnostico -- encontrado en vivo 2026-07-10: un scrape entero de MLB (sin filtro de
         // candidateNames) devolvio 0 partidos SIN ningun error (la pagina cargo bien, pero
         // querySelectorAll no encontro ni un enlace de partido). Sin esto no habia forma de saber
