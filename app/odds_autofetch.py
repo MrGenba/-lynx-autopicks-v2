@@ -72,6 +72,13 @@ _scrape_semaphore = asyncio.Semaphore(1)
 # se reintenta in-place (el detector reintentará en un tick posterior con cooldown, cuando Tor
 # probablemente se haya recuperado).
 AUTOFETCH_RETRIES = 5               # reintentos extra -> 6 intentos totales por llamada
+# LMB (sport 23) sufre mucho mas la loteria de circuito: el widget de cuotas (XHR) solo carga en
+# CIERTOS circuitos Tor -> un scrape entero devuelve TODO o NADA segun el exit. 6 intentos no bastan
+# para dar con uno bueno de forma fiable (comprobado 2026-08-04: manual funciona, automatico no
+# entraba). Se sube LMB a 11 reintentos (12 intentos) rotando NEWNYM entre cada uno. Coste acotado:
+# en cuanto un intento pilla circuito bueno, ese circuito se cachea ~600s y el resto de partidos LMB
+# entran rapido; solo el primero paga la busqueda. MLB/MiLB se quedan en 5 (casi nunca lo necesitan).
+AUTOFETCH_RETRIES_LMB = 11
 # 2026-08-02: backoff corto porque entre reintentos se ROTA el circuito de Tor (NEWNYM). El circuito
 # se mantiene estable DURANTE cada scrape; solo rota entre intentos. cuotasahora sirve un "decoy"
 # (indice sin partidos) a algunos circuitos -> con 6 intentos rotando circuito, ~80% de dar con uno
@@ -301,7 +308,8 @@ async def autofetch_single_game(
     # con cuotas que sí existen es transitorio (Tor lento/throttle) -> reintentar con backoff amplio.
     # Caída dura del scraper -> no insistir aquí (el detector reintenta en un tick posterior con
     # cooldown, cuando Tor probablemente se haya recuperado).
-    for attempt in range(1 + AUTOFETCH_RETRIES):
+    retries = AUTOFETCH_RETRIES_LMB if sport_id == 23 else AUTOFETCH_RETRIES
+    for attempt in range(1 + retries):
         matched, status = await _scrape_and_apply(ctx, sport_id, [candidate])
         if matched > 0:
             return True
@@ -311,7 +319,7 @@ async def autofetch_single_game(
         # rotacion entre intentos, se cicla hasta un circuito bueno.
         if status not in ("empty", "scraper_failed"):
             return False
-        if attempt >= AUTOFETCH_RETRIES:
+        if attempt >= retries:
             break
         if game_datetime_utc is not None:
             gdt = game_datetime_utc if game_datetime_utc.tzinfo else game_datetime_utc.replace(tzinfo=dt.timezone.utc)
@@ -319,8 +327,9 @@ async def autofetch_single_game(
                 break  # demasiado cerca del inicio para seguir reintentando
         ok, detail = await rotate_tor_circuit()
         logger.info("autofetch retry %s/%s (%s) game_pk=%s -- NEWNYM %s (%s)",
-                    attempt + 1, AUTOFETCH_RETRIES, status, game_pk, "ok" if ok else "FALLO", detail)
-        await asyncio.sleep(AUTOFETCH_BACKOFF_S[attempt])
+                    attempt + 1, retries, status, game_pk, "ok" if ok else "FALLO", detail)
+        # backoff: los indices extra de LMB (mas alla de los 5 de AUTOFETCH_BACKOFF_S) reusan el ultimo (25s)
+        await asyncio.sleep(AUTOFETCH_BACKOFF_S[min(attempt, len(AUTOFETCH_BACKOFF_S) - 1)])
     return False
 
 
