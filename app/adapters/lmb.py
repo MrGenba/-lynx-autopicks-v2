@@ -115,6 +115,7 @@ class LmbAdapter:
         mode: Mode,
         away_pitcher_id: Optional[int] = None,
         home_pitcher_id: Optional[int] = None,
+        game_datetime_utc: Optional[object] = None,
     ) -> Optional[dict]:
         # La vista se indexa por game_id (NO game_pk); filtrar por game_pk daba un 400 de PostgREST
         # ("column game_pk does not exist") que, via select->raise_for_status, tumbaba
@@ -162,7 +163,8 @@ class LmbAdapter:
             # usuario. Si falla o el estadio no tiene lat/lon conocidas, se conserva lo que ya
             # se cargo arriba (lmb_game_weather / vw_lmb_matchups_ready).
             fresh_weather = await fetch_fresh_weather(
-                self.http_client, self.supabase, game.get("venue_id"), game.get("game_date")
+                self.http_client, self.supabase, game.get("venue_id"), game.get("game_date"),
+                game_datetime_utc,
             )
             if fresh_weather:
                 game.update(fresh_weather)

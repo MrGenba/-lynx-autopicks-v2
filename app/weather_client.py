@@ -1,7 +1,8 @@
-"""Clima en vivo via open-meteo (gratis, sin API key) -- mismo metodo que ya usa produccion
-(ver build_sync_workflows.js:fetchWeatherOpenMeteo) para no introducir una calibracion
-distinta: hora mas cercana a las 20:00 UTC del dia del partido (aproximacion ya usada en
-produccion, no la hora real del partido de cada liga).
+"""Clima en vivo via open-meteo (gratis, sin API key). Se coge la hora del forecast mas cercana
+a la hora REAL del primer lanzamiento (game_datetime_utc) cuando el llamador la pasa; si no se
+conoce, se cae a la aproximacion historica de las 20:00 UTC del dia del partido (el metodo que
+usaba produccion, ver build_sync_workflows.js:fetchWeatherOpenMeteo). 2026-08-04: pasar la hora
+real del partido para que el clima corresponda al momento en que se juega, no a un punto fijo.
 
 2026-07-21: decision del usuario -- cuando se confirma el lineup completo (pipeline
 "full_lineup"), volver a consultar el clima real en ese momento en vez de conformarse con el
@@ -38,6 +39,7 @@ async def fetch_fresh_weather(
     supabase: SupabaseClient,
     venue_id: Optional[int],
     game_date: Optional[str],
+    game_datetime_utc: Optional[object] = None,
 ) -> Optional[dict]:
     """None si falta venue_id/game_date, si el estadio no tiene lat/lon conocidas (stadiums.lat
     IS NULL para varios recintos menores, ver tabla real), o si open-meteo falla -- el llamador
@@ -78,8 +80,18 @@ async def fetch_fresh_weather(
     if not times:
         return None
 
-    game_date_str = str(game_date)[:10]
-    target = dt.datetime.fromisoformat(f"{game_date_str}T20:00:00+00:00")
+    # target: la hora REAL del primer lanzamiento (game_datetime_utc, que el detector guarda en
+    # games_gate_state) si el llamador la pasa -> el forecast se coge de la hora del partido de
+    # verdad. Si no se conoce, se cae a la aproximacion historica de las 20:00 UTC del dia (compat
+    # con produccion / calibracion previa). 2026-08-04, a peticion del usuario.
+    target = None
+    if game_datetime_utc is not None:
+        target = game_datetime_utc if isinstance(game_datetime_utc, dt.datetime) else _parse_iso_utc(str(game_datetime_utc))
+        if target is not None and target.tzinfo is None:
+            target = target.replace(tzinfo=dt.timezone.utc)
+    if target is None:
+        game_date_str = str(game_date)[:10]
+        target = dt.datetime.fromisoformat(f"{game_date_str}T20:00:00+00:00")
     best_idx, best_diff = None, None
     for i, t in enumerate(times):
         t_dt = _parse_iso_utc(t)

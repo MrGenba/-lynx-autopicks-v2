@@ -113,6 +113,7 @@ class MilbAdapter:
         mode: Mode,
         away_pitcher_id: Optional[int] = None,
         home_pitcher_id: Optional[int] = None,
+        game_datetime_utc: Optional[object] = None,
     ) -> Optional[dict]:
         base = await self.supabase.select_one(
             self.http_client, "vw_matchups_enriched", {"game_id": f"eq.{game_pk}", "select": "*"}
@@ -159,7 +160,8 @@ class MilbAdapter:
             # falla o el estadio no tiene lat/lon conocidas, se conserva el snapshot previo (mas
             # abajo, weather.get(...) or base.get(...) sigue siendo el fallback final).
             fresh_weather = await fetch_fresh_weather(
-                self.http_client, self.supabase, base.get("venue_id"), base.get("game_date")
+                self.http_client, self.supabase, base.get("venue_id"), base.get("game_date"),
+                game_datetime_utc,
             ) or {}
 
         game = {

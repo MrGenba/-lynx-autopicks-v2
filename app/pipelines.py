@@ -775,8 +775,11 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
         )
     gate_away_pid = gate_row["away_pitcher_id"] if gate_row else None
     gate_home_pid = gate_row["home_pitcher_id"] if gate_row else None
+    gate_dt = gate_row["game_datetime_utc"] if gate_row else None
 
-    game_obj = await adapter.build_game_object(game_pk, mode, gate_away_pid, gate_home_pid)
+    # gate_dt (hora real del primer lanzamiento, de games_gate_state) -> el clima fresco se coge de
+    # la hora del partido de verdad, no de la aproximacion fija de las 20:00 UTC. 2026-08-04.
+    game_obj = await adapter.build_game_object(game_pk, mode, gate_away_pid, gate_home_pid, gate_dt)
     if game_obj is None:
         # Datos incompletos (p.ej. ERA de abridores aun sin poblar) -- NO se reclama la fila,
         # asi que se puede reintentar en un proximo tick del detector sin violar idempotencia.

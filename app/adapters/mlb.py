@@ -27,6 +27,7 @@ class MlbAdapter:
         mode: Mode,
         away_pitcher_id: Optional[int] = None,
         home_pitcher_id: Optional[int] = None,
+        game_datetime_utc: Optional[object] = None,
     ) -> Optional[dict]:
         # away_pitcher_id/home_pitcher_id no se usan aqui: a diferencia de MiLB/LMB, MLB no
         # hace una consulta propia de stats de abridor -- vw_mlb_matchups_ready ya trae el ERA
@@ -63,7 +64,8 @@ class MlbAdapter:
             # con el snapshot que ya trajo vw_mlb_matchups_ready) -- decision del usuario. Si
             # falla o el estadio no tiene lat/lon conocidas, se conserva el snapshot previo.
             fresh_weather = await fetch_fresh_weather(
-                self.http_client, self.supabase, game.get("venue_id"), game.get("game_date")
+                self.http_client, self.supabase, game.get("venue_id"), game.get("game_date"),
+                game_datetime_utc,
             )
             if fresh_weather:
                 game.update(fresh_weather)

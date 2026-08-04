@@ -12,6 +12,7 @@ class Adapter(Protocol):
         mode: Mode,
         away_pitcher_id: Optional[int] = None,
         home_pitcher_id: Optional[int] = None,
+        game_datetime_utc: Optional[object] = None,
     ) -> Optional[dict]:
         """Devuelve el dict 'game' listo para pasar a analyzeMatchup(), o None si faltan
         datos imprescindibles (p.ej. sin ERA/FIP de abridores) -- en ese caso el llamador
