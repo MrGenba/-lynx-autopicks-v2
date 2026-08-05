@@ -173,48 +173,12 @@ async def scrape_odds_status(request: web.Request) -> web.Response:
     return web.json_response({"status": "done", "result": job["result"]})
 
 
-async def diagcheck(request: web.Request) -> web.Response:
-    """Verificacion TEMPORAL 2026-08-04: llama a build_game_object (ruta critica, tocada por el
-    cambio del clima) para los partidos de esta noche y comprueba que no lanza excepcion. Solo
-    lectura. Quitar tras confirmar."""
-    cfg: Config = request.app["cfg"]
-    if not _check_scrape_token(request, cfg):
-        return web.json_response({"error": "unauthorized"}, status=401)
-    ctx: PipelineContext = request.app["ctx"]
-    win = "game_datetime_utc BETWEEN now() - interval '1 hour' AND now() + interval '8 hours'"
-    async with ctx.pool.acquire() as conn:
-        games = await conn.fetch(
-            f"SELECT sport_id, game_pk, away_pitcher_id, home_pitcher_id, game_datetime_utc "
-            f"FROM games_gate_state WHERE {win} ORDER BY sport_id, game_datetime_utc")
-    out = []
-    seen: dict = {}
-    for g in games:
-        sp = g["sport_id"]
-        if seen.get(sp, 0) >= 2:
-            continue
-        seen[sp] = seen.get(sp, 0) + 1
-        adapter = ctx.adapters.get(sp)
-        if adapter is None:
-            continue
-        for mode in ("pitchers_only", "full_lineup"):
-            try:
-                obj = await adapter.build_game_object(
-                    g["game_pk"], mode, g["away_pitcher_id"], g["home_pitcher_id"], g["game_datetime_utc"])
-                res = "None(datos insuf)" if obj is None else f"OK({len(obj)}campos temp={obj.get('temperature_2m')})"
-            except Exception as e:
-                res = f"EXC {type(e).__name__}: {e}"
-            out.append({"sport": sp, "game_pk": g["game_pk"], "mode": mode, "build": res})
-    return web.json_response({"builds": out}, dumps=lambda o: __import__("json").dumps(o, default=str))
-
-
-async def run_health_server(cfg: Config, ctx: "PipelineContext", port: int = 8080) -> None:
+async def run_health_server(cfg: Config, port: int = 8080) -> None:
     app = web.Application()
     app["cfg"] = cfg
-    app["ctx"] = ctx
     app.router.add_get("/healthz", health)
     app.router.add_get("/scrape-odds/start", scrape_odds_start)
     app.router.add_get("/scrape-odds/status/{job_id}", scrape_odds_status)
-    app.router.add_get("/diagcheck", diagcheck)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
@@ -288,7 +252,7 @@ async def main() -> None:
     await telegram.send_message(cfg.tg_admin_chat_id, "🟢 Auto-Picks v2 arrancado y en marcha.")
 
     await asyncio.gather(
-        run_health_server(cfg, ctx),
+        run_health_server(cfg),
         poll_loop(telegram, pool, lambda chat_id, text, msg_id: handle_message(ctx, chat_id, text, msg_id)),
     )
 
