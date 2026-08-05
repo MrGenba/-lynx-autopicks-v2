@@ -169,15 +169,18 @@ def _values_from_scraped(game: dict) -> dict:
 
 
 async def _notify_status_change(ctx: PipelineContext, sport_id: int, ok: bool, detail: str) -> None:
-    prev = _last_status.get(sport_id)
+    # 2026-08-05: SOLO LOG, ya no manda Telegram. Este aviso (✅ vuelve a responder / ⚠️ sin partidos,
+    # descartado) hacia flip-flop constante: el scrape usa UN circuito Tor por sesion y cuotasahora no
+    # pinta el widget en algunos circuitos -> cada miss transitorio (que el retry recupera) disparaba
+    # un par ⚠️/✅. Puro ruido de un sistema de reintentos que funciona. La señal util de "faltan
+    # cuotas" para un partido concreto ya la da el detector ("📋 Lineup listo, faltan cuotas") y el
+    # de "datos insuficientes"; esos SI van a Telegram. Se conserva _last_status por si se reactiva.
     _last_status[sport_id] = ok
-    if prev is ok:
-        return  # sin cambio de estado, no repetir el aviso en cada ciclo
     label = LEAGUE_LABEL.get(sport_id, str(sport_id))
     if ok:
-        await ctx.telegram.send_message(ctx.admin_chat_id, f"✅ Cuotas automáticas {label}: cuotasahora.com vuelve a responder.")
+        logger.info("cuotas %s: cuotasahora responde de nuevo", label)
     else:
-        await ctx.telegram.send_message(ctx.admin_chat_id, f"⚠️ Cuotas automáticas {label}: {detail}")
+        logger.info("cuotas %s: %s", label, detail)
 
 
 async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: list[aliases.CandidateGame]) -> int:
