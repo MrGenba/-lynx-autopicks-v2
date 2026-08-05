@@ -50,7 +50,7 @@ class MilbAdapter:
         rows = await self.supabase.select(
             self.http_client, "player_stats",
             {"player_id": f"eq.{player_id}", "order": "season.desc", "limit": "1",
-             "select": "era,fip,k_9,bb_9,innings_pitched,xwoba,whip,season"},
+             "select": "name,era,fip,k_9,bb_9,innings_pitched,xwoba,whip,season"},
         )
         return rows[0] if rows else {}
 
@@ -169,6 +169,11 @@ class MilbAdapter:
             "sport_id": 11,
             "away_pitcher_id": resolved_away_pid,
             "home_pitcher_id": resolved_home_pid,
+            # 2026-08-05: la vista MiLB solo trae pitcher_id (no el nombre, a diferencia de la de
+            # MLB) -> el mensaje salia "Lanzadores: N/A vs N/A". El nombre viene de player_stats,
+            # que ya se consulta para el ERA (_pitcher_stats trae 'name').
+            "away_pitcher_name": ap.get("name"),
+            "home_pitcher_name": hp.get("name"),
             "lineup_factor_away": lineup.get("lineup_factor_away"),
             "lineup_factor_home": lineup.get("lineup_factor_home"),
             "lineup_woba_away": lineup.get("lineup_woba_away"),

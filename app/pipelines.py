@@ -513,7 +513,10 @@ def format_pick_message(
 
     odds = _to_odds_decimal(lead.get("odds"))
     prob_blended = _n(lead.get("prob_blended"))
-    prob_model = _n(lead.get("prob_model"))
+    # 2026-08-05: MLB emite prob_model; MiLB/LMB emiten raw_prob_estimated (prob del modelo antes de
+    # calibrar) pero NO prob_model -> el mensaje salia "Prob. modelo: N/A". Fallback a
+    # raw_prob_estimated, y en ultimo caso a prob_estimated (el calibrado), para no mostrar N/A.
+    prob_model = _n(lead.get("prob_model")) or _n(lead.get("raw_prob_estimated")) or _n(lead.get("prob_estimated"))
     prob_tip = _n(lead.get("prob_estimated") if lead.get("prob_estimated") is not None else (prob_blended if prob_blended is not None else prob_model))
     prob_imp = _n(lead.get("prob_implied"))
     push_prob = _n(lead.get("push_prob")) or 0
