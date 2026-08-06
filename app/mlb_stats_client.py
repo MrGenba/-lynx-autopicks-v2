@@ -21,14 +21,25 @@ LEAGUE_SPORT = {
 }
 
 
-async def fetch_with_fallback(client: httpx.AsyncClient, url: str) -> dict:
-    try:
-        resp = await client.get(url, headers={"Accept": "application/json"}, timeout=10.0)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        logger.warning("fetch directo fallo (%s), probando fallback Jina.ai: %s", url, e)
-        return await _fetch_jina(client, url)
+async def fetch_with_fallback(client: httpx.AsyncClient, url: str, direct_retries: int = 2) -> dict:
+    # 2026-08-06: reintentar el directo a StatsAPI 2x mas (3 intentos, backoff corto) ANTES de caer
+    # a Jina.ai. El directo falla a veces de forma transitoria (lentitud puntual > timeout, error de
+    # red) y se iba directo a Jina, que se satura y da 429 (visto en vivo con el schedule de LMB
+    # sport 23). Reintentando el directo, la mayoria de fallos transitorios se resuelven sin tocar
+    # Jina. Timeout subido 10->12s por el mismo motivo (el VPS es lento a veces).
+    last_exc: Exception | None = None
+    for attempt in range(direct_retries + 1):
+        try:
+            resp = await client.get(url, headers={"Accept": "application/json"}, timeout=12.0)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            last_exc = e
+            if attempt < direct_retries:
+                await asyncio.sleep(1.5)
+    logger.warning("fetch directo fallo tras %s intentos (%s), probando fallback Jina.ai: %s",
+                   direct_retries + 1, url, last_exc)
+    return await _fetch_jina(client, url)
 
 
 async def _fetch_jina(client: httpx.AsyncClient, url: str, retries: int = 1) -> dict:
