@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_STATUSES = {"Preview", "Pre-Game", "Warmup", "Scheduled"}
 LOOKAHEAD = dt.timedelta(hours=3)
+# LMB (sport 23) tiene ventana mas ancha: cuotasahora publica sus lineas ANTES de 3h del inicio
+# (verificado 2026-08-06: Toros@Caliente con ML/Total/HC a 3h33m del partido), pero con LOOKAHEAD=3h
+# el detector no las pedia hasta las 3h y se las perdia. 6h captura las cuotas cuando ya estan. Carga
+# de Tor acotada (~12 partidos LMB/dia, y en cuanto uno consigue cuotas deja de pedir). MLB/MiLB
+# siguen en 3h (sus cuotas salen ~al lineup y son mas partidos).
+LOOKAHEAD_LMB = dt.timedelta(hours=6)
 
 
 async def upsert_game(pool: asyncpg.Pool, sport_id: int, g: mlb_api.ScheduledGame, game_dt: dt.datetime) -> Optional[dt.datetime]:
@@ -191,7 +197,8 @@ async def detector_tick(ctx: PipelineContext) -> None:
                     logger.warning("detector: game_datetime_utc invalido para game_pk=%s: %r", g.game_pk, g.game_datetime_utc)
                     continue
                 now = dt.datetime.now(dt.timezone.utc)
-                if game_dt - now > LOOKAHEAD or game_dt < now:
+                lookahead = LOOKAHEAD_LMB if sport_id == 23 else LOOKAHEAD
+                if game_dt - now > lookahead or game_dt < now:
                     continue
 
                 already_lineup_confirmed = await upsert_game(ctx.pool, sport_id, g, game_dt)
