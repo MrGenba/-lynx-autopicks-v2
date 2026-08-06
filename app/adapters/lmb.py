@@ -125,8 +125,25 @@ class LmbAdapter:
             self.http_client, "vw_lmb_matchups_ready", {"game_id": f"eq.{game_pk}", "select": "*"}
         )
         if base is None:
-            logger.warning("vw_lmb_matchups_ready sin fila para game_pk=%s", game_pk)
-            return None
+            # 2026-08-06: vw_lmb_matchups_ready es un JOIN que EXCLUYE los partidos sin stats de
+            # abridor en player_stats -- comun en LMB (~la mitad de lanzadores sin stats) -> solo
+            # ~3 de 12 partidos entraban y el resto se quedaba sin analisis pese a tener cuotas y
+            # abridores confirmados. Pero el partido SI existe en lmb_games (equipos, venue,
+            # pitcher_ids/nombres) y el ERA se saca de StatsAPI (verificado, sportId=23). Se arma un
+            # base minimo desde lmb_games; _era_fallback rellena el ERA mas abajo. Las stats de
+            # equipo/park de la vista no estaran -> data_score mas bajo, que refleja honestamente la
+            # menor confianza; el umbral de edge filtra lo que no valga.
+            lg = await self.supabase.select_one(
+                self.http_client, "lmb_games",
+                {"game_pk": f"eq.{game_pk}",
+                 "select": "game_pk,game_date,away_team_id,home_team_id,venue_id,"
+                           "away_pitcher_id,away_pitcher_name,home_pitcher_id,home_pitcher_name"},
+            )
+            if lg is None:
+                logger.warning("ni vw_lmb_matchups_ready ni lmb_games tienen game_pk=%s", game_pk)
+                return None
+            base = {"game_id": lg.get("game_pk"), **lg, "away_p_era": None, "home_p_era": None}
+            logger.info("LMB game_pk=%s fuera de la vista -> base minimo de lmb_games + ERA StatsAPI", game_pk)
 
         # Fallback: si la vista aun no tiene el pitcher_id de un lado, usar el que el
         # detector ya confirmo en vivo (games_gate_state) para poder buscar su ERA igual.
