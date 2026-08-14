@@ -214,6 +214,11 @@ async def handle_message(ctx: PipelineContext, chat_id: int, text: str, message_
     if stripped.startswith("/clock"):
         await cmds.cmd_clock(ctx)
         return
+    # "cambio tor" acepta el mismo texto que el comando de @Lynx_HunterBot (ver "Detectar Liga"
+    # en n8n) para no tener que recordar dos sintaxis segun el bot que se esté usando.
+    if stripped.startswith("/tor") or re.match(r"^(?:cambio|cambiar|rotar)\s+tor$", stripped, re.IGNORECASE):
+        await cmds.cmd_tor(ctx)
+        return
 
     parsed = parse_odds_message(text)
     if parsed is None:

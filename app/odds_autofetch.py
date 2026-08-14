@@ -22,12 +22,13 @@ Dos formas de disparo, mismo motor por debajo:
 import asyncio
 import datetime as dt
 import logging
+import time
 
 import asyncpg
 
 from app import aliases
 from app.message_handler import _check_gates_and_fire, _store_odds
-from app.tor_control import rotate_tor_circuit
+from app.tor_control import record_activity, rotate_tor_circuit
 from app.node_bridge import NodeBridgeError, run_odds_scraper
 from app.overround import check_overround
 from app.pipelines import LEAGUE_KEY, LEAGUE_LABEL, PipelineContext
@@ -193,6 +194,14 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
 
     league_key = SCRAPER_LEAGUE[sport_id]
     candidate_names = [n for c in candidates for n in (c.away_team_name, c.home_team_name) if n]
+    # 2026-08-14: telemetria persistente de cada intento (tabla tor_activity) -- es la unica
+    # fuente del dashboard de estado. Antes de esto, "¿el scrapeo esta vivo?" solo se podia
+    # responder mirando los logs del contenedor, que no son accesibles desde Telegram.
+    started = time.monotonic()
+
+    def _elapsed_ms() -> int:
+        return int((time.monotonic() - started) * 1000)
+
     try:
         async with _scrape_semaphore:
             # Espaciado global anti-throttle: separa scrapes back-to-back (ver _MIN_SCRAPE_GAP_S).
@@ -211,11 +220,25 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
     except NodeBridgeError as e:
         logger.warning("run_odds_scraper fallo para %s: %s", league_key, e)
         await _notify_status_change(ctx, sport_id, False, f"scraper falló: {str(e)[:200]}")
+        await record_activity(
+            ctx.pool, "scrape", ok=False, sport_id=sport_id, league=league_key,
+            status="scraper_failed", n_candidates=len(candidates), duration_ms=_elapsed_ms(),
+            detail=str(e), source="autofetch",
+        )
         return 0, "scraper_failed"
 
     games = result.get("games") or []
-    if not games and result.get("errors"):
-        await _notify_status_change(ctx, sport_id, False, f"sin partidos, {result['errors'][0][:180]}")
+    if not games:
+        # Sin partidos = cuotasahora sirvio el "decoy" (indice sin enlaces) por este circuito, con
+        # o sin errores explicitos. Cuenta como scrape NO-ok en el dashboard: el proceso corrio,
+        # pero no trajo nada utilizable, que es justo el sintoma de "no recibo cuotas".
+        detail = (result.get("errors") or [""])[0]
+        await _notify_status_change(ctx, sport_id, False, f"sin partidos, {str(detail)[:180]}")
+        await record_activity(
+            ctx.pool, "scrape", ok=False, sport_id=sport_id, league=league_key,
+            status="empty", n_candidates=len(candidates), n_scraped=0, n_matched=0,
+            duration_ms=_elapsed_ms(), detail=str(detail), source="autofetch",
+        )
         return 0, "empty"
     await _notify_status_change(ctx, sport_id, True, "")
 
@@ -281,6 +304,15 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
         "autofetch %s: %s candidatos, %s partidos scrapeados, %s asignados",
         league_key, len(candidates), len(games), matched_count,
     )
+    # ok=True: cuotasahora sirvio la pagina REAL (trajo partidos). Que matched_count sea 0 aqui
+    # ya no es un problema de Tor sino de emparejamiento (nombres/fantasmas/duplicados), y se
+    # distingue en el dashboard por el status, no por el color del estado de Tor.
+    await record_activity(
+        ctx.pool, "scrape", ok=True, sport_id=sport_id, league=league_key,
+        status=("ok" if matched_count else "sin_match"), n_candidates=len(candidates),
+        n_scraped=len(games), n_matched=matched_count, duration_ms=_elapsed_ms(),
+        source="autofetch",
+    )
     return matched_count, ("ok" if matched_count else "empty")
 
 
@@ -331,6 +363,10 @@ async def autofetch_single_game(
         ok, detail = await rotate_tor_circuit()
         logger.info("autofetch retry %s/%s (%s) game_pk=%s -- NEWNYM %s (%s)",
                     attempt + 1, retries, status, game_pk, "ok" if ok else "FALLO", detail)
+        await record_activity(
+            ctx.pool, "rotate", ok=ok, sport_id=sport_id, league=SCRAPER_LEAGUE.get(sport_id),
+            status=f"retry_{status}", detail=detail, source="autofetch_retry",
+        )
         # backoff: los indices extra de LMB (mas alla de los 5 de AUTOFETCH_BACKOFF_S) reusan el ultimo (25s)
         await asyncio.sleep(AUTOFETCH_BACKOFF_S[min(attempt, len(AUTOFETCH_BACKOFF_S) - 1)])
     return False

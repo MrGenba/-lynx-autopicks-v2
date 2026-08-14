@@ -5,6 +5,7 @@ abajo)."""
 import asyncio
 import datetime as dt
 import logging
+import secrets
 import uuid
 
 import httpx
@@ -17,6 +18,7 @@ from app.adapters.milb import MilbAdapter
 from app.adapters.lmb import LmbAdapter
 from app.clv import capture_closing_lines_tick
 from app.config import Config
+from app.dashboard import collect_state, render_html
 from app.detector import detector_tick
 from app.logging_setup import setup_logging
 from app.message_handler import handle_message
@@ -26,6 +28,7 @@ from app.odds_autofetch import _scrape_semaphore, autofetch_tick
 from app.pipelines import PipelineContext
 from app.supabase_client import SupabaseClient
 from app.telegram import TelegramClient, poll_loop
+from app.tor_control import record_activity, rotate_and_verify
 
 logger = logging.getLogger(__name__)
 
@@ -173,12 +176,88 @@ async def scrape_odds_status(request: web.Request) -> web.Response:
     return web.json_response({"status": "done", "result": job["result"]})
 
 
-async def run_health_server(cfg: Config, port: int = 8080) -> None:
+# Cuanto espera /tor/rotate a que termine un scrape en curso antes de rendirse. NEWNYM solo
+# afecta a circuitos NUEVOS, asi que no corta en seco un scrape ya iniciado -- pero si ese scrape
+# abre conexiones nuevas despues de la rotacion, saldrian por otro circuito y romperian la sesion
+# del navegador (leccion 2026-08-02, ver tor_control.py). Por eso se rota SOLO con el semaforo en
+# la mano, nunca a mitad de un scrape. La espera es corta a proposito: un scrape dura minutos, asi
+# que esperar mas no lo salvaria -- mejor responder "ocupado" enseguida que agotar el timeout del
+# proxy y dejar al usuario sin respuesta.
+_ROTATE_WAIT_FOR_SCRAPE_S = 5.0
+
+
+async def tor_rotate(request: web.Request) -> web.Response:
+    """Fuerza un circuito de Tor nuevo bajo demanda (comando "cambio tor" de @Lynx_HunterBot, via
+    n8n). Devuelve la IP de salida antes y despues para que la respuesta de Telegram sea
+    verificable y no un "ok" a ciegas. Mismo token que /scrape-odds: acciona el scraper."""
+    cfg: Config = request.app["cfg"]
+    if not _check_scrape_token(request, cfg):
+        return web.json_response({"error": "unauthorized"}, status=401)
+
+    try:
+        await asyncio.wait_for(_scrape_semaphore.acquire(), timeout=_ROTATE_WAIT_FOR_SCRAPE_S)
+    except asyncio.TimeoutError:
+        return web.json_response({
+            "rotated": False, "busy": True,
+            "error": "hay un scrape de cuotas en curso — rotar ahora rompería esa sesión; reintenta en un minuto",
+        }, status=409)
+
+    try:
+        result = await rotate_and_verify(cfg.proxy_server)
+    finally:
+        _scrape_semaphore.release()
+
+    await record_activity(
+        request.app["pool"], "rotate", ok=result["rotated"],
+        status=("ip_cambiada" if result["changed"] else "misma_ip"),
+        exit_ip=(result["after"] or {}).get("ip"), detail=result["detail"], source="telegram",
+    )
+    return web.json_response({
+        "rotated": result["rotated"],
+        "changed": result["changed"],
+        "ip_before": (result["before"] or {}).get("ip"),
+        "ip_after": (result["after"] or {}).get("ip"),
+        "is_tor": (result["after"] or {}).get("is_tor"),
+        "detail": result["detail"],
+        "check_error": (result["after"] or {}).get("detail") or None,
+    })
+
+
+async def tor_status(request: web.Request) -> web.Response:
+    """Estado de Tor en JSON (misma info que la cabecera del dashboard, sin HTML)."""
+    cfg: Config = request.app["cfg"]
+    if not _check_scrape_token(request, cfg):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    state = await collect_state(request.app["pool"], cfg.proxy_server)
+    return web.json_response({"tor": state["tor"], "summary": state["summary"], "db_error": state["db_error"]})
+
+
+async def dashboard_page(request: web.Request) -> web.Response:
+    """Dashboard HTML de estado. El token va en la ruta (un navegador no puede mandar cabeceras)
+    y es DISTINTO del de scrape: esta pagina es solo-lectura, filtrar su URL no acciona nada."""
+    cfg: Config = request.app["cfg"]
+    token = request.match_info.get("token", "")
+    # compare_digest: comparacion en tiempo constante, no filtra el token caracter a caracter.
+    if not cfg.dashboard_token or not secrets.compare_digest(token, cfg.dashboard_token):
+        return web.Response(status=404, text="not found")
+    state = await collect_state(request.app["pool"], cfg.proxy_server)
+    return web.Response(
+        text=render_html(state), content_type="text/html", charset="utf-8",
+        headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow"},
+    )
+
+
+async def run_health_server(cfg: Config, pool, port: int = 8080) -> None:
     app = web.Application()
     app["cfg"] = cfg
+    app["pool"] = pool
     app.router.add_get("/healthz", health)
     app.router.add_get("/scrape-odds/start", scrape_odds_start)
     app.router.add_get("/scrape-odds/status/{job_id}", scrape_odds_status)
+    app.router.add_get("/tor/rotate", tor_rotate)
+    app.router.add_post("/tor/rotate", tor_rotate)
+    app.router.add_get("/tor/status", tor_status)
+    app.router.add_get("/d/{token}", dashboard_page)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
@@ -252,7 +331,7 @@ async def main() -> None:
     await telegram.send_message(cfg.tg_admin_chat_id, "🟢 Auto-Picks v2 arrancado y en marcha.")
 
     await asyncio.gather(
-        run_health_server(cfg),
+        run_health_server(cfg, pool),
         poll_loop(telegram, pool, lambda chat_id, text, msg_id: handle_message(ctx, chat_id, text, msg_id)),
     )
 

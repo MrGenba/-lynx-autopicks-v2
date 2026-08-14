@@ -1,5 +1,8 @@
 asyncpg==0.30.0
 httpx==0.28.1
+# Backend SOCKS5 de httpx (extra httpx[socks]) -- necesario desde 2026-08-14 para consultar la
+# IP de salida a traves del Tor local (app/tor_control.get_exit_ip). Pure python, sin binarios.
+socksio==1.0.0
 APScheduler==3.11.0
 aiohttp==3.11.11
 python-dotenv==1.0.1

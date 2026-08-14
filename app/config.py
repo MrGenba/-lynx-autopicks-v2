@@ -49,6 +49,12 @@ class Config:
     # odds-api.io (2026-07-11) -- fuente de cuotas primaria nueva, API real en vez de scraping.
     # None = desactivada, cae directo al scraper de Tor (comportamiento identico a antes).
     odds_api_key: str | None
+    # Token del dashboard de estado (2026-08-14): se sirve en GET /d/<token> como HTML. Va en la
+    # RUTA y no en una cabecera porque se abre desde un navegador/movil, donde no se pueden poner
+    # cabeceras. Por eso es un token DISTINTO de scrape_endpoint_token: la URL acaba en el
+    # historial del navegador y en logs de proxy, y filtrarla no debe dar control del scraper --
+    # el dashboard es solo-lectura. None = dashboard desactivado (404), nunca expuesto sin querer.
+    dashboard_token: str | None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -73,4 +79,5 @@ class Config:
             proxy_server_lmb=os.environ.get("PROXY_SERVER_LMB") or None,
             scrape_endpoint_token=os.environ.get("SCRAPE_ENDPOINT_TOKEN") or None,
             odds_api_key=os.environ.get("ODDS_API_KEY") or None,
+            dashboard_token=os.environ.get("DASHBOARD_TOKEN") or None,
         )

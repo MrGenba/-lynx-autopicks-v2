@@ -1,6 +1,7 @@
 """Comandos de admin: /status (partidos de hoy + estado), /pending (confirmados sin cuotas),
 /picks (picks de hoy), /tick (fuerza un ciclo del detector ahora mismo, para depurar sin
-acceso a logs del contenedor), /clock (reloj real del contenedor, para descartar desfase)."""
+acceso a logs del contenedor), /clock (reloj real del contenedor, para descartar desfase),
+/tor (rota el circuito de Tor y verifica la IP de salida)."""
 import datetime as dt
 import html
 import logging
@@ -153,6 +154,45 @@ async def cmd_tick(ctx: PipelineContext) -> None:
     for r in rows:
         lines.append(f"[{LEAGUE_LABEL.get(r['sport_id'], r['sport_id'])}] {r['n']} partido(s) descubiertos")
     await ctx.telegram.send_message(ctx.admin_chat_id, "\n".join(lines))
+
+
+async def cmd_tor(ctx: PipelineContext) -> None:
+    """Mismo efecto que "cambio tor" en @Lynx_HunterBot, pero desde el bot interno: rota el
+    circuito de Tor y responde con la IP de salida antes/despues. Util cuando cuotasahora sirve
+    el "decoy" (indice sin partidos) por el circuito actual y el scrapeo deja de traer cuotas."""
+    from app.odds_autofetch import _scrape_semaphore
+    from app.tor_control import record_activity, rotate_and_verify
+
+    if _scrape_semaphore.locked():
+        await ctx.telegram.send_message(
+            ctx.admin_chat_id,
+            "⏳ Hay un scrape de cuotas en curso — rotar ahora rompería esa sesión. Reintenta en un minuto.",
+        )
+        return
+
+    await ctx.telegram.send_message(ctx.admin_chat_id, "🔄 Pidiendo circuito nuevo a Tor...")
+    async with _scrape_semaphore:
+        result = await rotate_and_verify(ctx.proxy_server)
+
+    await record_activity(
+        ctx.pool, "rotate", ok=result["rotated"],
+        status=("ip_cambiada" if result["changed"] else "misma_ip"),
+        exit_ip=(result["after"] or {}).get("ip"), detail=result["detail"], source="bot_interno",
+    )
+
+    if not result["rotated"]:
+        await ctx.telegram.send_message(ctx.admin_chat_id, f"❌ Tor rechazó la rotación: {result['detail']}")
+        return
+    before = (result["before"] or {}).get("ip") or "desconocida"
+    after = (result["after"] or {}).get("ip") or "no verificada"
+    if result["changed"]:
+        await ctx.telegram.send_message(ctx.admin_chat_id, f"✅ IP cambiada: {before} → {after}")
+    else:
+        await ctx.telegram.send_message(
+            ctx.admin_chat_id,
+            f"⚠️ Circuito rotado, pero la IP sigue siendo {after}.\n"
+            "Normal: Tor agrupa dos NEWNYM seguidos y hay pocos exits rápidos. Repite en ~10s.",
+        )
 
 
 async def cmd_fetchodds(ctx: PipelineContext) -> None:
