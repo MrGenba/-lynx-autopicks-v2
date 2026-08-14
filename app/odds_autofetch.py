@@ -85,6 +85,10 @@ AUTOFETCH_RETRIES_LMB = 11
 # (indice sin partidos) a algunos circuitos -> con 6 intentos rotando circuito, ~80% de dar con uno
 # bueno. El backoff da tiempo a que Tor construya el circuito nuevo antes del siguiente intento.
 AUTOFETCH_BACKOFF_S = (15, 15, 20, 20, 25)  # espera antes de cada reintento (tras rotar circuito)
+# Reintentos del SONDEO periodico (autofetch_league), deliberadamente mucho mas bajos que los del
+# disparo puntual: el sondeo corre cada 900s para las 3 ligas en paralelo, asi que cada reintento
+# extra se multiplica por 3 en carga de Tor y en Chromes a la vez. Ver autofetch_league().
+AUTOFETCH_LEAGUE_RETRIES = 1
 # Espaciado GLOBAL entre scrapes reales. Con "cuotas frescas siempre", cuando salen muchos lineups
 # casi a la vez el detector encola N scrapes -- el semáforo los serializa pero back-to-back, y ese
 # burst es justo lo que throttlea cuotasahora. Este hueco mínimo los separa.
@@ -373,8 +377,38 @@ async def autofetch_single_game(
 
 
 async def autofetch_league(ctx: PipelineContext, sport_id: int) -> None:
+    """Sondeo periodico de una liga.
+
+    2026-08-14: hasta ahora esto llamaba al scrape UNA vez y se rendia hasta el ciclo siguiente
+    (15 min despues), sin rotar circuito -- a diferencia del disparo puntual, que lleva desde el
+    2026-08-02 reintentando con NEWNYM. Es decir, el camino automatico mas frecuente era
+    precisamente el que NO tenia la defensa contra el circuito "decoy": un ERR_TIMED_OUT o un
+    indice vacio costaba un ciclo entero de espera. Observado en vivo el 2026-08-14 (scrape MLB
+    fallido a las 19:28, 0 rotaciones registradas).
+
+    Se reintenta UNA sola vez, no las 5-11 del disparo puntual: este sondeo corre cada 900s para
+    las 3 ligas EN PARALELO, asi que cada reintento extra se multiplica por 3 en carga de Tor y en
+    Chromes simultaneos. Un reintento convierte "esperar 15 min" en "probar otro exit 15s despues"
+    sin acercarse al martilleo que throttlea cuotasahora.
+    """
     candidates = await _candidates_needing_odds(ctx.pool, sport_id)
-    await _scrape_and_apply(ctx, sport_id, candidates)
+    if not candidates:
+        return  # sin candidatos no hay scrape que reintentar (ni circuito que rotar)
+
+    for attempt in range(1 + AUTOFETCH_LEAGUE_RETRIES):
+        _matched, status = await _scrape_and_apply(ctx, sport_id, candidates)
+        if status not in ("empty", "scraper_failed"):
+            return  # exito (o algo que reintentar no arregla)
+        if attempt >= AUTOFETCH_LEAGUE_RETRIES:
+            return
+        ok, detail = await rotate_tor_circuit()
+        logger.info("autofetch_league %s: reintento tras '%s' -- NEWNYM %s (%s)",
+                    SCRAPER_LEAGUE.get(sport_id), status, "ok" if ok else "FALLO", detail)
+        await record_activity(
+            ctx.pool, "rotate", ok=ok, sport_id=sport_id, league=SCRAPER_LEAGUE.get(sport_id),
+            status=f"sondeo_{status}", detail=detail, source="autofetch_league",
+        )
+        await asyncio.sleep(AUTOFETCH_BACKOFF_S[0])
 
 
 async def _autofetch_league_safe(ctx: PipelineContext, sport_id: int) -> None:

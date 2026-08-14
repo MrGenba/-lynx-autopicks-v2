@@ -103,3 +103,43 @@ def test_db_caida_sigue_mostrando_estado_de_tor():
 ])
 def test_age(seconds, expected):
     assert dashboard._age(seconds) == expected
+
+
+# --- estado de cuotas: debe coincidir con _candidates_needing_odds -----------------------
+# El filtro del pipeline (odds_autofetch.py) considera que faltan cuotas si:
+#   o.game_pk IS NULL OR o.away_ml IS NULL OR o.total_line IS NULL
+# La primera versión de esta página usaba un OR (ML *o* total *o* hándicap) y pintaba en verde
+# partidos que el sondeo seguía re-scrapeando cada 15 min. Caso real: Cardinals @ Cubs del
+# 2026-08-14, con ML 2.65/1.50 y sin total.
+
+def test_ml_sin_total_es_parcial_no_completo():
+    g = _game(away_ml=2.65, home_ml=1.50, total_line=None)
+    texto, cls, completas = dashboard._odds_state(g)
+    assert completas is False
+    assert cls == "warn"
+    assert "falta total" in texto and "reintentando" in texto
+
+
+def test_total_sin_ml_tambien_es_parcial():
+    g = _game(total_line=8.5, over_odds=1.9, under_odds=1.9)
+    texto, _cls, completas = dashboard._odds_state(g)
+    assert completas is False
+    assert "falta ML" in texto
+
+
+def test_ml_y_total_es_completo():
+    g = _game(away_ml=2.65, home_ml=1.50, total_line=8.5)
+    texto, cls, completas = dashboard._odds_state(g)
+    assert (texto, cls, completas) == ("Con cuotas", "ok", True)
+
+
+def test_sin_nada_pero_confirmado_es_error():
+    _texto, cls, completas = dashboard._odds_state(_game(gate_a=True))
+    assert (cls, completas) == ("bad", False)
+
+
+def test_contador_solo_cuenta_completas():
+    """El caso real que motivó el fix: la tarjeta decía 1/1 mientras el pipeline reintentaba."""
+    html = dashboard.render_html(_state(games=[_game(away_ml=2.65, home_ml=1.50, total_line=None)]))
+    assert "0/1" in html
+    assert "1 parcial(es) en reintento" in html

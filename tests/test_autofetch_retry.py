@@ -84,3 +84,63 @@ async def test_no_reintenta_si_el_partido_esta_por_empezar(monkeypatch):
     got = await odds_autofetch.autofetch_single_game(CTX, 1, 123, "A", "B", _future(minutes=1))
     assert got is False
     assert calls["n"] == 1  # a <2min del inicio, no sigue reintentando
+
+
+# --- sondeo periodico (autofetch_league) -------------------------------------------------
+# 2026-08-14: antes solo reintentaba el disparo puntual; el sondeo se rendia al primer fallo
+# sin rotar circuito, que es justo la defensa contra el "decoy" de cuotasahora.
+
+def _patch_league(monkeypatch, sequence, candidates=1):
+    calls = {"n": 0, "rotaciones": 0}
+
+    async def fake_scrape(ctx, sport_id, cands):
+        i = calls["n"]
+        calls["n"] += 1
+        return sequence[min(i, len(sequence) - 1)]
+
+    async def fake_candidates(pool, sport_id):
+        return ["candidato"] * candidates
+
+    async def fake_rotate():
+        calls["rotaciones"] += 1
+        return True, "ok"
+
+    monkeypatch.setattr(odds_autofetch, "_scrape_and_apply", fake_scrape)
+    monkeypatch.setattr(odds_autofetch, "_candidates_needing_odds", fake_candidates)
+    monkeypatch.setattr(odds_autofetch, "rotate_tor_circuit", fake_rotate)
+    monkeypatch.setattr(odds_autofetch.asyncio, "sleep", _noop_sleep)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_sondeo_reintenta_rotando_tras_fallo(monkeypatch):
+    calls = _patch_league(monkeypatch, [(0, "scraper_failed"), (1, "ok")])
+    await odds_autofetch.autofetch_league(CTX, 1)
+    assert calls["n"] == 2
+    assert calls["rotaciones"] == 1  # rotó el circuito ANTES del segundo intento
+
+
+@pytest.mark.asyncio
+async def test_sondeo_no_reintenta_si_va_bien(monkeypatch):
+    calls = _patch_league(monkeypatch, [(2, "ok")])
+    await odds_autofetch.autofetch_league(CTX, 1)
+    assert calls["n"] == 1
+    assert calls["rotaciones"] == 0
+
+
+@pytest.mark.asyncio
+async def test_sondeo_acotado_a_un_reintento(monkeypatch):
+    """No debe heredar los 5-11 reintentos del disparo puntual: corre para 3 ligas en paralelo."""
+    calls = _patch_league(monkeypatch, [(0, "empty")])
+    await odds_autofetch.autofetch_league(CTX, 1)
+    assert calls["n"] == 1 + odds_autofetch.AUTOFETCH_LEAGUE_RETRIES == 2
+    assert calls["rotaciones"] == 1
+
+
+@pytest.mark.asyncio
+async def test_sondeo_sin_candidatos_no_scrapea_ni_rota(monkeypatch):
+    """Sin candidatos no hay nada que scrapear -- rotar el circuito ahí sería gasto puro."""
+    calls = _patch_league(monkeypatch, [(0, "empty")], candidates=0)
+    await odds_autofetch.autofetch_league(CTX, 1)
+    assert calls["n"] == 0
+    assert calls["rotaciones"] == 0

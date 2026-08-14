@@ -147,19 +147,36 @@ def _tor_verdict(tor: dict, summary: dict) -> tuple[str, str, str]:
             "Es el síntoma del circuito 'decoy' — prueba «cambio tor» en Telegram.")
 
 
+def _odds_state(g) -> tuple[str, str, bool]:
+    """(texto, clase, completas). "Completas" usa EXACTAMENTE la misma definición que
+    `_candidates_needing_odds` en odds_autofetch.py (ML y total presentes): mientras falte
+    cualquiera de los dos, el sondeo periódico sigue re-scrapeando ese partido cada ciclo.
+
+    Distinguir "parciales" de "completas" no es cosmético -- pintarlas igual (error de la primera
+    versión de esta página, 2026-08-14) hacía que un partido en reintento perpetuo se viera en
+    verde como si estuviera resuelto, ocultando justo la anomalía que hay que ver.
+    """
+    tiene_ml, tiene_total = g["away_ml"] is not None, g["total_line"] is not None
+    tiene_algo = tiene_ml or tiene_total or g["away_hc_odds"] is not None
+
+    if tiene_ml and tiene_total:
+        return "Con cuotas", "ok", True
+    if tiene_algo:
+        faltan = ", ".join(f for f, ok in (("ML", tiene_ml), ("total", tiene_total)) if not ok)
+        return f"Parciales · falta {faltan} (reintentando)", "warn", False
+    if g["gate_a"] or g["gate_b"]:
+        return "Confirmado, SIN cuotas", "bad", False
+    return "Esperando confirmación", "muted", False
+
+
 def _games_table(games) -> str:
     if not games:
         return "<p class='muted'>Sin partidos descubiertos en la ventana (-6h / +30h).</p>"
 
     rows = []
     for g in games:
+        estado, cls, _completas = _odds_state(g)
         has_odds = g["away_ml"] is not None or g["total_line"] is not None or g["away_hc_odds"] is not None
-        if has_odds:
-            estado, cls = "Con cuotas", "ok"
-        elif g["gate_a"] or g["gate_b"]:
-            estado, cls = "Confirmado, SIN cuotas", "bad"
-        else:
-            estado, cls = "Esperando confirmación", "muted"
 
         ml = f"{_odds(g['away_ml'])} / {_odds(g['home_ml'])}" if g["away_ml"] is not None else "—"
         if g["away_hc_odds"] is not None:
@@ -269,10 +286,8 @@ def render_html(state: dict, refresh_s: int = 60) -> str:
     pct24 = f"{(100 * s24_ok / s24):.0f}%" if s24 else "—"
 
     games = state["games"]
-    con_cuotas = sum(
-        1 for g in games
-        if g["away_ml"] is not None or g["total_line"] is not None or g["away_hc_odds"] is not None
-    )
+    con_cuotas = sum(1 for g in games if _odds_state(g)[2])
+    parciales = sum(1 for g in games if _odds_state(g)[1] == "warn")
 
     db_warning = (
         f"<div class='card banner bad'><span class='title'>Sin datos de Postgres</span>"
@@ -313,7 +328,7 @@ def render_html(state: dict, refresh_s: int = 60) -> str:
   <div class="card tile"><div class="k">Rotaciones de IP</div><div class="v">{summary.get('r24') or 0}</div>
     <div class="muted">últimas 24h · última {_esc(_age(summary.get('last_rotate_age_s')))}</div></div>
   <div class="card tile"><div class="k">Partidos con cuotas</div><div class="v">{con_cuotas}/{len(games)}</div>
-    <div class="muted">ventana -6h / +30h</div></div>
+    <div class="muted">{f'{parciales} parcial(es) en reintento' if parciales else 'ML + total · ventana -6h/+30h'}</div></div>
 </div>
 
 <h2>Partidos y cuotas</h2>
