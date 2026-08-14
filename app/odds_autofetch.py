@@ -89,6 +89,12 @@ AUTOFETCH_BACKOFF_S = (15, 15, 20, 20, 25)  # espera antes de cada reintento (tr
 # disparo puntual: el sondeo corre cada 900s para las 3 ligas en paralelo, asi que cada reintento
 # extra se multiplica por 3 en carga de Tor y en Chromes a la vez. Ver autofetch_league().
 AUTOFETCH_LEAGUE_RETRIES = 1
+# Freno de los partidos con cuotas PARCIALES (tienen ML o total, pero no ambos). Un partido sin
+# NADA sigue siendo candidato en cada ciclo, sin freno -- ese es el caso que de verdad importa.
+# Los parciales, en cambio, ya tienen cuota utilizable para publicar, asi que no justifican
+# re-scrapear el partido entero cada 15 min indefinidamente (ver migracion 0004).
+PARTIAL_RETRY_EVERY = dt.timedelta(minutes=60)          # como mucho un reintento por hora
+PARTIAL_GIVE_UP_BEFORE_START = dt.timedelta(minutes=45)  # cerca del inicio, conformarse con lo que hay
 # Espaciado GLOBAL entre scrapes reales. Con "cuotas frescas siempre", cuando salen muchos lineups
 # casi a la vez el detector encola N scrapes -- el semáforo los serializa pero back-to-back, y ese
 # burst es justo lo que throttlea cuotasahora. Este hueco mínimo los separa.
@@ -107,9 +113,21 @@ async def _candidates_needing_odds(pool: asyncpg.Pool, sport_id: int) -> list[al
             WHERE g.sport_id = $1
               AND g.pitchers_confirmed_at IS NOT NULL
               AND g.{GAMES_WINDOW_SQL}
-              AND (o.game_pk IS NULL OR o.away_ml IS NULL OR o.total_line IS NULL)
+              AND (
+                -- Sin nada utilizable: candidato siempre, sin freno. Es el caso que importa.
+                (o.game_pk IS NULL OR (o.away_ml IS NULL AND o.total_line IS NULL))
+                -- Parciales (tiene ML o total, pero no ambos): se sigue intentando, pero acotado.
+                -- Sin esto, un partido cuyo total Bet365 nunca publica se re-scrapea ENTERO cada
+                -- ciclo hasta que empieza (ver migracion 0004).
+                OR (
+                  (o.away_ml IS NULL OR o.total_line IS NULL)
+                  AND g.game_datetime_utc > now() + $2::interval
+                  AND (g.last_partial_retry_at IS NULL
+                       OR g.last_partial_retry_at < now() - $3::interval)
+                )
+              )
             """,
-            sport_id,
+            sport_id, PARTIAL_GIVE_UP_BEFORE_START, PARTIAL_RETRY_EVERY,
         )
     return [
         aliases.CandidateGame(
@@ -173,6 +191,27 @@ def _values_from_scraped(game: dict) -> dict:
     return values
 
 
+async def _stamp_partial_retry(pool: asyncpg.Pool, sport_id: int, candidates: list) -> None:
+    """Marca que a estos partidos se les acaba de intentar un scrape, sea cual sea el resultado.
+
+    Se estampa SIEMPRE (exito, vacio o fallo duro) porque lo que se esta acotando es la CARGA sobre
+    Tor, no el numero de exitos: un intento fallido gasta lo mismo que uno bueno. Solo afecta a los
+    partidos ya parciales -- los que no tienen ninguna cuota ignoran esta marca (ver
+    _candidates_needing_odds). Nunca lanza: es un freno, no una funcion critica."""
+    pks = [c.game_pk for c in candidates]
+    if not pks:
+        return
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE games_gate_state SET last_partial_retry_at = now() "
+                "WHERE sport_id = $1 AND game_pk = ANY($2::bigint[])",
+                sport_id, pks,
+            )
+    except Exception:
+        logger.exception("no se pudo estampar last_partial_retry_at (sport_id=%s) -- se ignora", sport_id)
+
+
 async def _notify_status_change(ctx: PipelineContext, sport_id: int, ok: bool, detail: str) -> None:
     # 2026-08-05: SOLO LOG, ya no manda Telegram. Este aviso (✅ vuelve a responder / ⚠️ sin partidos,
     # descartado) hacia flip-flop constante: el scrape usa UN circuito Tor por sesion y cuotasahora no
@@ -201,10 +240,28 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
     # 2026-08-14: telemetria persistente de cada intento (tabla tor_activity) -- es la unica
     # fuente del dashboard de estado. Antes de esto, "¿el scrapeo esta vivo?" solo se podia
     # responder mirando los logs del contenedor, que no son accesibles desde Telegram.
-    started = time.monotonic()
+    # 2026-08-14: se miden por separado la ESPERA EN COLA (semaforo + espaciado anti-throttle) y
+    # el scrape REAL. La primera version contaba desde aqui hasta el final, asi que un scrape que
+    # habia estado 10 min encolado detras del comando manual aparecia en el panel como "729s de
+    # scrape" -- imposible, porque run_odds_scraper corta a 600s. Mezclar las dos cosas hacia
+    # ilegible justo el sintoma que hay que diagnosticar (¿va lento cuotasahora, o hay contencion
+    # entre el sondeo y el comando manual?).
+    queued_at = time.monotonic()
+    _t = {"scrape_started": None}
 
     def _elapsed_ms() -> int:
-        return int((time.monotonic() - started) * 1000)
+        """Duracion del scrape real; si nunca llego a arrancar, el tiempo total en cola."""
+        base = _t["scrape_started"] if _t["scrape_started"] is not None else queued_at
+        return int((time.monotonic() - base) * 1000)
+
+    def _queue_note() -> str:
+        if _t["scrape_started"] is None:
+            return ""
+        q = _t["scrape_started"] - queued_at
+        return f" (esperó {q:.0f}s en cola)" if q >= 5 else ""
+
+    # Freno de parciales: se marca el intento pase lo que pase (ver _stamp_partial_retry).
+    await _stamp_partial_retry(ctx.pool, sport_id, candidates)
 
     try:
         async with _scrape_semaphore:
@@ -212,6 +269,9 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
             gap = _MIN_SCRAPE_GAP_S - (dt.datetime.now(dt.timezone.utc).timestamp() - _last_scrape[0])
             if gap > 0:
                 await asyncio.sleep(gap)
+            # A partir de aqui empieza el scrape de verdad: el semaforo ya es nuestro y el
+            # espaciado anti-throttle ya se ha respetado. Todo lo anterior es cola, no cuotasahora.
+            _t["scrape_started"] = time.monotonic()
             # LMB (sport 23) sale por su Tor MEXICANO si esta configurado (cuotasahora sirve un muro
             # de login/decoy a los circuitos Tor no-MX en la seccion LMB); el resto por el Tor normal.
             proxy = ctx.proxy_server_lmb if (sport_id == 23 and ctx.proxy_server_lmb) else ctx.proxy_server
@@ -227,7 +287,7 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
         await record_activity(
             ctx.pool, "scrape", ok=False, sport_id=sport_id, league=league_key,
             status="scraper_failed", n_candidates=len(candidates), duration_ms=_elapsed_ms(),
-            detail=str(e), source="autofetch",
+            detail=str(e) + _queue_note(), source="autofetch",
         )
         return 0, "scraper_failed"
 
@@ -241,7 +301,7 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
         await record_activity(
             ctx.pool, "scrape", ok=False, sport_id=sport_id, league=league_key,
             status="empty", n_candidates=len(candidates), n_scraped=0, n_matched=0,
-            duration_ms=_elapsed_ms(), detail=str(detail), source="autofetch",
+            duration_ms=_elapsed_ms(), detail=str(detail) + _queue_note(), source="autofetch",
         )
         return 0, "empty"
     await _notify_status_change(ctx, sport_id, True, "")
@@ -315,7 +375,7 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
         ctx.pool, "scrape", ok=True, sport_id=sport_id, league=league_key,
         status=("ok" if matched_count else "sin_match"), n_candidates=len(candidates),
         n_scraped=len(games), n_matched=matched_count, duration_ms=_elapsed_ms(),
-        source="autofetch",
+        detail=_queue_note().strip() or None, source="autofetch",
     )
     return matched_count, ("ok" if matched_count else "empty")
 

@@ -1,0 +1,13 @@
+-- 2026-08-14: corte del reintento perpetuo de partidos con cuotas PARCIALES.
+--
+-- _candidates_needing_odds considera que a un partido le faltan cuotas mientras no tenga ML Y
+-- total. Si Bet365 nunca publica el total (caso real: Cardinals @ Cubs del 2026-08-14, con ML
+-- 2.65/1.50 y sin total en dos scrapes buenos seguidos), ese partido se re-scrapeaba ENTERO en
+-- cada ciclo del sondeo, cada 15 min, hasta que empezaba. Con 1 partido era anecdotico; al subir
+-- la ventana del detector de 3h a 6h el mismo dia, pasan a ser ~9 partidos a la vez y se
+-- convierte en carga permanente sobre Tor.
+--
+-- Marca propia y NO reutilizacion de last_odds_attempt_at a proposito: esa columna la usa el
+-- detector como cooldown de 8 min del disparo puntual (ODDS_REFRESH_COOLDOWN), y estamparla
+-- tambien desde el sondeo periodico cambiaria el comportamiento de ese otro camino sin quererlo.
+ALTER TABLE games_gate_state ADD COLUMN IF NOT EXISTS last_partial_retry_at TIMESTAMPTZ;
