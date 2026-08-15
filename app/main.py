@@ -24,7 +24,7 @@ from app.logging_setup import setup_logging
 from app.message_handler import handle_message
 from app.node_bridge import NodeBridgeError, run_odds_scraper
 from app.odds_api_client import get_league_odds
-from app.odds_autofetch import _scrape_semaphore, autofetch_tick
+from app.odds_autofetch import _scrape_semaphore, autofetch_tick, manual_scrape_priority
 from app.pipelines import PipelineContext
 from app.supabase_client import SupabaseClient
 from app.telegram import TelegramClient, poll_loop
@@ -75,13 +75,18 @@ async def _run_scrape_job(job_id: str, cfg: Config, league: str, bookmaker: str 
 
         # LMB sale por su Tor mexicano si esta configurado (ver Config.proxy_server_lmb).
         proxy = cfg.proxy_server_lmb if (league == "LMB" and cfg.proxy_server_lmb) else cfg.proxy_server
-        async with _scrape_semaphore:
-            result = await run_odds_scraper(
-                cfg.node_bin, cfg.vendor_dir, league,
-                proxy,
-                candidate_names=candidate_names,
-                bookmaker=bookmaker,
-            )
+        # manual_scrape_priority envuelve la ESPERA del semaforo, no solo su uso: mientras este job
+        # hace cola, el autofetch cede el turno en vez de competir. Sin esto, un job del endpoint
+        # podia no arrancar nunca (medido: >11 min en "running" sin que empezara el scrape) y el
+        # comando "Cuotas ... bet365" del usuario expiraba en n8n.
+        async with manual_scrape_priority():
+            async with _scrape_semaphore:
+                result = await run_odds_scraper(
+                    cfg.node_bin, cfg.vendor_dir, league,
+                    proxy,
+                    candidate_names=candidate_names,
+                    bookmaker=bookmaker,
+                )
         _scrape_jobs[job_id]["status"] = "done"
         _scrape_jobs[job_id]["result"] = result
     except NodeBridgeError as e:

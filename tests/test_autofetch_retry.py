@@ -204,3 +204,80 @@ async def test_stale_corta_el_disparo_puntual(monkeypatch):
     got = await odds_autofetch.autofetch_single_game(CTX, 1, 123, "A", "B", _future())
     assert got is False
     assert calls["n"] == 1
+
+
+# --- cortacircuitos por liga --------------------------------------------------------------
+# 2026-08-15: ante el fallo el sistema insistia mas, pero el fallo dominante era throttle de
+# cuotasahora, asi que insistir lo agravaba. Bucle de realimentacion medido en produccion:
+# 233 scrapes/6h, 269 rotaciones/24h, 33% de exito.
+
+@pytest.fixture(autouse=True)
+def _breaker_limpio():
+    odds_autofetch._breaker.clear()
+    odds_autofetch._manual_waiting[0] = 0
+    yield
+    odds_autofetch._breaker.clear()
+    odds_autofetch._manual_waiting[0] = 0
+
+
+def test_breaker_abre_al_llegar_al_umbral():
+    for i in range(odds_autofetch.BREAKER_THRESHOLD - 1):
+        assert odds_autofetch._breaker_registrar(1, ok=False) is False
+        assert odds_autofetch._breaker_abierto(1) is False
+    assert odds_autofetch._breaker_registrar(1, ok=False) is True  # el que lo abre
+    assert odds_autofetch._breaker_abierto(1) is True
+
+
+def test_breaker_solo_avisa_una_vez():
+    """El aviso se registra al abrir, no en cada scrape saltado despues (seria ruido)."""
+    for _ in range(odds_autofetch.BREAKER_THRESHOLD):
+        odds_autofetch._breaker_registrar(1, ok=False)
+    assert odds_autofetch._breaker_registrar(1, ok=False) is False
+
+
+def test_exito_resetea_el_breaker():
+    for _ in range(odds_autofetch.BREAKER_THRESHOLD - 1):
+        odds_autofetch._breaker_registrar(1, ok=False)
+    odds_autofetch._breaker_registrar(1, ok=True)
+    assert odds_autofetch._breaker_abierto(1) is False
+    assert odds_autofetch._breaker[1]["fails"] == 0
+
+
+def test_breaker_es_por_liga():
+    """Que LMB este en pausa no debe frenar a MLB."""
+    for _ in range(odds_autofetch.BREAKER_THRESHOLD):
+        odds_autofetch._breaker_registrar(23, ok=False)
+    assert odds_autofetch._breaker_abierto(23) is True
+    assert odds_autofetch._breaker_abierto(1) is False
+
+
+def test_breaker_se_reabre_al_expirar_la_pausa():
+    for _ in range(odds_autofetch.BREAKER_THRESHOLD):
+        odds_autofetch._breaker_registrar(1, ok=False)
+    assert odds_autofetch._breaker_abierto(1) is True
+    odds_autofetch._breaker[1]["until"] = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+    assert odds_autofetch._breaker_abierto(1) is False
+    assert odds_autofetch._breaker[1]["fails"] == 0  # empieza limpio, no reabre al primer fallo
+
+
+@pytest.mark.asyncio
+async def test_prioridad_manual_marca_y_desmarca():
+    assert odds_autofetch._manual_waiting[0] == 0
+    async with odds_autofetch.manual_scrape_priority():
+        assert odds_autofetch._manual_waiting[0] == 1
+        async with odds_autofetch.manual_scrape_priority():
+            assert odds_autofetch._manual_waiting[0] == 2
+    assert odds_autofetch._manual_waiting[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_prioridad_manual_se_libera_aunque_falle():
+    with pytest.raises(RuntimeError):
+        async with odds_autofetch.manual_scrape_priority():
+            raise RuntimeError("scrape reventado")
+    assert odds_autofetch._manual_waiting[0] == 0
+
+
+def test_lmb_ya_no_monopoliza():
+    """Los 11 reintentos de LMB convertian una liga en dueña del unico slot de scrape."""
+    assert odds_autofetch.AUTOFETCH_RETRIES_LMB <= odds_autofetch.AUTOFETCH_RETRIES

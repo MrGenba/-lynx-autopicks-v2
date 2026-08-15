@@ -44,10 +44,10 @@ WHERE g.game_datetime_utc > now() - interval '6 hours'
 ORDER BY g.game_datetime_utc, g.sport_id
 """
 
-# 'obsoleto' = el turno llego cuando ya no habia nada util que pedir, asi que NO se llego a tocar
-# cuotasahora. Contarlo como scrape exitoso inflaria el % de exito con trabajo que nunca se hizo, y
-# contarlo como fallido culparia a Tor de algo que no paso -- va a su propio contador.
-_ES_INTENTO = "kind='scrape' AND status IS DISTINCT FROM 'obsoleto'"
+# 'obsoleto' y 'cortacircuitos' no son intentos contra cuotasahora: el primero es trabajo
+# descartado al llegar tarde su turno, el segundo el aviso de que una liga entra en pausa.
+# Ninguno debe mover el % de exito ni en un sentido ni en otro.
+_ES_INTENTO = "kind='scrape' AND status NOT IN ('obsoleto', 'cortacircuitos')"
 
 _SUMMARY_SQL = f"""
 SELECT
@@ -231,6 +231,8 @@ def _events_table(events) -> str:
         # 'obsoleto' no es exito ni fallo: es trabajo descartado sin llegar a tocar cuotasahora.
         if e["status"] == "obsoleto":
             icon, kind = "⏭️", "descartado"
+        elif e["status"] == "cortacircuitos":
+            icon, kind = "🛑", "liga en pausa"
         else:
             icon = "✅" if e["ok"] else "❌"
             kind = "rotación IP" if e["kind"] == "rotate" else "scrape"

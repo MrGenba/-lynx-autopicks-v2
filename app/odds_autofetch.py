@@ -20,6 +20,7 @@ Dos formas de disparo, mismo motor por debajo:
   defecto -- desactivado 2026-07-09 tras un gasto de proxy inesperado, casi todo generado por
   este sondeo repetido antes de que existiera el disparo puntual de arriba)."""
 import asyncio
+import contextlib
 import datetime as dt
 import logging
 import time
@@ -74,12 +75,18 @@ _scrape_semaphore = asyncio.Semaphore(1)
 # probablemente se haya recuperado).
 AUTOFETCH_RETRIES = 5               # reintentos extra -> 6 intentos totales por llamada
 # LMB (sport 23) sufre mucho mas la loteria de circuito: el widget de cuotas (XHR) solo carga en
-# CIERTOS circuitos Tor -> un scrape entero devuelve TODO o NADA segun el exit. 6 intentos no bastan
-# para dar con uno bueno de forma fiable (comprobado 2026-08-04: manual funciona, automatico no
-# entraba). Se sube LMB a 11 reintentos (12 intentos) rotando NEWNYM entre cada uno. Coste acotado:
-# en cuanto un intento pilla circuito bueno, ese circuito se cachea ~600s y el resto de partidos LMB
-# entran rapido; solo el primero paga la busqueda. MLB/MiLB se quedan en 5 (casi nunca lo necesitan).
-AUTOFETCH_RETRIES_LMB = 11
+# CIERTOS circuitos Tor -> un scrape entero devuelve TODO o NADA segun el exit. Por eso se habia
+# subido a 11 reintentos (12 intentos) el 2026-08-04, rotando NEWNYM entre cada uno.
+#
+# 2026-08-15: BAJADO a 5 (igual que MLB/MiLB). Medido en produccion, esos 12 intentos por partido
+# convertian a LMB en el monopolizador de la cola: un fallo cada ~80s durante horas, colas de 2h
+# para todo lo demas, y comandos manuales del usuario expirando sin llegar a ejecutarse. Ademas la
+# premisa de "insistir hasta pillar circuito bueno" se volvio contraproducente: el fallo dominante
+# resulto ser throttle de cuotasahora (no_header repetido), que insistir AGRAVA.
+# Coste asumido a proposito: LMB volvera a fallar mas veces por partido. Se prefiere eso a que
+# monopolice el unico slot de scrape. Si con el cortacircuitos la cobertura de LMB cae demasiado,
+# la palanca correcta NO es volver a subir esto, sino darle a LMB su propio slot/proxy.
+AUTOFETCH_RETRIES_LMB = 5
 # 2026-08-02: backoff corto porque entre reintentos se ROTA el circuito de Tor (NEWNYM). El circuito
 # se mantiene estable DURANTE cada scrape; solo rota entre intentos. cuotasahora sirve un "decoy"
 # (indice sin partidos) a algunos circuitos -> con 6 intentos rotando circuito, ~80% de dar con uno
@@ -105,6 +112,63 @@ PARTIAL_GIVE_UP_BEFORE_START = dt.timedelta(minutes=45)  # cerca del inicio, con
 # servir en cuanto empieza el juego, y ese colchon absorbe desfases de reloj y el final de un
 # scrape que arranco justo antes del primer lanzamiento.
 STALE_AFTER_START = dt.timedelta(minutes=10)
+
+# --- Cortacircuitos por liga (2026-08-15) -------------------------------------------------
+# Patologia medida en produccion: ante un fallo, el sistema respondia INTENTANDOLO MAS VECES
+# (reintento + rotacion de circuito). Pero el fallo dominante (`no_header` repetido) es throttle
+# de cuotasahora, asi que insistir lo agrava, lo que genera mas fallos, lo que genera mas
+# intentos. Resultado medido: 233 scrapes en 6h (uno cada 93s sin parar), 269 rotaciones en 24h,
+# 33% de exito y colas de 2h. Bucle de realimentacion, no mala suerte.
+# El cortacircuitos lo rompe: tras N fallos seguidos en una liga, esa liga PARA unos minutos.
+# No afecta al endpoint manual (/scrape-odds), que va por otro camino a proposito -- si el
+# usuario pide cuotas explicitamente, se le obedece aunque el automatico este en pausa.
+BREAKER_THRESHOLD = 3
+BREAKER_PAUSE = dt.timedelta(minutes=20)
+_breaker: dict[int, dict] = {}
+
+# --- Prioridad del comando manual (2026-08-15) --------------------------------------------
+# El semaforo es de 1 y no es justo: un job del endpoint puede quedarse esperando indefinidamente
+# detras del flujo continuo del autofetch. Demostrado en vivo -- un job siguio en "running" mas de
+# 11 min sin que saltara el timeout de 600s del scraper, que solo empieza a contar cuando el
+# scrape ARRANCA de verdad. Es decir: nunca llego a empezar, solo hizo cola. Eso es exactamente lo
+# que hacia expirar los comandos "Cuotas ... bet365" del usuario.
+# Con esto, mientras haya un job manual esperando, el autofetch cede el turno en vez de competir.
+_manual_waiting = [0]
+
+
+@contextlib.asynccontextmanager
+async def manual_scrape_priority():
+    """Marca que hay un scrape MANUAL esperando turno. Debe envolver la espera del semaforo, no
+    solo su uso -- el objetivo es que el autofetch se aparte MIENTRAS el manual hace cola."""
+    _manual_waiting[0] += 1
+    try:
+        yield
+    finally:
+        _manual_waiting[0] = max(0, _manual_waiting[0] - 1)
+
+
+def _breaker_abierto(sport_id: int) -> bool:
+    est = _breaker.get(sport_id)
+    if not est or est.get("until") is None:
+        return False
+    if dt.datetime.now(dt.timezone.utc) >= est["until"]:
+        _breaker[sport_id] = {"fails": 0, "until": None}  # se acabo la pausa, empezar limpio
+        return False
+    return True
+
+
+def _breaker_registrar(sport_id: int, ok: bool) -> bool:
+    """Devuelve True si este resultado ACABA de abrir el cortacircuitos (para registrarlo una vez)."""
+    est = _breaker.setdefault(sport_id, {"fails": 0, "until": None})
+    if ok:
+        est["fails"] = 0
+        est["until"] = None
+        return False
+    est["fails"] += 1
+    if est["fails"] >= BREAKER_THRESHOLD and est["until"] is None:
+        est["until"] = dt.datetime.now(dt.timezone.utc) + BREAKER_PAUSE
+        return True
+    return False
 # Espaciado GLOBAL entre scrapes reales. Con "cuotas frescas siempre", cuando salen muchos lineups
 # casi a la vez el detector encola N scrapes -- el semáforo los serializa pero back-to-back, y ese
 # burst es justo lo que throttlea cuotasahora. Este hueco mínimo los separa.
@@ -233,6 +297,22 @@ async def _stamp_partial_retry(pool: asyncpg.Pool, sport_id: int, candidates: li
         logger.exception("no se pudo estampar last_partial_retry_at (sport_id=%s) -- se ignora", sport_id)
 
 
+async def _anotar_breaker(ctx: PipelineContext, sport_id: int, league_key: str, ok: bool) -> None:
+    """Alimenta el cortacircuitos y, si este resultado lo ABRE, lo deja registrado una sola vez
+    (no en cada scrape saltado despues -- eso llenaria el panel de ruido)."""
+    if not _breaker_registrar(sport_id, ok):
+        return
+    minutos = int(BREAKER_PAUSE.total_seconds() // 60)
+    logger.warning("cortacircuitos ABIERTO para %s: %s fallos seguidos, pausa de %s min",
+                   league_key, BREAKER_THRESHOLD, minutos)
+    await record_activity(
+        ctx.pool, "scrape", ok=False, sport_id=sport_id, league=league_key,
+        status="cortacircuitos",
+        detail=f"{BREAKER_THRESHOLD} fallos seguidos -> {league_key} en pausa {minutos} min",
+        source="breaker",
+    )
+
+
 async def _notify_status_change(ctx: PipelineContext, sport_id: int, ok: bool, detail: str) -> None:
     # 2026-08-05: SOLO LOG, ya no manda Telegram. Este aviso (✅ vuelve a responder / ⚠️ sin partidos,
     # descartado) hacia flip-flop constante: el scrape usa UN circuito Tor por sesion y cuotasahora no
@@ -257,6 +337,15 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
         return 0, "empty"
 
     league_key = SCRAPER_LEAGUE[sport_id]
+
+    # Los dos frenos van ANTES de pedir el semaforo: el objetivo es no entrar en la cola, no
+    # adelantar posiciones dentro de ella.
+    if _manual_waiting[0] > 0:
+        logger.info("autofetch %s: hay un scrape manual esperando -- se cede el turno", league_key)
+        return 0, "manual_priority"
+    if _breaker_abierto(sport_id):
+        logger.info("autofetch %s: cortacircuitos abierto, no se scrapea", league_key)
+        return 0, "breaker"
     # 2026-08-14: telemetria persistente de cada intento (tabla tor_activity) -- es la unica
     # fuente del dashboard de estado. Antes de esto, "¿el scrapeo esta vivo?" solo se podia
     # responder mirando los logs del contenedor, que no son accesibles desde Telegram.
@@ -329,6 +418,7 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
     except NodeBridgeError as e:
         logger.warning("run_odds_scraper fallo para %s: %s", league_key, e)
         await _notify_status_change(ctx, sport_id, False, f"scraper falló: {str(e)[:200]}")
+        await _anotar_breaker(ctx, sport_id, league_key, ok=False)
         await record_activity(
             ctx.pool, "scrape", ok=False, sport_id=sport_id, league=league_key,
             status="scraper_failed", n_candidates=len(candidates), duration_ms=_elapsed_ms(),
@@ -343,6 +433,7 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
         # pero no trajo nada utilizable, que es justo el sintoma de "no recibo cuotas".
         detail = (result.get("errors") or [""])[0]
         await _notify_status_change(ctx, sport_id, False, f"sin partidos, {str(detail)[:180]}")
+        await _anotar_breaker(ctx, sport_id, league_key, ok=False)
         await record_activity(
             ctx.pool, "scrape", ok=False, sport_id=sport_id, league=league_key,
             status="empty", n_candidates=len(candidates), n_scraped=0, n_matched=0,
@@ -416,6 +507,7 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
     # ok=True: cuotasahora sirvio la pagina REAL (trajo partidos). Que matched_count sea 0 aqui
     # ya no es un problema de Tor sino de emparejamiento (nombres/fantasmas/duplicados), y se
     # distingue en el dashboard por el status, no por el color del estado de Tor.
+    await _anotar_breaker(ctx, sport_id, league_key, ok=True)
     await record_activity(
         ctx.pool, "scrape", ok=True, sport_id=sport_id, league=league_key,
         status=("ok" if matched_count else "sin_match"), n_candidates=len(candidates),
