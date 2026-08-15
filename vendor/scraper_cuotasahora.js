@@ -104,24 +104,36 @@ async function waitForBookmakerRows(page, timeout = 15000) {
 // (hay que elegir la principal, ver pickMainLine, y clicarla) -- pero cuando solo hay UNA línea
 // ofrecida, el sitio se salta la lista y muestra el desglose por casa directamente tras clicar
 // la pestaña.
+// 2026-08-16: esta funcion tenia SIETE `return null` distintos, todos indistinguibles desde
+// fuera. Resultado: un partido se guardaba con ML y sin total, y en ningun sitio quedaba
+// constancia de por que -- llevabamos dias viendo "a todos los partidos les falta el total" sin
+// poder atacarlo, porque el fallo era invisible por construccion (mismo problema que tenia la
+// espera en cola antes de separarla de la duracion del scrape).
+// Ahora cada salida devuelve { __failed: motivo }. El motivo mas importante es
+// `casa_ausente`, que ademas lista QUE casas si aparecian: es la unica forma de distinguir
+// "Bet365 no publica este mercado" de "el scraper no encuentra la pestaña".
+function drillFail(reason, extra) {
+  return { __failed: extra ? reason + " (" + extra + ")" : reason };
+}
+
 async function drillIntoMarket(page, tabLabel, opts, bookmaker) {
   const tabLi = page.locator('li.odds-item:has-text("' + tabLabel + '")').first();
-  if (!(await tabLi.isVisible({ timeout: 2000 }).catch(() => false))) return null;
+  if (!(await tabLi.isVisible({ timeout: 2000 }).catch(() => false))) return drillFail("pestaña_no_visible", tabLabel);
   await tabLi.click({ force: true, timeout: 8000 });
   await sleep(2500);
   await dismissOverlays(page);
 
   let lines = await getLines(page);
   const tabIdx = lines.findIndex((l) => l === tabLabel);
-  if (tabIdx === -1) return null;
+  if (tabIdx === -1) return drillFail("etiqueta_no_en_texto", tabLabel);
 
   const agg = parseAggregateLines(lines, tabLabel, tabIdx, lines.length);
   if (agg.length) {
     const main = pickMainLine(agg, opts);
-    if (!main) return null;
+    if (!main) return drillFail("sin_linea_principal", agg.length + " lineas ofrecidas");
     const lineText = tabLabel + " " + (main.line > 0 ? "+" : "") + main.line;
     const lineEl = page.locator("text=" + lineText).first();
-    if (!(await lineEl.isVisible({ timeout: 2000 }).catch(() => false))) return null;
+    if (!(await lineEl.isVisible({ timeout: 2000 }).catch(() => false))) return drillFail("linea_no_clicable", lineText);
     await lineEl.click({ force: true, timeout: 8000 });
     await sleep(2500);
     await dismissOverlays(page);
@@ -129,10 +141,16 @@ async function drillIntoMarket(page, tabLabel, opts, bookmaker) {
   }
 
   const drillIdx = lines.findIndex((l) => l === "Casas de apuestas");
-  if (drillIdx === -1) return null;
+  if (drillIdx === -1) return drillFail("sin_bloque_casas");
   const rows = parseBookmakerRows(lines, drillIdx, Math.min(lines.length, drillIdx + 60));
   const picked = pickBookmaker(rows, bookmaker);
-  if (!picked || picked.line == null) return null;
+  if (!picked) {
+    // El dato decisivo: si Bet365 no esta pero SI hay otras casas, el scraper funciona y es
+    // cuotasahora quien no ofrece esa casa en ese mercado. Se listan para poder afirmarlo.
+    return drillFail("casa_ausente", bookmaker + " no esta entre " + rows.length + ": " +
+      rows.map((r) => r.bookmaker).slice(0, 8).join("/"));
+  }
+  if (picked.line == null) return drillFail("casa_sin_linea", picked.bookmaker);
   return { line: picked.line, odds1: picked.odds1, odds2: picked.odds2, bookmaker: picked.bookmaker };
 }
 
@@ -198,7 +216,11 @@ async function scrapeMatch(league, url, shouldDrill, bookmaker) {
 
     const mlRows = parseBookmakerRows(lines, header.tabIdx, Math.min(lines.length, header.tabIdx + 80));
     const ml = pickBookmaker(mlRows, bookmaker);
-    if (!ml) return { __skipped: "no_bookmaker_rows", url, home: header.home_team, away: header.away_team, mlRowsFound: mlRows.length };
+    if (!ml) return { __skipped: "no_bookmaker_rows", url, home: header.home_team, away: header.away_team,
+      mlRowsFound: mlRows.length,
+      // Sin esta lista, "no_bookmaker_rows con mlRowsFound=6" era un enigma: 6 filas y aun asi
+      // descartado. Con ella se ve al instante si el problema es que falta Bet365 en concreto.
+      bookmakersFound: mlRows.map((r) => r.bookmaker).slice(0, 8) };
 
     const game = {
       league, status: "scheduled", time: header.time,
@@ -210,8 +232,18 @@ async function scrapeMatch(league, url, shouldDrill, bookmaker) {
     if (shouldDrill(header.away_team, header.home_team)) {
       const total = await drillIntoMarket(page, "Más/Menos de", {}, bookmaker);
       const hc = await drillIntoMarket(page, "Hándicap asiático", { preferAbs: 1.5 }, bookmaker);
-      if (total) game.total = { line: Math.abs(total.line), over_odds: total.odds1, under_odds: total.odds2 };
-      if (hc) game.run_line = { home: { line: hc.line, odds: hc.odds1 }, away: { line: -hc.line, odds: hc.odds2 } };
+      // drill_notes viaja con el partido para que "tiene ML pero no total" deje de ser un
+      // agujero mudo: ahora dice cual de los siete motivos fue.
+      const notes = [];
+      if (total && !total.__failed) game.total = { line: Math.abs(total.line), over_odds: total.odds1, under_odds: total.odds2 };
+      else notes.push("total: " + ((total && total.__failed) || "sin_resultado"));
+      if (hc && !hc.__failed) game.run_line = { home: { line: hc.line, odds: hc.odds1 }, away: { line: -hc.line, odds: hc.odds2 } };
+      else notes.push("handicap: " + ((hc && hc.__failed) || "sin_resultado"));
+      if (notes.length) game.drill_notes = notes;
+    } else {
+      // Tambien se anota: un shouldDrill en falso explica por si solo un partido sin total, y
+      // hasta ahora era indistinguible de un fallo de perforacion.
+      game.drill_notes = ["no perforado (shouldDrill=false para " + header.away_team + " @ " + header.home_team + ")"];
     }
     return game;
   } catch (e) {
@@ -335,7 +367,10 @@ async function fetchLeagueOdds(league, candidateNames, bookmaker) {
       if (result.error) { errors.push(result.error); continue; }
       if (result.__skipped) {
         const who = result.away && result.home ? ` ${result.away} @ ${result.home}` : "";
-        errors.push(`descartado (${result.__skipped})${who} url=${result.url}` + (result.mlRowsFound != null ? ` mlRowsFound=${result.mlRowsFound}` : "") + (result.linesSample ? ` linesSample=${JSON.stringify(result.linesSample)}` : ""));
+        errors.push(`descartado (${result.__skipped})${who} url=${result.url}`
+          + (result.mlRowsFound != null ? ` mlRowsFound=${result.mlRowsFound}` : "")
+          + (result.bookmakersFound ? ` casas=${JSON.stringify(result.bookmakersFound)}` : "")
+          + (result.linesSample ? ` linesSample=${JSON.stringify(result.linesSample)}` : ""));
         continue;
       }
       games.push(result);

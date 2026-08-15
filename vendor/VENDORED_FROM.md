@@ -21,6 +21,16 @@ No usar `scripts/sync_vendor_from_n8n.py` sin revisar el diff a mano — un camb
 
 ## Scraper de cuotas (`scraper_cuotasahora.js` + `parser_cuotasahora.js` + `run_odds_scraper.js`)
 
+> **Divergencia nº 2 (2026-08-16) — instrumentación de `drillIntoMarket`.** `scraper_cuotasahora.js`
+> tenía siete `return null` indistinguibles en la perforación de Totales/Hándicap: un partido se
+> guardaba con ML y sin total, y no quedaba rastro de por qué. Con ~28 partidos seguidos en ese
+> estado (ML sí, total nunca) el diagnóstico era imposible. Ahora cada salida devuelve
+> `{__failed: motivo}`, el partido lleva `drill_notes`, y el descarte por ML lista `bookmakersFound`
+> — el dato que distingue "Bet365 no ofrece ese mercado" de "el scraper no encuentra la pestaña".
+> **No cambia ningún comportamiento de scraping**, solo lo hace observable.
+> Producción (`odds_bet365/`) sigue SIN este cambio: su sha256 se verificó intacto el 2026-08-16.
+> Si allí aparece el mismo síntoma, hay que propagarlo a mano.
+
 Vendorizados desde `D:\Milb\odds_bet365\` (2026-07-08/09) con **una única diferencia** respecto
 al original: `ensureBrowser()` en `scraper_cuotasahora.js` lee `PROXY_SERVER`/`PROXY_USERNAME`/
 `PROXY_PASSWORD` del entorno y los pasa a `chromium.launch({proxy:...})` -- necesario porque el
