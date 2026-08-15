@@ -85,5 +85,8 @@ class Config:
             scrape_endpoint_token=os.environ.get("SCRAPE_ENDPOINT_TOKEN") or None,
             odds_api_key=os.environ.get("ODDS_API_KEY") or None,
             dashboard_token=os.environ.get("DASHBOARD_TOKEN") or None,
-            proxy_server_full=os.environ.get("PROXY_SERVER_FULL") or "socks5://127.0.0.1:9053",
+            # 2026-08-16: sin valor por defecto. La 2a instancia quedo desactivada (ver
+            # docker-entrypoint.sh) y apuntar a un SOCKS muerto costaba 15s en CADA carga del
+            # dashboard esperando el tope duro. Vacio = no se comprueba ni se ofrece.
+            proxy_server_full=os.environ.get("PROXY_SERVER_FULL") or None,
         )

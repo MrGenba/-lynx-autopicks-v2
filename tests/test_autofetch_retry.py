@@ -312,3 +312,53 @@ async def test_autofetch_suelta_el_semaforo_si_llega_un_manual(monkeypatch):
     assert status == "manual_priority"
     assert matched == 0
     assert llamadas["scraper"] == 0  # ni siquiera se llego a lanzar el scraper
+
+
+# --- catalogo del pais equivocado ---------------------------------------------------------
+# 2026-08-16: cuotasahora geolocaliza por IP de salida. Desde Alemania la casa aparece como
+# "Bet365.de": la cuota ESTA, pero bajo otro nombre y en un catalogo con menos mercados (por eso
+# el total no llegaba nunca). Remedio concreto: rotar circuito hasta caer en otro pais.
+
+@pytest.mark.asyncio
+async def test_wrong_catalog_reintenta_rotando(monkeypatch):
+    calls = _patch_league(monkeypatch, [(0, "wrong_catalog"), (1, "ok")])
+    await odds_autofetch.autofetch_league(CTX, 1)
+    assert calls["n"] == 2
+    assert calls["rotaciones"] == 1
+
+
+@pytest.mark.asyncio
+async def test_wrong_catalog_reintenta_en_disparo_puntual(monkeypatch):
+    calls = _patch(monkeypatch, [(0, "wrong_catalog"), (1, "ok")])
+    got = await odds_autofetch.autofetch_single_game(CTX, 1, 123, "A", "B", _future())
+    assert got is True
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_wrong_catalog_no_alimenta_el_cortacircuitos(monkeypatch):
+    """El cortacircuitos frena el martilleo cuando el sitio nos cierra la puerta. Con catalogo
+    equivocado nos la esta ABRIENDO -- salimos por el pais que no toca, que se arregla rotando.
+    Si contara como fallo, el breaker pausaria la liga justo cuando rotar iba a resolverlo."""
+    from app import aliases
+    cand = aliases.CandidateGame(
+        sport_id=1, game_pk=1, away_team_id=None, home_team_id=None,
+        away_team_name="A", home_team_name="B",
+        game_datetime_utc=dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2),
+    )
+
+    async def scraper_catalogo_aleman(*_a, **_k):
+        return {"games": [], "errors": ["descartado (wrong_catalog)"],
+                "wrong_catalog": True, "wrong_catalog_variants": ["Bet365.de"]}
+
+    monkeypatch.setattr(odds_autofetch, "run_odds_scraper", scraper_catalogo_aleman)
+    monkeypatch.setattr(odds_autofetch, "_stamp_partial_retry", _noop_sleep)
+    monkeypatch.setattr(odds_autofetch.asyncio, "sleep", _noop_sleep)
+    ctx = types.SimpleNamespace(pool=None, node_bin="node", vendor_dir="/v",
+                                proxy_server=None, proxy_server_lmb=None)
+
+    for _ in range(odds_autofetch.BREAKER_THRESHOLD + 2):
+        matched, status = await odds_autofetch._scrape_and_apply(ctx, 1, [cand])
+        assert (matched, status) == (0, "wrong_catalog")
+
+    assert odds_autofetch._breaker_abierto(1) is False

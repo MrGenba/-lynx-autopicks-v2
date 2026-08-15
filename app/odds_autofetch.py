@@ -438,6 +438,22 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
         return 0, "scraper_failed"
 
     games = result.get("games") or []
+    if not games and result.get("wrong_catalog"):
+        # cuotasahora sirvio la pagina REAL, con la casa pedida presente pero bajo el nombre de
+        # otro pais ("Bet365.de"): la cuota existe, solo que en un catalogo que ademas ofrece menos
+        # mercados. NO es el sitio fallando -- es este circuito saliendo por el pais equivocado, y
+        # tiene remedio concreto: rotar y reintentar. Se distingue de "empty" (decoy/throttle)
+        # para poder contarlo aparte y NO alimentar el cortacircuitos, que existe para frenar el
+        # martilleo cuando el sitio nos cierra la puerta; aqui nos la esta abriendo.
+        variantes = ", ".join(result.get("wrong_catalog_variants") or []) or "?"
+        logger.info("autofetch %s: catalogo del pais equivocado (%s) -- se rotara circuito", league_key, variantes)
+        await record_activity(
+            ctx.pool, "scrape", ok=False, sport_id=sport_id, league=league_key,
+            status="wrong_catalog", n_candidates=len(candidates), n_scraped=0, n_matched=0,
+            duration_ms=_elapsed_ms(),
+            detail=f"catálogo de otro país: {variantes}{_queue_note()}", source="autofetch",
+        )
+        return 0, "wrong_catalog"
     if not games:
         # Sin partidos = cuotasahora sirvio el "decoy" (indice sin enlaces) por este circuito, con
         # o sin errores explicitos. Cuenta como scrape NO-ok en el dashboard: el proceso corrio,
@@ -564,7 +580,7 @@ async def autofetch_single_game(
         # suelen ser un CIRCUITO de Tor por el que cuotasahora sirve el decoy. Antes de reintentar se
         # ROTA el circuito (NEWNYM) para salir por otro; con circuito estable durante cada scrape y
         # rotacion entre intentos, se cicla hasta un circuito bueno.
-        if status not in ("empty", "scraper_failed"):
+        if status not in ("empty", "scraper_failed", "wrong_catalog"):
             return False
         if attempt >= retries:
             break
@@ -605,7 +621,7 @@ async def autofetch_league(ctx: PipelineContext, sport_id: int) -> None:
 
     for attempt in range(1 + AUTOFETCH_LEAGUE_RETRIES):
         _matched, status = await _scrape_and_apply(ctx, sport_id, candidates)
-        if status not in ("empty", "scraper_failed"):
+        if status not in ("empty", "scraper_failed", "wrong_catalog"):
             return  # exito (o algo que reintentar no arregla)
         if attempt >= AUTOFETCH_LEAGUE_RETRIES:
             return

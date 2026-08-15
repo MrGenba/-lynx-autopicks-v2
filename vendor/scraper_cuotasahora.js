@@ -223,11 +223,20 @@ async function scrapeMatch(league, url, shouldDrill, bookmaker) {
 
     const mlRows = parseBookmakerRows(lines, header.tabIdx, Math.min(lines.length, header.tabIdx + 80));
     const ml = pickBookmaker(mlRows, bookmaker);
-    if (!ml) return { __skipped: "no_bookmaker_rows", url, home: header.home_team, away: header.away_team,
-      mlRowsFound: mlRows.length,
-      // Sin esta lista, "no_bookmaker_rows con mlRowsFound=6" era un enigma: 6 filas y aun asi
-      // descartado. Con ella se ve al instante si el problema es que falta Bet365 en concreto.
-      bookmakersFound: mlRows.map((r) => r.bookmaker).slice(0, 8) };
+    if (!ml) {
+      const casas = mlRows.map((r) => r.bookmaker);
+      // 2026-08-16: distinguir "catalogo del pais equivocado" de "no hay casas". cuotasahora
+      // geolocaliza por IP de salida: desde Alemania la casa se llama "Bet365.de" -- la cuota
+      // ESTA ahi, solo que bajo otro nombre, y ademas ese catalogo ofrece menos mercados (por eso
+      // el total no llegaba nunca). Es un fallo con remedio concreto: rotar circuito y reintentar
+      // hasta caer en un pais de catalogo internacional. Se marca aparte para que Python pueda
+      // tratarlo asi en vez de confundirlo con un partido sin cuotas.
+      const variante = casas.find((c) => c.toLowerCase().startsWith(bookmaker.toLowerCase() + "."));
+      const base = { url, home: header.home_team, away: header.away_team,
+                     mlRowsFound: mlRows.length, bookmakersFound: casas.slice(0, 8) };
+      if (variante) return { __skipped: "wrong_catalog", variant: variante, ...base };
+      return { __skipped: "no_bookmaker_rows", ...base };
+    }
 
     const game = {
       league, status: "scheduled", time: header.time,
@@ -312,6 +321,9 @@ async function fetchLeagueOdds(league, candidateNames, bookmaker) {
 
   const games = [];
   const errors = [];
+  // Variantes de la casa pedida encontradas bajo nombre de otro pais (ej. "Bet365.de"). Se
+  // acumula a nivel de LIGA porque `results` es local a cada path (MiLB tiene dos).
+  const wrongCatalogVariants = new Set();
   const debugCounts = [];
   for (const path of paths) {
     let matchLinks = [];
@@ -373,6 +385,7 @@ async function fetchLeagueOdds(league, candidateNames, bookmaker) {
       if (!result) continue;
       if (result.error) { errors.push(result.error); continue; }
       if (result.__skipped) {
+        if (result.__skipped === "wrong_catalog" && result.variant) wrongCatalogVariants.add(result.variant);
         const who = result.away && result.home ? ` ${result.away} @ ${result.home}` : "";
         errors.push(`descartado (${result.__skipped})${who} url=${result.url}`
           + (result.mlRowsFound != null ? ` mlRowsFound=${result.mlRowsFound}` : "")
@@ -384,7 +397,12 @@ async function fetchLeagueOdds(league, candidateNames, bookmaker) {
     }
   }
 
-  return { league, bookmaker, games, errors, fetched_at: new Date().toISOString(), exit_geo: exitGeo, browser_timezone: browserTz, debug_counts: debugCounts };
+  // Señal estructurada (no parsear cadenas de error desde Python): al menos un partido tenia la
+  // casa pedida pero bajo el nombre de otro pais -> el circuito actual cae en un catalogo que no
+  // sirve, y rotar tiene sentido.
+  return { league, bookmaker, games, errors, wrong_catalog: wrongCatalogVariants.size > 0,
+    wrong_catalog_variants: [...wrongCatalogVariants],
+    fetched_at: new Date().toISOString(), exit_geo: exitGeo, browser_timezone: browserTz, debug_counts: debugCounts };
 }
 
 // Concurrencia baja a proposito -- este contenedor no es una maquina potente y comparte

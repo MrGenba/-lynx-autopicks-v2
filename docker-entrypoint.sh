@@ -53,11 +53,24 @@ tor --RunAsDaemon 1 \
 # puede, usa cualquier otro en vez de quedarse sin ruta. No garantiza el catalogo completo (a
 # veces caera en Alemania igual), pero sube la proporcion y NO puede dejarnos sin circuitos, que
 # es exactamente lo que paso antes. Se amplia ademas la lista con mercados tambien completos.
-tor --RunAsDaemon 1 \
-    --SocksPort 9053 \
-    --DataDirectory /tmp/tor-full \
-    --ExitNodes '{gb},{ie},{nl},{at},{dk},{no},{se},{fi},{mt}' \
-    --PidFile /tmp/tor-full.pid
+# 2026-08-16 DESACTIVADA (3er intento fallido de fijar el pais de salida). Con StrictNodes la
+# instancia arrancaba pero no construia ni un solo circuito; SIN StrictNodes tampoco llego a salir
+# en 166s -- el SOCKS aceptaba la conexion y la dejaba colgada, que es lo que hace Tor mientras
+# arranca. El Tor general del 9050 iba perfectamente en paralelo (970 ms), asi que el problema es
+# especifico de esta 2a instancia y no se pudo afinar mas sin logs del contenedor.
+#
+# Se ABANDONA la via de fijar el pais. El catalogo correcto se busca ahora POR SU CONTENIDO: si un
+# scrape ve casas con sufijo de pais (".de"), se rota circuito y se reintenta -- esa es la señal de
+# verdad, no una aproximacion geografica, y reutiliza la rotacion que ya funciona en produccion.
+# Ver odds_autofetch.py, status "wrong_catalog".
+#
+# Se deja comentado y no borrado por si se retoma con un proxy de pago (el hook PROXY_SERVER_FULL
+# sigue en Config: basta apuntarlo a un SOCKS que funcione y esto vuelve a estar disponible).
+# tor --RunAsDaemon 1 \
+#     --SocksPort 9053 \
+#     --DataDirectory /tmp/tor-full \
+#     --ExitNodes '{gb},{ie},{nl},{at},{dk},{no},{se},{fi},{mt}' \
+#     --PidFile /tmp/tor-full.pid
 
 # 2026-08-03: se PROBO una 2a instancia Tor con ExitNodes {mx} (StrictNodes) para LMB, porque
 # cuotasahora sirve un muro de login/decoy a los circuitos no-MX en la seccion de LMB. NO FUNCIONO:
