@@ -256,6 +256,22 @@ async function scrapeMatch(league, url, shouldDrill, bookmaker) {
       if (hc && !hc.__failed) game.run_line = { home: { line: hc.line, odds: hc.odds1 }, away: { line: -hc.line, odds: hc.odds2 } };
       else notes.push("handicap: " + ((hc && hc.__failed) || "sin_resultado"));
       if (notes.length) game.drill_notes = notes;
+
+      // 2026-08-16: si alguna perforacion fallo por "pestaña_no_visible", volcar QUE pestañas hay
+      // realmente. El scraper busca el texto exacto "Más/Menos de" / "Hándicap asiático"; si
+      // cuotasahora las renombro o cambio el marcado, el ML sigue funcionando (sale de la pagina
+      // principal) pero Totales y Handicap dejan de llegar SIEMPRE -- que es exactamente el
+      // sintoma. Dos vertientes, y hay que distinguirlas:
+      //   market_tabs vacio   -> el selector li.odds-item ya no encuentra las pestañas (marcado)
+      //   market_tabs con otros nombres -> solo hay que apuntar al texto nuevo
+      if (notes.some((n) => n.includes("pestaña_no_visible"))) {
+        game.market_tabs = await page.locator("li.odds-item").allInnerTexts()
+          .then((t) => t.map((x) => String(x).replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 25))
+          .catch(() => null);
+        // Respaldo por si el selector es el que cambio: el texto crudo alrededor de la zona de
+        // mercados enseña los nombres aunque la clase CSS ya no sea li.odds-item.
+        game.lines_around_tabs = lines.slice(Math.max(0, header.tabIdx - 4), header.tabIdx + 26);
+      }
     } else {
       // Tambien se anota: un shouldDrill en falso explica por si solo un partido sin total, y
       // hasta ahora era indistinguible de un fallo de perforacion.
