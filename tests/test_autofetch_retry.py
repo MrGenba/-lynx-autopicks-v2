@@ -281,3 +281,34 @@ async def test_prioridad_manual_se_libera_aunque_falle():
 def test_lmb_ya_no_monopoliza():
     """Los 11 reintentos de LMB convertian una liga en dueña del unico slot de scrape."""
     assert odds_autofetch.AUTOFETCH_RETRIES_LMB <= odds_autofetch.AUTOFETCH_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_autofetch_suelta_el_semaforo_si_llega_un_manual(monkeypatch):
+    """El caso que la primera version NO cubria: el autofetch ya tiene el semaforo cogido (o ya
+    paso la comprobacion previa) cuando aparece el manual. Sin la segunda comprobacion, el job
+    manual espera detras de TODA la cola ya formada -- asyncio.Semaphore es FIFO."""
+    from app import aliases
+    cand = aliases.CandidateGame(
+        sport_id=1, game_pk=1, away_team_id=None, home_team_id=None,
+        away_team_name="A", home_team_name="B",
+        game_datetime_utc=dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2),
+    )
+    llamadas = {"scraper": 0}
+
+    async def no_deberia_scrapear(*a, **k):
+        llamadas["scraper"] += 1
+        return {"games": [], "errors": []}
+
+    monkeypatch.setattr(odds_autofetch, "run_odds_scraper", no_deberia_scrapear)
+    monkeypatch.setattr(odds_autofetch, "_stamp_partial_retry", _noop_sleep)
+    monkeypatch.setattr(odds_autofetch.asyncio, "sleep", _noop_sleep)
+
+    ctx = types.SimpleNamespace(pool=None, node_bin="node", vendor_dir="/v",
+                                proxy_server=None, proxy_server_lmb=None)
+    async with odds_autofetch.manual_scrape_priority():
+        matched, status = await odds_autofetch._scrape_and_apply(ctx, 1, [cand])
+
+    assert status == "manual_priority"
+    assert matched == 0
+    assert llamadas["scraper"] == 0  # ni siquiera se llego a lanzar el scraper

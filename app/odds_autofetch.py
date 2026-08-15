@@ -375,6 +375,17 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
     try:
         async with _scrape_semaphore:
             # Espaciado global anti-throttle: separa scrapes back-to-back (ver _MIN_SCRAPE_GAP_S).
+            # Segunda comprobacion, ya CON el semaforo en la mano. La de antes de pedirlo no basta
+            # (error de la primera version, 2026-08-15): solo evita que entren scrapes NUEVOS, pero
+            # los que ya pasaron ese punto siguen encolados, y asyncio.Semaphore es FIFO -- un job
+            # manual que llega el ultimo espera detras de toda la cola ya formada. Medido: el job
+            # manual seguia sin arrancar tras 652s mientras el autofetch entraba con esperas de
+            # 78-294s. Soltando aqui, la cola de autofetch se vacia en milisegundos (cada uno coge,
+            # mira y suelta) y el manual pasa.
+            if _manual_waiting[0] > 0:
+                logger.info("autofetch %s: scrape manual esperando -- se suelta el turno ya cogido", league_key)
+                return 0, "manual_priority"
+
             gap = _MIN_SCRAPE_GAP_S - (dt.datetime.now(dt.timezone.utc).timestamp() - _last_scrape[0])
             if gap > 0:
                 await asyncio.sleep(gap)
