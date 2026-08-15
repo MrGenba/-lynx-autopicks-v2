@@ -22,6 +22,11 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
 _INCLUIR = (("app", "*.py"), ("migrations", "*.sql"), ("vendor", "*.js"))
+# 2026-08-16: ficheros de la RAIZ que tambien definen lo desplegado. Se anadieron tras un fallo
+# real de esta misma herramienta: se cambio docker-entrypoint.sh (arranque de Tor) y la huella no
+# se movio, con lo que era imposible verificar ese despliegue -- justo lo que /version existe para
+# evitar. Un punto ciego en el verificador es peor que no tenerlo, porque da confianza falsa.
+_RAIZ = ("docker-entrypoint.sh", "Dockerfile", "requirements.txt", "package.json")
 _EXCLUIR = ("__pycache__", ".pytest_cache")
 
 
@@ -34,6 +39,10 @@ def _ficheros() -> list[Path]:
         for p in base.rglob(patron):
             if any(parte in _EXCLUIR for parte in p.parts):
                 continue
+            out.append(p)
+    for nombre in _RAIZ:
+        p = _ROOT / nombre
+        if p.is_file():
             out.append(p)
     return sorted(out, key=lambda p: p.relative_to(_ROOT).as_posix())
 
