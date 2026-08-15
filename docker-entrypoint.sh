@@ -25,6 +25,32 @@ tor --RunAsDaemon 1 \
     --CookieAuthentication 1 \
     --CookieAuthFile /tmp/tor.cookie
 
+# 2026-08-16: 2a instancia con salidas en paises de CATALOGO COMPLETO de Bet365 (SOCKS 9053).
+#
+# Causa raiz encontrada hoy: cuotasahora geolocaliza por IP de salida y sirve el catalogo de casas
+# de ESE pais. Alemania es, con diferencia, el pais con mas exits de Tor, asi que caiamos ahi
+# constantemente -- y el catalogo aleman lista "Bet365.de", que (a) no casa con el nombre exacto
+# "bet365" que busca pickBookmaker, asi que el partido entero se descartaba pese a tener las
+# cuotas delante (`mlRowsFound=6 casas=[...,"Bet365.de",...]`), y (b) por la regulacion alemano
+# ofrece muchos menos mercados, lo que explica que el TOTAL no llegara nunca aunque el ML si.
+#
+# Por que ahora si puede funcionar restringir el pais, si fallo dos veces: los intentos anteriores
+# fijaron UN pais con poquisimos exits -- {es} (2026-07-11) y {mx} (2026-08-03, la red Tor tiene
+# ~1 exit mexicano). Con StrictNodes sobre un pool diminuto Tor se queda sin rutas y da
+# ERR_TIMED_OUT. Aqui NO hace falta un pais concreto: sirve cualquiera cuyo Bet365 sea el catalogo
+# internacional, asi que el pool es mucho mayor. Ademas se suben los timeouts de navegacion
+# (GOTO_MATCH_MS/GOTO_INDEX_MS), que es lo que el comentario de arriba ya recomendaba probar
+# antes de renunciar a fijar el pais.
+#
+# Instancia SEPARADA y no sustitucion: si este pool restringido falla, el Tor general de 9050
+# sigue intacto como respaldo y el sistema no se queda sin cuotas.
+tor --RunAsDaemon 1 \
+    --SocksPort 9053 \
+    --DataDirectory /tmp/tor-full \
+    --ExitNodes '{gb},{ie},{nl},{at},{dk},{no}' \
+    --StrictNodes 1 \
+    --PidFile /tmp/tor-full.pid
+
 # 2026-08-03: se PROBO una 2a instancia Tor con ExitNodes {mx} (StrictNodes) para LMB, porque
 # cuotasahora sirve un muro de login/decoy a los circuitos no-MX en la seccion de LMB. NO FUNCIONO:
 # la red Tor solo tiene ~1 exit MX (TrujillosExit) y forzarlo daba net::ERR_TIMED_OUT en page.goto

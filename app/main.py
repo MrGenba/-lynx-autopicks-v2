@@ -72,7 +72,7 @@ def _check_scrape_token(request: web.Request, cfg: Config) -> bool:
     return bool(cfg.scrape_endpoint_token) and token == cfg.scrape_endpoint_token
 
 
-async def _run_scrape_job(job_id: str, cfg: Config, league: str, bookmaker: str = "Bet365", candidate_names: list[str] | None = None) -> None:
+async def _run_scrape_job(job_id: str, cfg: Config, league: str, bookmaker: str = "Bet365", candidate_names: list[str] | None = None, proxy_kind: str = "auto") -> None:
     try:
         # 2026-07-20 DESACTIVADO: odds-api.io ya no se usa como via rapida para Bet365. Aunque
         # el fix del mismo dia en odds_api_client.py corrigio la mezcla de casas (Bet365 vs
@@ -87,8 +87,15 @@ async def _run_scrape_job(job_id: str, cfg: Config, league: str, bookmaker: str 
         # _try_odds_api() se deja sin borrar (queda sin llamar desde aqui) por si se quiere
         # recuperar la via rapida en el futuro con una fuente distinta.
 
-        # LMB sale por su Tor mexicano si esta configurado (ver Config.proxy_server_lmb).
-        proxy = cfg.proxy_server_lmb if (league == "LMB" and cfg.proxy_server_lmb) else cfg.proxy_server
+        # proxy_kind="full" fuerza la salida por el Tor de catalogo completo (ExitNodes en paises
+        # cuyo Bet365 no esta recortado). Se expone SOLO aqui, en el endpoint manual, para poder
+        # verificar la hipotesis sin cambiar todavia el comportamiento automatico.
+        if proxy_kind == "full" and cfg.proxy_server_full:
+            proxy = cfg.proxy_server_full
+        elif league == "LMB" and cfg.proxy_server_lmb:
+            proxy = cfg.proxy_server_lmb
+        else:
+            proxy = cfg.proxy_server
         # manual_scrape_priority envuelve la ESPERA del semaforo, no solo su uso: mientras este job
         # hace cola, el autofetch cede el turno en vez de competir. Sin esto, un job del endpoint
         # podia no arrancar nunca (medido: >11 min en "running" sin que empezara el scrape) y el
@@ -171,10 +178,13 @@ async def scrape_odds_start(request: web.Request) -> web.Response:
     teams_raw = request.query.get("teams", "")
     candidate_names = [t.strip() for t in teams_raw.split(",") if t.strip()] or None
 
+    # 2026-08-16: 'proxy=full' saca el scrape por el Tor con ExitNodes de catalogo completo.
+    proxy_kind = "full" if request.query.get("proxy") == "full" else "auto"
+
     _prune_old_jobs()
     job_id = str(uuid.uuid4())
     _scrape_jobs[job_id] = {"status": "running", "created_at": dt.datetime.now(dt.timezone.utc)}
-    asyncio.create_task(_run_scrape_job(job_id, cfg, league, bookmaker, candidate_names))
+    asyncio.create_task(_run_scrape_job(job_id, cfg, league, bookmaker, candidate_names, proxy_kind))
     return web.json_response({"job_id": job_id, "status": "running"})
 
 

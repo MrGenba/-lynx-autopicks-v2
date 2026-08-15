@@ -55,6 +55,11 @@ class Config:
     # historial del navegador y en logs de proxy, y filtrarla no debe dar control del scraper --
     # el dashboard es solo-lectura. None = dashboard desactivado (404), nunca expuesto sin querer.
     dashboard_token: str | None
+    # 2a instancia de Tor con ExitNodes en paises de CATALOGO COMPLETO de Bet365 (SOCKS 9053, ver
+    # docker-entrypoint.sh). cuotasahora geolocaliza por IP: desde Alemania (el pais con mas exits
+    # de Tor, donde caiamos casi siempre) sirve "Bet365.de", que ni casa con el nombre buscado ni
+    # ofrece los mismos mercados. None = no configurada, todo sale por el Tor general.
+    proxy_server_full: str | None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -80,4 +85,5 @@ class Config:
             scrape_endpoint_token=os.environ.get("SCRAPE_ENDPOINT_TOKEN") or None,
             odds_api_key=os.environ.get("ODDS_API_KEY") or None,
             dashboard_token=os.environ.get("DASHBOARD_TOKEN") or None,
+            proxy_server_full=os.environ.get("PROXY_SERVER_FULL") or "socks5://127.0.0.1:9053",
         )

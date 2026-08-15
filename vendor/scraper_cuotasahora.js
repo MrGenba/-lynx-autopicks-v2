@@ -14,6 +14,13 @@ const { parseBookmakerRows, pickBookmaker, parseAggregateLines, pickMainLine, pa
 // parser_cuotasahora.js, ya no sustituye la casa pedida por otra si no la encuentra).
 const DEFAULT_BOOKMAKER = "bet365";
 
+// 2026-08-16: timeouts de navegacion configurables. Al restringir ExitNodes a un pais concreto el
+// pool de rutas se reduce mucho y la primera carga tarda mas -- eso, y no la idea en si, es lo que
+// hizo fracasar los intentos con {es} (2026-07-11) y {mx} (2026-08-03). El comentario del
+// docker-entrypoint ya recomendaba subir este timeout antes que renunciar a fijar el pais.
+const GOTO_MATCH_MS = parseInt(process.env.GOTO_MATCH_MS || "30000", 10);
+const GOTO_INDEX_MS = parseInt(process.env.GOTO_INDEX_MS || "45000", 10);
+
 // El MiLB AAA real se reparte en dos ligas (International League / Pacific Coast League) --
 // hay que combinar ambas para tener cobertura completa, a diferencia de bet365 donde era una
 // sola competición por liga.
@@ -195,7 +202,7 @@ function matchesUrlSlug(url, candidateNames) {
 async function scrapeMatch(league, url, shouldDrill, bookmaker) {
   const page = await context.newPage();
   try {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: GOTO_MATCH_MS });
     await sleep(1500);
     await dismissOverlays(page);
     // 2026-07-26: espera de contenido MAYOR para MiLB/LMB. Sus páginas están menos cacheadas en
@@ -316,7 +323,7 @@ async function fetchLeagueOdds(league, candidateNames, bookmaker) {
     for (let attempt = 1; attempt <= 2; attempt++) {
       const page = await context.newPage();
       try {
-        await page.goto(BASE + path, { waitUntil: "domcontentloaded", timeout: 45000 });
+        await page.goto(BASE + path, { waitUntil: "domcontentloaded", timeout: GOTO_INDEX_MS });
         await sleep(1500);
         await dismissOverlays(page);
         // Diagnostico 2026-07-17: PCL devolvia 0 enlaces /baseball/h2h/ con la pagina cargada
