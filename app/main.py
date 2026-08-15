@@ -28,6 +28,7 @@ from app.odds_autofetch import _scrape_semaphore, autofetch_tick, manual_scrape_
 from app.pipelines import PipelineContext
 from app.supabase_client import SupabaseClient
 from app.telegram import TelegramClient, poll_loop
+from app.version import ARRANCADO_EN, HUELLA
 from app.tor_control import record_activity, rotate_and_verify
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,19 @@ def _prune_old_jobs() -> None:
 
 async def health(_request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
+
+
+async def version(_request: web.Request) -> web.Response:
+    """Huella del codigo desplegado + cuanto lleva vivo el proceso. SIN autenticacion a proposito:
+    es un hash del propio codigo fuente, no revela nada, y el objetivo es que comprobar "¿esta
+    desplegado lo que acabo de subir?" cueste un segundo. Se compara con `python -m app.version`
+    en local -- si coinciden, el despliegue llego; si no, no llego, sin lugar a interpretacion."""
+    ahora = dt.datetime.now(dt.timezone.utc)
+    return web.json_response({
+        "huella": HUELLA,
+        "arrancado_en": ARRANCADO_EN.isoformat(),
+        "uptime_s": int((ahora - ARRANCADO_EN).total_seconds()),
+    })
 
 
 def _check_scrape_token(request: web.Request, cfg: Config) -> bool:
@@ -257,6 +271,7 @@ async def run_health_server(cfg: Config, pool, port: int = 8080) -> None:
     app["cfg"] = cfg
     app["pool"] = pool
     app.router.add_get("/healthz", health)
+    app.router.add_get("/version", version)
     app.router.add_get("/scrape-odds/start", scrape_odds_start)
     app.router.add_get("/scrape-odds/status/{job_id}", scrape_odds_status)
     app.router.add_get("/tor/rotate", tor_rotate)
@@ -272,7 +287,7 @@ async def run_health_server(cfg: Config, pool, port: int = 8080) -> None:
 async def main() -> None:
     cfg = Config.from_env()
     setup_logging(cfg.log_level, cfg.log_dir)
-    logger.info("arrancando autopicks_v2")
+    logger.info("arrancando autopicks_v2 (huella de codigo: %s)", HUELLA)
 
     pool = await db.create_pool(cfg.database_url)
     await db.run_migrations(pool)
