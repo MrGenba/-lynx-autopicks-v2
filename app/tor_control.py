@@ -66,6 +66,29 @@ async def rotate_tor_circuit() -> tuple[bool, str]:
 
 
 async def get_exit_ip(proxy: str | None = None, timeout: float = 12.0) -> dict:
+    """Envoltorio con tope DURO. El timeout de httpx no basta: un SOCKS que ACEPTA la conexion y
+    luego no responde (exactamente lo que hace una instancia de Tor sin circuitos utilizables, por
+    ejemplo con ExitNodes demasiado restringido) puede colgarse indefinidamente durante el
+    handshake, antes de que exista una peticion HTTP que cronometrar.
+
+    Incidente real 2026-08-16: al anadir la comprobacion de la 2a instancia, el dashboard entero
+    dejo de cargar -- una pagina de diagnostico que se cuelga por aquello que intenta diagnosticar
+    es peor que no tenerla. Con este tope, la pagina siempre renderiza y el fallo se REPORTA."""
+    try:
+        return await asyncio.wait_for(_get_exit_ip(proxy, timeout), timeout=timeout + 3)
+    except asyncio.TimeoutError:
+        return {
+            "ok": False, "ip": None, "is_tor": None,
+            "detail": "sin respuesta (el proxy acepta la conexión pero no contesta: "
+                      "probablemente Tor vivo pero sin circuitos utilizables)",
+            "latency_ms": int((timeout + 3) * 1000),
+        }
+    except Exception as e:
+        return {"ok": False, "ip": None, "is_tor": None,
+                "detail": f"{type(e).__name__}: {e}"[:200], "latency_ms": 0}
+
+
+async def _get_exit_ip(proxy: str | None = None, timeout: float = 12.0) -> dict:
     """IP de salida observada AHORA a traves del SOCKS de Tor. Nunca lanza.
 
     Matiz que conviene no olvidar al leer el dashboard: Tor elige circuito por destino, asi que

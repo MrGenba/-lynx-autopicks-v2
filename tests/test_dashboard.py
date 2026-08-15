@@ -196,3 +196,20 @@ def test_tor_full_responde_pero_no_es_tor():
         tor_full={"ok": True, "ip": "51.75.1.1", "is_tor": False, "detail": "", "latency_ms": 60},
     ))
     assert "no responde" in html  # cae al caso de fallo, que es lo correcto aqui
+
+
+@pytest.mark.asyncio
+async def test_get_exit_ip_tiene_tope_duro(monkeypatch):
+    """Incidente 2026-08-16: el dashboard entero dejo de cargar porque la comprobacion de la 2a
+    instancia de Tor no terminaba nunca (el SOCKS acepta la conexion y no responde). Una pagina de
+    diagnostico que se cuelga por lo que intenta diagnosticar es peor que no tenerla."""
+    import asyncio as _asyncio
+    from app import tor_control
+
+    async def cuelga(*_a, **_k):
+        await _asyncio.sleep(3600)
+
+    monkeypatch.setattr(tor_control, "_get_exit_ip", cuelga)
+    res = await _asyncio.wait_for(tor_control.get_exit_ip("socks5://127.0.0.1:9053", timeout=0.1), timeout=10)
+    assert res["ok"] is False
+    assert "no contesta" in res["detail"]
