@@ -44,11 +44,19 @@ tor --RunAsDaemon 1 \
 #
 # Instancia SEPARADA y no sustitucion: si este pool restringido falla, el Tor general de 9050
 # sigue intacto como respaldo y el sistema no se queda sin cuotas.
+# 2026-08-16 (2o intento): SIN StrictNodes. Con StrictNodes 1 esta instancia arrancaba pero no
+# construia NI UN circuito utilizable: el SOCKS aceptaba la conexion TCP y luego no contestaba
+# nunca, ni siquiera a check.torproject.org (o sea, no era cosa de cuotasahora). Mismo muro que
+# con {es} y {mx}, pero esta vez con seis paises que tienen muchas salidas -- asi que el problema
+# no es el tamaño del pool sino imponer el pais como OBLIGACION en este contenedor.
+# Sin StrictNodes, ExitNodes pasa a ser PREFERENCIA: Tor intenta salir por estos paises y, si no
+# puede, usa cualquier otro en vez de quedarse sin ruta. No garantiza el catalogo completo (a
+# veces caera en Alemania igual), pero sube la proporcion y NO puede dejarnos sin circuitos, que
+# es exactamente lo que paso antes. Se amplia ademas la lista con mercados tambien completos.
 tor --RunAsDaemon 1 \
     --SocksPort 9053 \
     --DataDirectory /tmp/tor-full \
-    --ExitNodes '{gb},{ie},{nl},{at},{dk},{no}' \
-    --StrictNodes 1 \
+    --ExitNodes '{gb},{ie},{nl},{at},{dk},{no},{se},{fi},{mt}' \
     --PidFile /tmp/tor-full.pid
 
 # 2026-08-03: se PROBO una 2a instancia Tor con ExitNodes {mx} (StrictNodes) para LMB, porque
