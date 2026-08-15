@@ -73,11 +73,17 @@ LIMIT 25
 """
 
 
-async def collect_state(pool, proxy: str | None) -> dict:
+async def collect_state(pool, proxy: str | None, proxy_full: str | None = None) -> dict:
     """Reune todo lo que pinta la pagina. Cada bloque va por separado y tolera su propio fallo:
     si la comprobacion de Tor da timeout (justo el caso interesante) la tabla de partidos tiene
-    que seguir viendose, y al reves."""
+    que seguir viendose, y al reves.
+
+    proxy_full = 2a instancia de Tor con ExitNodes de catalogo completo (2026-08-16). Se comprueba
+    por separado porque un scrape que falla por ahi tiene dos causas indistinguibles desde fuera:
+    que la instancia no haya arrancado, o que arrancara pero sus circuitos no lleguen al destino.
+    Preguntarle la IP de salida directamente separa las dos sin depender de cuotasahora."""
     tor = await get_exit_ip(proxy)
+    tor_full = await get_exit_ip(proxy_full) if proxy_full else None
 
     games, summary, events, db_error = [], {}, [], None
     try:
@@ -89,7 +95,8 @@ async def collect_state(pool, proxy: str | None) -> dict:
         logger.exception("dashboard: fallo leyendo de Postgres")
         db_error = f"{type(e).__name__}: {e}"[:300]
 
-    return {"tor": tor, "games": games, "summary": summary, "events": events, "db_error": db_error}
+    return {"tor": tor, "tor_full": tor_full, "games": games, "summary": summary,
+            "events": events, "db_error": db_error}
 
 
 def _esc(v) -> str:
@@ -308,6 +315,20 @@ def render_html(state: dict, refresh_s: int = 60) -> str:
         if state["db_error"] else ""
     )
 
+    # Tarjeta de la 2a instancia (catalogo completo). Solo aparece si esta configurada: si no
+    # existe, mostrar un hueco vacio confundiria mas que ayudar.
+    tf = state.get("tor_full")
+    if tf is None:
+        tile_full = ""
+    elif tf.get("ok") and tf.get("is_tor"):
+        tile_full = (f"<div class='card tile'><div class='k'>Tor catálogo completo</div>"
+                     f"<div class='v ok'>{_esc(tf.get('ip'))}</div>"
+                     f"<div class='muted'>viva · {tf.get('latency_ms', 0)} ms</div></div>")
+    else:
+        tile_full = (f"<div class='card tile'><div class='k'>Tor catálogo completo</div>"
+                     f"<div class='v bad'>no responde</div>"
+                     f"<div class='muted'>{_esc((tf.get('detail') or 'sin detalle')[:70])}</div></div>")
+
     ahora = dt.datetime.now(dt.timezone.utc).strftime("%d/%m %H:%M:%S UTC")
 
     return f"""<!doctype html>
@@ -342,6 +363,7 @@ def render_html(state: dict, refresh_s: int = 60) -> str:
     <div class="muted">últimas 24h · última {_esc(_age(summary.get('last_rotate_age_s')))}</div></div>
   <div class="card tile"><div class="k">Descartados por obsoletos</div><div class="v">{summary.get('obsoletos24') or 0}</div>
     <div class="muted">turnos que llegaron tarde (24h)</div></div>
+  {tile_full}
   <div class="card tile"><div class="k">Partidos con cuotas</div><div class="v">{con_cuotas}/{len(games)}</div>
     <div class="muted">{f'{parciales} parcial(es) en reintento' if parciales else 'ML + total · ventana -6h/+30h'}</div></div>
 </div>

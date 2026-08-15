@@ -159,3 +159,40 @@ def test_tarjeta_de_obsoletos():
     html = dashboard.render_html(_state(summary={**_state()["summary"], "obsoletos24": 12}))
     assert "Descartados por obsoletos" in html
     assert ">12<" in html
+
+
+# --- 2a instancia de Tor (catalogo completo) ---------------------------------------------
+# 2026-08-16: un scrape por el Tor restringido fallo con ERR_TIMED_OUT, y habia DOS causas
+# indistinguibles desde fuera: que la instancia no arrancara, o que arrancara pero sus circuitos
+# no llegaran. Preguntarle la IP directamente las separa sin depender de cuotasahora.
+
+def test_tor_full_viva_se_muestra():
+    html = dashboard.render_html(_state(
+        tor_full={"ok": True, "ip": "51.15.1.9", "is_tor": True, "detail": "", "latency_ms": 1500},
+    ))
+    assert "Tor catálogo completo" in html
+    assert "51.15.1.9" in html
+    assert "viva" in html
+
+
+def test_tor_full_caida_se_distingue():
+    html = dashboard.render_html(_state(
+        tor_full={"ok": False, "ip": None, "is_tor": None,
+                  "detail": "ConnectError: [Errno 111] Connection refused", "latency_ms": 20},
+    ))
+    assert "no responde" in html
+    assert "Connection refused" in html
+
+
+def test_sin_segunda_instancia_no_se_pinta_hueco():
+    """Si no esta configurada, mostrar una tarjeta vacia confundiria mas que ayudar."""
+    html = dashboard.render_html(_state(tor_full=None))
+    assert "Tor catálogo completo" not in html
+
+
+def test_tor_full_responde_pero_no_es_tor():
+    """Salida directa sin Tor: no debe pintarse en verde como si estuviera bien."""
+    html = dashboard.render_html(_state(
+        tor_full={"ok": True, "ip": "51.75.1.1", "is_tor": False, "detail": "", "latency_ms": 60},
+    ))
+    assert "no responde" in html  # cae al caso de fallo, que es lo correcto aqui

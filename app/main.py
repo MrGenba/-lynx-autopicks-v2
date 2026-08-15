@@ -257,8 +257,9 @@ async def tor_status(request: web.Request) -> web.Response:
     cfg: Config = request.app["cfg"]
     if not _check_scrape_token(request, cfg):
         return web.json_response({"error": "unauthorized"}, status=401)
-    state = await collect_state(request.app["pool"], cfg.proxy_server)
-    return web.json_response({"tor": state["tor"], "summary": state["summary"], "db_error": state["db_error"]})
+    state = await collect_state(request.app["pool"], cfg.proxy_server, cfg.proxy_server_full)
+    return web.json_response({"tor": state["tor"], "tor_full": state["tor_full"],
+                              "summary": state["summary"], "db_error": state["db_error"]})
 
 
 async def dashboard_page(request: web.Request) -> web.Response:
@@ -269,7 +270,7 @@ async def dashboard_page(request: web.Request) -> web.Response:
     # compare_digest: comparacion en tiempo constante, no filtra el token caracter a caracter.
     if not cfg.dashboard_token or not secrets.compare_digest(token, cfg.dashboard_token):
         return web.Response(status=404, text="not found")
-    state = await collect_state(request.app["pool"], cfg.proxy_server)
+    state = await collect_state(request.app["pool"], cfg.proxy_server, cfg.proxy_server_full)
     return web.Response(
         text=render_html(state), content_type="text/html", charset="utf-8",
         headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow"},
