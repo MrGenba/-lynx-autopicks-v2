@@ -95,6 +95,16 @@ AUTOFETCH_LEAGUE_RETRIES = 1
 # re-scrapear el partido entero cada 15 min indefinidamente (ver migracion 0004).
 PARTIAL_RETRY_EVERY = dt.timedelta(minutes=60)          # como mucho un reintento por hora
 PARTIAL_GIVE_UP_BEFORE_START = dt.timedelta(minutes=45)  # cerca del inicio, conformarse con lo que hay
+# Descarte al SALIR de la cola (2026-08-15). Un candidato se comprueba cuando se ENCOLA, pero entre
+# eso y su turno puede pasar muchisimo tiempo: el semaforo es de 1 y el disparo puntual mete un
+# create_task por partido con hasta 12 intentos cada uno (LMB), asi que la cola crece mas rapido de
+# lo que se vacia. Medido en produccion el 2026-08-15: scrapes de LMB ejecutandose tras ESPERAR
+# 24.500s (casi 7h) en cola, todos devolviendo "sin_match" porque el partido llevaba horas jugado.
+# Trabajo tirado que ademas martillea cuotasahora y provoca el throttle que luego hace fallar a los
+# scrapes que SI son validos. Margen de 10 min tras el inicio: las cuotas pre-partido dejan de
+# servir en cuanto empieza el juego, y ese colchon absorbe desfases de reloj y el final de un
+# scrape que arranco justo antes del primer lanzamiento.
+STALE_AFTER_START = dt.timedelta(minutes=10)
 # Espaciado GLOBAL entre scrapes reales. Con "cuotas frescas siempre", cuando salen muchos lineups
 # casi a la vez el detector encola N scrapes -- el semáforo los serializa pero back-to-back, y ese
 # burst es justo lo que throttlea cuotasahora. Este hueco mínimo los separa.
@@ -191,6 +201,17 @@ def _values_from_scraped(game: dict) -> dict:
     return values
 
 
+def _ya_empezado(c: aliases.CandidateGame, ahora: dt.datetime) -> bool:
+    """¿Este candidato ya no sirve para cuotas PRE-partido? Sin hora conocida se conserva: no se
+    descarta trabajo por falta de dato (el guardado posterior tiene su propia red, MAX_GAME_AGE)."""
+    gdt = c.game_datetime_utc
+    if gdt is None:
+        return False
+    if gdt.tzinfo is None:
+        gdt = gdt.replace(tzinfo=dt.timezone.utc)
+    return ahora - gdt > STALE_AFTER_START
+
+
 async def _stamp_partial_retry(pool: asyncpg.Pool, sport_id: int, candidates: list) -> None:
     """Marca que a estos partidos se les acaba de intentar un scrape, sea cual sea el resultado.
 
@@ -236,7 +257,6 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
         return 0, "empty"
 
     league_key = SCRAPER_LEAGUE[sport_id]
-    candidate_names = [n for c in candidates for n in (c.away_team_name, c.home_team_name) if n]
     # 2026-08-14: telemetria persistente de cada intento (tabla tor_activity) -- es la unica
     # fuente del dashboard de estado. Antes de esto, "¿el scrapeo esta vivo?" solo se podia
     # responder mirando los logs del contenedor, que no son accesibles desde Telegram.
@@ -272,6 +292,31 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
             # A partir de aqui empieza el scrape de verdad: el semaforo ya es nuestro y el
             # espaciado anti-throttle ya se ha respetado. Todo lo anterior es cola, no cuotasahora.
             _t["scrape_started"] = time.monotonic()
+
+            # Descarte de trabajo OBSOLETO al salir de la cola (ver STALE_AFTER_START). La lista de
+            # candidatos se valido al encolar; si la espera ha sido larga, puede que ya no quede
+            # nada util que pedir. Comprobarlo AQUI y no antes es el punto entero del arreglo.
+            ahora = dt.datetime.now(dt.timezone.utc)
+            vigentes = [c for c in candidates if not _ya_empezado(c, ahora)]
+            descartados = len(candidates) - len(vigentes)
+            if not vigentes:
+                logger.info(
+                    "autofetch %s: %s candidato(s) obsoletos al salir de la cola tras %s -- no se scrapea",
+                    league_key, descartados, _queue_note().strip() or "espera corta",
+                )
+                await record_activity(
+                    ctx.pool, "scrape", ok=True, sport_id=sport_id, league=league_key,
+                    status="obsoleto", n_candidates=len(candidates), n_scraped=0, n_matched=0,
+                    duration_ms=_elapsed_ms(),
+                    detail=f"{descartados} partido(s) ya empezados al llegar el turno{_queue_note()}",
+                    source="autofetch",
+                )
+                return 0, "stale"
+            if descartados:
+                logger.info("autofetch %s: %s de %s candidatos descartados por obsoletos",
+                            league_key, descartados, len(candidates))
+            candidates = vigentes
+            candidate_names = [n for c in candidates for n in (c.away_team_name, c.home_team_name) if n]
             # LMB (sport 23) sale por su Tor MEXICANO si esta configurado (cuotasahora sirve un muro
             # de login/decoy a los circuitos Tor no-MX en la seccion LMB); el resto por el Tor normal.
             proxy = ctx.proxy_server_lmb if (sport_id == 23 and ctx.proxy_server_lmb) else ctx.proxy_server

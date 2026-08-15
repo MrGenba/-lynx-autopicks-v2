@@ -144,3 +144,63 @@ async def test_sondeo_sin_candidatos_no_scrapea_ni_rota(monkeypatch):
     await odds_autofetch.autofetch_league(CTX, 1)
     assert calls["n"] == 0
     assert calls["rotaciones"] == 0
+
+
+# --- descarte de trabajo obsoleto al salir de la cola -------------------------------------
+# 2026-08-15: medido en produccion que scrapes de LMB salian de la cola tras ~7h de espera y
+# devolvian "sin_match" porque el partido llevaba horas jugado. Trabajo tirado que ademas
+# martillea cuotasahora.
+
+def _cand(minutes_from_now, con_hora=True):
+    from app import aliases
+    gdt = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=minutes_from_now)) if con_hora else None
+    return aliases.CandidateGame(
+        sport_id=1, game_pk=1, away_team_id=None, home_team_id=None,
+        away_team_name="A", home_team_name="B", game_datetime_utc=gdt,
+    )
+
+
+@pytest.mark.parametrize("minutos,esperado", [
+    (120, False),   # empieza en 2h -> vigente
+    (1, False),     # a punto de empezar -> vigente
+    (-5, False),    # empezo hace 5min -> dentro del margen de 10min
+    (-30, True),    # empezo hace media hora -> obsoleto
+    (-420, True),   # el caso real: 7h de espera en cola
+])
+def test_ya_empezado(minutos, esperado):
+    ahora = dt.datetime.now(dt.timezone.utc)
+    assert odds_autofetch._ya_empezado(_cand(minutos), ahora) is esperado
+
+
+def test_sin_hora_no_se_descarta():
+    """Sin game_datetime_utc no se tira el trabajo: no se descarta por falta de dato."""
+    ahora = dt.datetime.now(dt.timezone.utc)
+    assert odds_autofetch._ya_empezado(_cand(0, con_hora=False), ahora) is False
+
+
+def test_naive_datetime_se_trata_como_utc():
+    """asyncpg puede devolver naive segun la columna -- no debe reventar con TypeError."""
+    from app import aliases
+    c = aliases.CandidateGame(
+        sport_id=1, game_pk=1, away_team_id=None, home_team_id=None,
+        away_team_name="A", home_team_name="B",
+        game_datetime_utc=dt.datetime.utcnow() - dt.timedelta(hours=3),
+    )
+    assert odds_autofetch._ya_empezado(c, dt.datetime.now(dt.timezone.utc)) is True
+
+
+@pytest.mark.asyncio
+async def test_stale_no_dispara_reintento_ni_rotacion(monkeypatch):
+    """'stale' no es un fallo transitorio: reintentar y rotar circuito ahi seria gasto puro."""
+    calls = _patch_league(monkeypatch, [(0, "stale")])
+    await odds_autofetch.autofetch_league(CTX, 1)
+    assert calls["n"] == 1
+    assert calls["rotaciones"] == 0
+
+
+@pytest.mark.asyncio
+async def test_stale_corta_el_disparo_puntual(monkeypatch):
+    calls = _patch(monkeypatch, [(0, "stale")])
+    got = await odds_autofetch.autofetch_single_game(CTX, 1, 123, "A", "B", _future())
+    assert got is False
+    assert calls["n"] == 1

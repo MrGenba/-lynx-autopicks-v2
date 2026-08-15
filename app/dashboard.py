@@ -44,15 +44,22 @@ WHERE g.game_datetime_utc > now() - interval '6 hours'
 ORDER BY g.game_datetime_utc, g.sport_id
 """
 
-_SUMMARY_SQL = """
+# 'obsoleto' = el turno llego cuando ya no habia nada util que pedir, asi que NO se llego a tocar
+# cuotasahora. Contarlo como scrape exitoso inflaria el % de exito con trabajo que nunca se hizo, y
+# contarlo como fallido culparia a Tor de algo que no paso -- va a su propio contador.
+_ES_INTENTO = "kind='scrape' AND status IS DISTINCT FROM 'obsoleto'"
+
+_SUMMARY_SQL = f"""
 SELECT
-  count(*) FILTER (WHERE kind='scrape' AND created_at > now() - interval '6 hours')          AS s6,
-  count(*) FILTER (WHERE kind='scrape' AND ok AND created_at > now() - interval '6 hours')   AS s6_ok,
-  count(*) FILTER (WHERE kind='scrape' AND created_at > now() - interval '24 hours')         AS s24,
-  count(*) FILTER (WHERE kind='scrape' AND ok AND created_at > now() - interval '24 hours')  AS s24_ok,
+  count(*) FILTER (WHERE {_ES_INTENTO} AND created_at > now() - interval '6 hours')          AS s6,
+  count(*) FILTER (WHERE {_ES_INTENTO} AND ok AND created_at > now() - interval '6 hours')   AS s6_ok,
+  count(*) FILTER (WHERE {_ES_INTENTO} AND created_at > now() - interval '24 hours')         AS s24,
+  count(*) FILTER (WHERE {_ES_INTENTO} AND ok AND created_at > now() - interval '24 hours')  AS s24_ok,
   count(*) FILTER (WHERE kind='rotate' AND created_at > now() - interval '24 hours')         AS r24,
-  EXTRACT(EPOCH FROM now() - max(created_at) FILTER (WHERE kind='scrape' AND ok))::int       AS last_ok_age_s,
-  EXTRACT(EPOCH FROM now() - max(created_at) FILTER (WHERE kind='scrape'))::int              AS last_any_age_s,
+  count(*) FILTER (WHERE kind='scrape' AND status='obsoleto'
+                   AND created_at > now() - interval '24 hours')                             AS obsoletos24,
+  EXTRACT(EPOCH FROM now() - max(created_at) FILTER (WHERE {_ES_INTENTO} AND ok))::int       AS last_ok_age_s,
+  EXTRACT(EPOCH FROM now() - max(created_at) FILTER (WHERE {_ES_INTENTO}))::int              AS last_any_age_s,
   EXTRACT(EPOCH FROM now() - max(created_at) FILTER (WHERE kind='rotate'))::int              AS last_rotate_age_s
 FROM tor_activity
 """
@@ -221,8 +228,12 @@ def _events_table(events) -> str:
         return "<p class='muted'>Sin actividad registrada todavía.</p>"
     rows = []
     for e in events:
-        icon = "✅" if e["ok"] else "❌"
-        kind = "rotación IP" if e["kind"] == "rotate" else "scrape"
+        # 'obsoleto' no es exito ni fallo: es trabajo descartado sin llegar a tocar cuotasahora.
+        if e["status"] == "obsoleto":
+            icon, kind = "⏭️", "descartado"
+        else:
+            icon = "✅" if e["ok"] else "❌"
+            kind = "rotación IP" if e["kind"] == "rotate" else "scrape"
         detalle = e["detail"] or ""
         if e["kind"] == "scrape" and e["n_scraped"] is not None:
             detalle = f"{e['n_scraped']} scrapeados · {e['n_matched']} asignados. {detalle}".strip()
@@ -327,6 +338,8 @@ def render_html(state: dict, refresh_s: int = 60) -> str:
     <div class="muted">{s24_ok} de {s24} intentos</div></div>
   <div class="card tile"><div class="k">Rotaciones de IP</div><div class="v">{summary.get('r24') or 0}</div>
     <div class="muted">últimas 24h · última {_esc(_age(summary.get('last_rotate_age_s')))}</div></div>
+  <div class="card tile"><div class="k">Descartados por obsoletos</div><div class="v">{summary.get('obsoletos24') or 0}</div>
+    <div class="muted">turnos que llegaron tarde (24h)</div></div>
   <div class="card tile"><div class="k">Partidos con cuotas</div><div class="v">{con_cuotas}/{len(games)}</div>
     <div class="muted">{f'{parciales} parcial(es) en reintento' if parciales else 'ML + total · ventana -6h/+30h'}</div></div>
 </div>

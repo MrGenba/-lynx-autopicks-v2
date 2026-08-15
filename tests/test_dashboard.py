@@ -143,3 +143,19 @@ def test_contador_solo_cuenta_completas():
     html = dashboard.render_html(_state(games=[_game(away_ml=2.65, home_ml=1.50, total_line=None)]))
     assert "0/1" in html
     assert "1 parcial(es) en reintento" in html
+
+
+def test_obsoleto_no_se_pinta_como_exito():
+    """'obsoleto' = el turno llegó tarde y no se tocó cuotasahora. Ni ✅ ni ❌."""
+    html = dashboard.render_html(_state(events=[
+        _event(status="obsoleto", ok=True, n_scraped=0, n_matched=0,
+               detail="3 partido(s) ya empezados al llegar el turno (esperó 24537s en cola)"),
+    ]))
+    assert "descartado" in html
+    assert "24537s en cola" in html
+
+
+def test_tarjeta_de_obsoletos():
+    html = dashboard.render_html(_state(summary={**_state()["summary"], "obsoletos24": 12}))
+    assert "Descartados por obsoletos" in html
+    assert ">12<" in html
