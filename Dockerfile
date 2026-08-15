@@ -18,6 +18,11 @@ COPY app/ app/
 COPY vendor/ vendor/
 COPY migrations/ migrations/
 COPY package.json .
+# 2026-08-16: el Dockerfile se copia a la imagen para que entre en la huella de /version. Sin
+# esto, app/version.py lo hasheaba en local (donde existe) y no en el contenedor (donde no
+# llegaba), asi que las dos huellas no coincidian NUNCA y el verificador daba falso negativo en
+# cada despliegue. Un cambio del Dockerfile si altera la imagen, asi que debe contar.
+COPY Dockerfile .
 
 # --with-deps instala las librerias de sistema que Chrome necesita en Debian (fonts, libnss3,
 # etc.) -- sin esto el navegador headless falla al arrancar dentro del contenedor.
