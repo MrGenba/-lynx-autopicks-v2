@@ -123,10 +123,37 @@ function drillFail(reason, extra) {
   return { __failed: extra ? reason + " (" + extra + ")" : reason };
 }
 
-async function drillIntoMarket(page, tabLabel, opts, bookmaker) {
-  const tabLi = page.locator('li.odds-item:has-text("' + tabLabel + '")').first();
-  if (!(await tabLi.isVisible({ timeout: 2000 }).catch(() => false))) return drillFail("pestaña_no_visible", tabLabel);
-  await tabLi.click({ force: true, timeout: 8000 });
+// Localiza la pestaña de un mercado probando VARIAS etiquetas y VARIOS selectores.
+// 2026-08-16: cuotasahora cambio las dos cosas a la vez y por eso Totales/Handicap llevaban
+// semanas sin llegar (el ML no se entero: sale de la pagina principal, sin clicar nada).
+//   - Las etiquetas pasaron de español a INGLES: "Más/Menos de" -> "Over/Under",
+//     "Hándicap asiático" -> "Asian Handicap". Volcado real de la pagina:
+//     [..., "1X2", "Home/Away", "Over/Under", "Asian Handicap", "Both Teams to Score", ...]
+//   - Y el marcado tambien: `li.odds-item` ya no encuentra NADA (market_tabs volvio vacio).
+// Se aceptan los nombres viejos ademas de los nuevos a proposito: el sitio mezcla idiomas segun
+// la seccion (el bloque de casas seguia en español), asi que no hay garantia de que esto sea
+// definitivo, y probar ambos no cuesta nada.
+async function findMarketTab(page, labels) {
+  for (const label of labels) {
+    const porClase = page.locator('li.odds-item:has-text("' + label + '")').first();
+    if (await porClase.isVisible({ timeout: 1500 }).catch(() => false)) return { el: porClase, label };
+    // Respaldo sin depender de la clase CSS: el texto exacto sigue estando aunque cambie el DOM.
+    const porTexto = page.getByText(label, { exact: true }).first();
+    if (await porTexto.isVisible({ timeout: 1500 }).catch(() => false)) return { el: porTexto, label };
+  }
+  return null;
+}
+
+// Cabecera del bloque de casas: tambien cambio de "Casas de apuestas" a "Bookmakers". Se aceptan
+// las dos -- de no hacerlo, arreglar solo la pestaña habria chocado con el siguiente return null.
+const CABECERA_CASAS = ["Casas de apuestas", "Bookmakers"];
+
+async function drillIntoMarket(page, tabLabels, opts, bookmaker) {
+  const etiquetas = Array.isArray(tabLabels) ? tabLabels : [tabLabels];
+  const encontrada = await findMarketTab(page, etiquetas);
+  if (!encontrada) return drillFail("pestaña_no_visible", etiquetas.join(" / "));
+  const tabLabel = encontrada.label;
+  await encontrada.el.click({ force: true, timeout: 8000 });
   await sleep(2500);
   await dismissOverlays(page);
 
@@ -147,8 +174,8 @@ async function drillIntoMarket(page, tabLabel, opts, bookmaker) {
     lines = await getLines(page);
   }
 
-  const drillIdx = lines.findIndex((l) => l === "Casas de apuestas");
-  if (drillIdx === -1) return drillFail("sin_bloque_casas");
+  const drillIdx = lines.findIndex((l) => CABECERA_CASAS.includes(l));
+  if (drillIdx === -1) return drillFail("sin_bloque_casas", "ni " + CABECERA_CASAS.join(" ni "));
   const rows = parseBookmakerRows(lines, drillIdx, Math.min(lines.length, drillIdx + 60));
   const picked = pickBookmaker(rows, bookmaker);
   if (!picked) {
@@ -246,8 +273,8 @@ async function scrapeMatch(league, url, shouldDrill, bookmaker) {
     };
 
     if (shouldDrill(header.away_team, header.home_team)) {
-      const total = await drillIntoMarket(page, "Más/Menos de", {}, bookmaker);
-      const hc = await drillIntoMarket(page, "Hándicap asiático", { preferAbs: 1.5 }, bookmaker);
+      const total = await drillIntoMarket(page, ["Over/Under", "Más/Menos de"], {}, bookmaker);
+      const hc = await drillIntoMarket(page, ["Asian Handicap", "Hándicap asiático"], { preferAbs: 1.5 }, bookmaker);
       // drill_notes viaja con el partido para que "tiene ML pero no total" deje de ser un
       // agujero mudo: ahora dice cual de los siete motivos fue.
       const notes = [];
