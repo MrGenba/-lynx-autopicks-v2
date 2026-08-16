@@ -22,13 +22,21 @@ from app.pipelines import PipelineContext, get_odds, try_fire_pipeline
 logger = logging.getLogger(__name__)
 
 ACTIVE_STATUSES = {"Preview", "Pre-Game", "Warmup", "Scheduled"}
-LOOKAHEAD = dt.timedelta(hours=3)
-# LMB (sport 23) tiene ventana mas ancha: cuotasahora publica sus lineas ANTES de 3h del inicio
-# (verificado 2026-08-06: Toros@Caliente con ML/Total/HC a 3h33m del partido), pero con LOOKAHEAD=3h
-# el detector no las pedia hasta las 3h y se las perdia. 6h captura las cuotas cuando ya estan. Carga
-# de Tor acotada (~12 partidos LMB/dia, y en cuanto uno consigue cuotas deja de pedir). MLB/MiLB
-# siguen en 3h (sus cuotas salen ~al lineup y son mas partidos).
-LOOKAHEAD_LMB = dt.timedelta(hours=6)
+# 2026-08-06 se subio SOLO LMB de 3h a 6h: cuotasahora publica sus lineas ANTES de 3h del inicio
+# (verificado con Toros@Caliente, ML/Total/HC a 3h33m), y con 3h el detector no las pedia a tiempo.
+# A MLB/MiLB se les dejo en 3h asumiendo que "sus cuotas salen ~al lineup".
+#
+# 2026-08-14: esa premisa era FALSA y costaba casi todo el slate. Medido contra el calendario real
+# de MLB de ese dia: de 14 partidos, 13 tenian ya abridores confirmados y quedaban FUERA de la
+# ventana de 3h (8 entre 3h y 6h, 5 mas alla) -> el detector ni siquiera los insertaba en
+# games_gate_state, asi que no habia partido al que asignar cuotas por mucho que el scraper
+# funcionara. El sintoma que se veia era "hay cuotas y no las recoge".
+#
+# Se unifica en 6h para las 3 ligas, que ademas es el valor que ya usaba la ventana del sondeo de
+# cuotas (GAMES_WINDOW_SQL, now+6h en odds_autofetch.py): antes el detector la estrangulaba a 3h,
+# asi que las dos ventanas trabajaban con criterios distintos. Mas alla de 6h no tendria efecto
+# sin subir tambien esa otra.
+LOOKAHEAD = dt.timedelta(hours=6)
 
 
 async def upsert_game(pool: asyncpg.Pool, sport_id: int, g: mlb_api.ScheduledGame, game_dt: dt.datetime) -> Optional[dt.datetime]:
@@ -197,8 +205,7 @@ async def detector_tick(ctx: PipelineContext) -> None:
                     logger.warning("detector: game_datetime_utc invalido para game_pk=%s: %r", g.game_pk, g.game_datetime_utc)
                     continue
                 now = dt.datetime.now(dt.timezone.utc)
-                lookahead = LOOKAHEAD_LMB if sport_id == 23 else LOOKAHEAD
-                if game_dt - now > lookahead or game_dt < now:
+                if game_dt - now > LOOKAHEAD or game_dt < now:
                     continue
 
                 already_lineup_confirmed = await upsert_game(ctx.pool, sport_id, g, game_dt)
