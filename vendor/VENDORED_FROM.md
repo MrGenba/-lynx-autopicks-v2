@@ -28,8 +28,17 @@ No usar `scripts/sync_vendor_from_n8n.py` sin revisar el diff a mano — un camb
 > `{__failed: motivo}`, el partido lleva `drill_notes`, y el descarte por ML lista `bookmakersFound`
 > — el dato que distingue "Bet365 no ofrece ese mercado" de "el scraper no encuentra la pestaña".
 > **No cambia ningún comportamiento de scraping**, solo lo hace observable.
-> Producción (`odds_bet365/`) sigue SIN este cambio: su sha256 se verificó intacto el 2026-08-16.
-> Si allí aparece el mismo síntoma, hay que propagarlo a mano.
+> Producción (`odds_bet365/`) NO lleva la instrumentación (sigue devolviendo `null` sin motivo).
+
+> **Adaptación al cambio de cuotasahora — SÍ propagada (2026-08-16).** Las etiquetas de mercado
+> pasaron a inglés (`Más/Menos de`→`Over/Under`, `Hándicap asiático`→`Asian Handicap`), el
+> marcado dejó de casar con `li.odds-item`, y la cabecera del bloque de casas pasó de
+> `Casas de apuestas` a `Bookmakers`. Sin esto, Totales y Hándicap NO se extraen nunca (el ML sí,
+> porque sale de la página principal sin clicar). Se propagó a `odds_bet365/` —backup
+> `scraper_cuotasahora.bak_pre_tabs_2026-08-16.js`— aunque ese microservicio esté parado: si se
+> revive o alguien copia de ahí, reintroduciría el bug. **Nota**: la ruta de producción real
+> (n8n → `/scrape-odds` de autopicks) ya usa la copia vendorizada, así que quedó arreglada al
+> desplegar el contenedor, no por esta propagación.
 
 Vendorizados desde `D:\Milb\odds_bet365\` (2026-07-08/09) con **una única diferencia** respecto
 al original: `ensureBrowser()` en `scraper_cuotasahora.js` lee `PROXY_SERVER`/`PROXY_USERNAME`/
@@ -43,5 +52,5 @@ esta sesión).
 | Archivo local | Origen | sha256 original (completo) |
 |---|---|---|
 | `parser_cuotasahora.js` | `D:\Milb\odds_bet365\parser_cuotasahora.js`, sin cambios | `02bacb20e25ccea696be83b016876e4e6ec402e6f01a145c5570c86bb2f1850e` |
-| `scraper_cuotasahora.js` | `D:\Milb\odds_bet365\scraper_cuotasahora.js`, + soporte de proxy | `f61bcf7b7ae4d06d8ad5dd45d350d2f8d93657ad248109c11e3be673b25b56a1` |
+| `scraper_cuotasahora.js` | `D:\Milb\odds_bet365\scraper_cuotasahora.js`, + soporte de proxy + instrumentación | `7e11c6889de2dd19766578c72e7114d25d346b1ff08bc64620ca9b6c22bcb286` (era `f61bcf7b…b25b56a1` hasta 2026-08-16) |
 | `run_odds_scraper.js` | nuevo, ~20 líneas (mismo patrón que `run_quant.js`) | n/a |
