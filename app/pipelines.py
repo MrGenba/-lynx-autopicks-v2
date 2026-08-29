@@ -149,8 +149,13 @@ def build_picks_history_row(
     edge_threshold = pub_cand.get("edge_threshold")
     data_score = result.get("data_score")
     confidence = pub_cand.get("confidence")
-    away_mu = result.get("away_mu")
-    home_mu = result.get("home_mu")
+    # 2026-08-29: el motor vendorizado (quant_engine*.js) devuelve away_runs/home_runs, no
+    # away_mu/home_mu -- esas claves nunca existieron, away_runs_predicted/home_runs_predicted
+    # llevaban NULL desde la migracion a autopicks_v2 (jul-2026). Bug de telemetria (el edge/
+    # prob_estimated se calculan bien dentro del motor con sus propias variables internas), pero
+    # sin esto no se puede auditar el modelo de MiLB/LMB.
+    away_mu = result.get("away_runs")
+    home_mu = result.get("home_runs")
     matchup = f"{away_team} @ {home_team}"
     pick_team = pub_cand.get("pick_team") or _pick_team_for(pick_side, away_team, home_team)
     notes = f"autopicks_v2 p{pipeline}"
@@ -715,8 +720,13 @@ def build_candidates_history_rows(
     table = CANDIDATES_HISTORY_TABLE[sport_id]
     allowed = CANDIDATES_HISTORY_COLUMNS[table]
     league_label = LEAGUE_LABEL.get(sport_id, str(sport_id))
-    away_mu = result.get("away_mu")
-    home_mu = result.get("home_mu")
+    # 2026-08-29: el motor vendorizado (quant_engine*.js) devuelve away_runs/home_runs, no
+    # away_mu/home_mu -- esas claves nunca existieron, away_runs_predicted/home_runs_predicted
+    # llevaban NULL desde la migracion a autopicks_v2 (jul-2026). Bug de telemetria (el edge/
+    # prob_estimated se calculan bien dentro del motor con sus propias variables internas), pero
+    # sin esto no se puede auditar el modelo de MiLB/LMB.
+    away_mu = result.get("away_runs")
+    home_mu = result.get("home_runs")
     now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
     # 2026-07-25 (fix telemetria): el motor devuelve data_score a nivel de RESULTADO, no por
     # candidato -> antes se guardaba c.get("data_score")=None -> 0 en la tabla, ocultando la

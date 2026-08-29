@@ -33,7 +33,7 @@ def test_norm_market_side_hc():
     assert _norm_market_side("HC", "HOME -1.5") == ("HC_HOME", "home")
 
 
-RESULT = {"data_score": 0.80, "away_mu": 4.20, "home_mu": 4.84}
+RESULT = {"data_score": 0.80, "away_runs": 4.20, "home_runs": 4.84}
 CAND_ML = {
     "market": "ML", "pick_side": "AWAY", "odds": 3.35, "edge": 0.24, "edge_threshold": 0.18,
     "prob_model": 0.42, "prob_estimated": 0.37, "prob_blended": 0.37, "prob_implied": 0.30,
