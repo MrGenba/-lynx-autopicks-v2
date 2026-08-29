@@ -16,6 +16,7 @@ import datetime as dt
 import html
 import logging
 
+from app import oddspapi_client
 from app.tor_control import get_exit_ip
 
 logger = logging.getLogger(__name__)
@@ -329,6 +330,22 @@ def render_html(state: dict, refresh_s: int = 60) -> str:
                      f"<div class='v bad'>no responde</div>"
                      f"<div class='muted'>{_esc((tf.get('detail') or 'sin detalle')[:70])}</div></div>")
 
+    # Cupo mensual de RapidAPI (respaldo de Tor para MiLB/LMB, ver oddspapi_client.py) -- foto en
+    # memoria del proceso, se actualiza en cada llamada real (no hay llamada de solo-consulta que
+    # no cueste cupo). Vacio hasta que el fallback se dispare por primera vez.
+    quota = oddspapi_client.get_quota()
+    if quota.get("limit") is None:
+        tile_quota = (f"<div class='card tile'><div class='k'>Cupo RapidAPI (respaldo)</div>"
+                      f"<div class='v muted'>sin datos aún</div>"
+                      f"<div class='muted'>se actualiza cuando el respaldo se use por primera vez</div></div>")
+    else:
+        used = quota["limit"] - quota["remaining"]
+        pct_used = used / quota["limit"] if quota["limit"] else 0
+        q_cls = "bad" if pct_used >= 0.9 else "warn" if pct_used >= 0.7 else "ok"
+        tile_quota = (f"<div class='card tile'><div class='k'>Cupo RapidAPI (respaldo)</div>"
+                      f"<div class='v {q_cls}'>{used}/{quota['limit']}</div>"
+                      f"<div class='muted'>gastadas este mes · comprobado {_esc(_age((dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(quota['checked_at'])).total_seconds()))}</div></div>")
+
     ahora = dt.datetime.now(dt.timezone.utc).strftime("%d/%m %H:%M:%S UTC")
 
     return f"""<!doctype html>
@@ -366,6 +383,7 @@ def render_html(state: dict, refresh_s: int = 60) -> str:
   {tile_full}
   <div class="card tile"><div class="k">Partidos con cuotas</div><div class="v">{con_cuotas}/{len(games)}</div>
     <div class="muted">{f'{parciales} parcial(es) en reintento' if parciales else 'ML + total · ventana -6h/+30h'}</div></div>
+  {tile_quota}
 </div>
 
 <h2>Partidos y cuotas</h2>

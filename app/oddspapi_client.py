@@ -1,19 +1,25 @@
-"""Cliente de oddspapi.io (2026-08-29) -- respaldo de Tor para MiLB/LMB (ver
+"""Cliente del backend de oddspapi.io -- respaldo de Tor para MiLB/LMB (ver
 app/odds_autofetch.py::_try_oddspapi_fallback). NO reemplaza a Tor: se intenta Tor primero (con
 todos sus reintentos habituales) y solo si eso falla del todo se prueba esto, antes de rendirse.
 
 Distinto de odds_api_client.py (api.odds-api.io), que se probo como fuente PRIMARIA en julio y
 se desactivo el 2026-07-20 porque su feed "Bet365" no coincidia con bet365.com real en MLB (ver
-docstring de odds_autofetch.autofetch_single_game). Esta es otra cuenta/servicio (oddspapi.io,
-api.oddspapi.io) con un plan gratuito distinto -- aqui se usa solo como red de seguridad cuando
-Tor ya fallo del todo, no como sustituto: cualquier cuota (aunque no sea perfecta) es mejor que
-ninguna, que es la situacion real de MiLB desde junio. Verificado en vivo el 2026-08-29 contra un
-partido real de Triple-A International League: el signo del hcp de "Handicap (incl. extra
-innings)" aplica directamente al participant1 (home) tal cual lo da el catalogo de mercados
-(home no favorito -> handicap positivo, home favorito -> handicap negativo), igual que ya asume
-_values_from_scraped() para el scraper de Tor.
+docstring de odds_autofetch.autofetch_single_game).
 
-Cobertura verificada (GET /v4/tournaments?sportId=13): MiLB AAA se reparte en
+2026-08-29 (v2): migrado de la cuenta directa de oddspapi.io (api.oddspapi.io, plan gratuito de
+250 peticiones/mes) a la MISMA API revendida via RapidAPI (host bet36528.p.rapidapi.com --
+verificado en vivo: mismo esquema de fixtureId/tournamentId/marketId, mismos datos), con un plan
+de pago de 10.000 peticiones/mes que hace innecesaria la cache agresiva de la v1. La cuenta
+directa queda sin usar; ODDSPAPI_KEY ahora guarda la key de RapidAPI (x-rapidapi-key), no la de
+oddspapi.io. Aqui se usa solo como red de seguridad cuando Tor ya fallo del todo, no como
+sustituto: cualquier cuota (aunque no sea perfecta) es mejor que ninguna, que es la situacion real
+de MiLB desde junio. Verificado en vivo el 2026-08-29 contra un partido real de Triple-A
+International League: el signo del hcp de "Handicap (incl. extra innings)" aplica directamente al
+participant1 (home) tal cual lo da el catalogo de mercados (home no favorito -> handicap positivo,
+home favorito -> handicap negativo), igual que ya asume _values_from_scraped() para el scraper de
+Tor.
+
+Cobertura verificada (GET /tournaments?sportId=13): MiLB AAA se reparte en
 "Triple-A International League" (34238) y "Triple-A Pacific Coast League" (34240), igual que ya
 combinabamos en el scraper de cuotasahora. LMB es "Mexican League" (1030). MLB (109) existe pero
 NO se usa aqui -- fuera del alcance acordado, Tor ya funciona bien para MLB."""
@@ -32,7 +38,32 @@ from app.overround import check_overround
 
 logger = logging.getLogger(__name__)
 
-BASE = "https://api.oddspapi.io/v4"
+BASE = "https://bet36528.p.rapidapi.com"
+RAPIDAPI_HOST = "bet36528.p.rapidapi.com"
+
+# Ultima foto de cupo vista en una respuesta (cabeceras X-RateLimit-Requests-*) -- en memoria del
+# proceso, sin tabla nueva: el dashboard (mismo proceso) la lee directamente via get_quota().
+# None hasta la primera llamada real.
+_quota: dict = {"limit": None, "remaining": None, "checked_at": None}
+
+
+def _update_quota(resp: httpx.Response) -> None:
+    lim = resp.headers.get("x-ratelimit-requests-limit")
+    rem = resp.headers.get("x-ratelimit-requests-remaining")
+    if lim is None or rem is None:
+        return
+    try:
+        _quota["limit"] = int(lim)
+        _quota["remaining"] = int(rem)
+        _quota["checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    except ValueError:
+        pass
+
+
+def get_quota() -> dict:
+    """Foto mas reciente del cupo mensual de RapidAPI, para el dashboard. {limit, remaining,
+    checked_at} con todo None si el proceso aun no ha hecho ninguna llamada real."""
+    return dict(_quota)
 
 # sport_id (el que usa produccion, ver odds_autofetch.SCRAPER_LEAGUE) -> tournamentIds de
 # oddspapi.io. Solo MiLB y LMB -- alcance acordado 2026-08-29, MLB queda fuera.
@@ -127,13 +158,12 @@ async def get_league_odds(api_key: str, league_key: str, bookmaker: str = "bet36
     odds_autofetch._match_scraped_game / _values_from_scraped) -- asi el llamador no necesita
     saber de que fuente viene cada partido.
 
-    Cacheada 10 min en memoria (2026-08-29): GET /v4/account de esta cuenta gratuita devolvio
-    "request_limit": 250 -- una cuota MUY pequena (probablemente mensual), no un limite por
-    hora. odds_autofetch.autofetch_single_game llama a esto una vez por gate confirmado por
-    partido (hasta 2x), y con 6-10 partidos MiLB/dia mas LMB, sin cachear se agotaria la cuota en
-    horas. La cache es compartida entre partidos de la MISMA liga (una liga entera cabe en
-    ~3 peticiones: N /fixtures + 1 /odds-by-tournaments), asi que varios disparos seguidos del
-    detector para partidos distintos de la misma liga solo cuestan una llamada real cada 10 min."""
+    Cacheada 10 min en memoria de todos modos (herencia de la v1, cuenta directa de 250/mes):
+    con el plan RapidAPI de 10.000/mes ya no hace falta por cupo, pero se conserva porque
+    odds_autofetch.autofetch_single_game llama a esto una vez por gate confirmado por partido
+    (hasta 2x, mas el sondeo periodico), y cachear por liga evita perseguir el limite de RITMO
+    por segundo del plan (ver sleep entre llamadas mas abajo) cuando varios partidos de la misma
+    liga disparan el fallback casi a la vez."""
     cached = _cache.get(league_key)
     if cached is not None and (time.monotonic() - cached[0]) < _CACHE_TTL_S:
         return cached[1]
@@ -150,19 +180,22 @@ async def get_league_odds(api_key: str, league_key: str, bookmaker: str = "bet36
     games: list[dict] = []
     errors: list[str] = []
     fixture_meta: dict[str, tuple[str, str, str]] = {}  # fixtureId -> (home_name, away_name, start_time)
+    headers = {"x-rapidapi-host": RAPIDAPI_HOST, "x-rapidapi-key": api_key}
 
     async with httpx.AsyncClient() as client:
         # odds-by-tournaments no trae nombres de equipo (solo participant1Id/participant2Id) --
         # hace falta /fixtures aparte para poder emparejar contra los candidatos. Espaciadas
-        # ~1.1s entre si (2026-08-29): sin pausa, dos /fixtures seguidas devolvian 429 aunque la
-        # cuota mensual (request_limit) tuviera de sobra -- limite de ritmo, no de cupo.
+        # ~2s entre si (2026-08-29, verificado tanto en la cuenta directa como via RapidAPI): sin
+        # pausa, dos /fixtures seguidas devuelven 429 aunque la cuota mensual tenga de sobra --
+        # limite de ritmo por segundo del plan, no de cupo.
         for i, tid in enumerate(tournament_ids):
             if i > 0:
                 await asyncio.sleep(2.0)
             try:
                 resp = await client.get(f"{BASE}/fixtures",
-                    params={"tournamentId": tid, "from": frm, "to": to, "apiKey": api_key}, timeout=20.0)
+                    params={"tournamentId": tid, "from": frm, "to": to}, headers=headers, timeout=20.0)
                 resp.raise_for_status()
+                _update_quota(resp)
                 for f in resp.json():
                     fixture_meta[f["fixtureId"]] = (
                         f.get("participant1Name") or "", f.get("participant2Name") or "", f.get("startTime") or "",
@@ -173,9 +206,10 @@ async def get_league_odds(api_key: str, league_key: str, bookmaker: str = "bet36
         await asyncio.sleep(2.0)
         try:
             resp = await client.get(f"{BASE}/odds-by-tournaments", params={
-                "bookmaker": bookmaker, "tournamentIds": ",".join(str(t) for t in tournament_ids), "apiKey": api_key,
-            }, timeout=25.0)
+                "bookmaker": bookmaker, "tournamentIds": ",".join(str(t) for t in tournament_ids),
+            }, headers=headers, timeout=25.0)
             resp.raise_for_status()
+            _update_quota(resp)
             fixtures = resp.json()
         except Exception as e:
             errors.append(f"/odds-by-tournaments fallo: {e}")
