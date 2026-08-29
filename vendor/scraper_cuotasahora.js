@@ -185,6 +185,16 @@ async function drillIntoMarket(page, tabLabels, opts, bookmaker) {
       rows.map((r) => r.bookmaker).slice(0, 8).join("/"));
   }
   if (picked.line == null) return drillFail("casa_sin_linea", picked.bookmaker);
+  // 2026-08-29: incidente real -- un LMB con solo UNA linea ofrecida (camino rapido de arriba,
+  // que se salta pickMainLine/preferAbs por completo) devolvio hc_value=0 (pick'em, no el run
+  // line +-1.5 esperado) y total_line=1.5 (absurdo para beisbol) sin que nada lo marcara como
+  // fallo -- son numeros sintacticamente validos, el regex los parsea bien, pero no tienen
+  // sentido para el deporte. Se publico un pick real con edge 123% sobre ese dato. Este check
+  // aplica DESPUES de picked.line, asi que cubre tanto el camino con lista agregada como el de
+  // linea unica -- antes preferAbs solo protegia al primero.
+  if (opts.validateLine && !opts.validateLine(picked.line)) {
+    return drillFail("linea_no_plausible", "valor=" + picked.line);
+  }
   return { line: picked.line, odds1: picked.odds1, odds2: picked.odds2, bookmaker: picked.bookmaker };
 }
 
@@ -273,8 +283,14 @@ async function scrapeMatch(league, url, shouldDrill, bookmaker) {
     };
 
     if (shouldDrill(header.away_team, header.home_team)) {
-      const total = await drillIntoMarket(page, ["Over/Under", "Más/Menos de"], {}, bookmaker);
-      const hc = await drillIntoMarket(page, ["Asian Handicap", "Hándicap asiático"], { preferAbs: 1.5 }, bookmaker);
+      // Rangos plausibles para beisbol -- ver comentario del incidente 2026-08-29 en
+      // drillIntoMarket(). Total: 3.5-15.5 carreras. Hándicap: siempre acaba en .5 (run line,
+      // nunca empate), abs entre 0.5 y 3.5 -- rechaza el "+0" (pick'em) que causó el incidente.
+      const total = await drillIntoMarket(page, ["Over/Under", "Más/Menos de"],
+        { validateLine: (l) => l >= 3.5 && l <= 15.5 }, bookmaker);
+      const hc = await drillIntoMarket(page, ["Asian Handicap", "Hándicap asiático"],
+        { preferAbs: 1.5, validateLine: (l) => Math.abs(l) >= 0.5 && Math.abs(l) <= 3.5 && Math.abs(l % 1) === 0.5 },
+        bookmaker);
       // drill_notes viaja con el partido para que "tiene ML pero no total" deje de ser un
       // agujero mudo: ahora dice cual de los siete motivos fue.
       const notes = [];
