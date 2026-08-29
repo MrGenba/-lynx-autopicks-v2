@@ -227,6 +227,9 @@ class PipelineContext:
     # odds-api.io (2026-07-11) -- fuente primaria nueva, ver app/odds_api_client.py. None =
     # desactivada, cae directo al scraper de Tor (comportamiento identico a antes de esto).
     odds_api_key: Optional[str] = None
+    # oddspapi.io (2026-08-29) -- respaldo de Tor SOLO para MiLB/LMB, ver
+    # app/oddspapi_client.py y odds_autofetch._try_oddspapi_fallback. None = sin respaldo.
+    oddspapi_key: Optional[str] = None
 
 
 async def get_odds(pool: asyncpg.Pool, sport_id: int, game_pk: int) -> Optional[asyncpg.Record]:

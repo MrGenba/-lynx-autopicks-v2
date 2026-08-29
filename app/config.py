@@ -49,6 +49,10 @@ class Config:
     # odds-api.io (2026-07-11) -- fuente de cuotas primaria nueva, API real en vez de scraping.
     # None = desactivada, cae directo al scraper de Tor (comportamiento identico a antes).
     odds_api_key: str | None
+    # oddspapi.io (2026-08-29) -- respaldo de Tor SOLO para MiLB/LMB (ver app/oddspapi_client.py):
+    # se intenta Tor primero, y solo si agota todos los reintentos se prueba esto antes de
+    # rendirse. MLB no lo usa (Tor funciona bien ahi). None = desactivado, sin respaldo.
+    oddspapi_key: str | None
     # Token del dashboard de estado (2026-08-14): se sirve en GET /d/<token> como HTML. Va en la
     # RUTA y no en una cabecera porque se abre desde un navegador/movil, donde no se pueden poner
     # cabeceras. Por eso es un token DISTINTO de scrape_endpoint_token: la URL acaba en el
@@ -84,6 +88,7 @@ class Config:
             proxy_server_lmb=os.environ.get("PROXY_SERVER_LMB") or None,
             scrape_endpoint_token=os.environ.get("SCRAPE_ENDPOINT_TOKEN") or None,
             odds_api_key=os.environ.get("ODDS_API_KEY") or None,
+            oddspapi_key=os.environ.get("ODDSPAPI_KEY") or None,
             dashboard_token=os.environ.get("DASHBOARD_TOKEN") or None,
             # 2026-08-16: sin valor por defecto. La 2a instancia quedo desactivada (ver
             # docker-entrypoint.sh) y apuntar a un SOCKS muerto costaba 15s en CADA carga del

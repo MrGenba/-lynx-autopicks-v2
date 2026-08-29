@@ -31,6 +31,7 @@ from app import aliases
 from app.message_handler import _check_gates_and_fire, _store_odds
 from app.tor_control import record_activity, rotate_tor_circuit
 from app.node_bridge import NodeBridgeError, run_odds_scraper
+from app import oddspapi_client
 from app.overround import check_overround
 from app.pipelines import LEAGUE_KEY, LEAGUE_LABEL, PipelineContext
 
@@ -328,6 +329,110 @@ async def _notify_status_change(ctx: PipelineContext, sport_id: int, ok: bool, d
         logger.info("cuotas %s: %s", label, detail)
 
 
+async def _apply_scraped_games(
+    ctx: PipelineContext, sport_id: int, candidates: list[aliases.CandidateGame], games: list[dict],
+) -> int:
+    """Empareja partidos ya obtenidos (de cualquier fuente -- Tor o el respaldo de oddspapi.io,
+    ver _try_oddspapi_fallback) contra los candidatos, guarda y dispara. Extraido el 2026-08-29
+    de _scrape_and_apply para poder reusar exactamente la misma logica de emparejamiento/guardado
+    con el respaldo, sin duplicarla."""
+    now = dt.datetime.now(dt.timezone.utc)
+    cand_by_pk = {c.game_pk: c for c in candidates}
+
+    # 2026-07-27 (fix B): agrupar los scrapes POR candidato real antes de aplicar. cuotasahora a
+    # veces lista el MISMO partido dos veces con cuotas distintas (p.ej. el de hoy y el de manana,
+    # o un fantasma con el mismo matchup). El bucle anterior asignaba "el primero del scrape" y
+    # eliminaba el candidato -> podia guardar cuotas del partido equivocado, y un scrape que
+    # deberia ir al candidato A podia caer en B tras liberarse A. Ahora: cada scrape se empareja
+    # contra la lista COMPLETA de candidatos; si 2+ scrapes caen en el mismo candidato con cuotas
+    # que DIFIEREN, no se aplica ninguna (fail-safe, misma filosofia que _match_scraped_game:
+    # "mejor perder una cuota que asignarla al partido equivocado"). Si coinciden, se aplica.
+    by_cand: dict[int, list[tuple[dict, dict]]] = {}
+    for scraped in games:
+        cand = _match_scraped_game(scraped, candidates)
+        if cand is None:
+            continue
+        values = _values_from_scraped(scraped)
+        if all(v is None for v in values.values()):
+            continue
+        by_cand.setdefault(cand.game_pk, []).append((scraped, values))
+
+    matched_count = 0
+    for game_pk, entries in by_cand.items():
+        cand = cand_by_pk[game_pk]
+
+        if cand.game_datetime_utc is not None:
+            game_dt = cand.game_datetime_utc
+            if game_dt.tzinfo is None:
+                game_dt = game_dt.replace(tzinfo=dt.timezone.utc)
+            if now - game_dt > MAX_GAME_AGE:
+                logger.info(
+                    "autofetch: descartado game_pk=%s (%s @ %s) -- empezo hace %s, probablemente ya termino",
+                    cand.game_pk, cand.away_team_name, cand.home_team_name, now - game_dt,
+                )
+                continue
+
+        # Fail-safe ante duplicados conflictivos: mismo partido real scrapeado 2+ veces con cuotas
+        # distintas -> no fiarse de ninguna (probable partido erroneo/duplicado de cuotasahora).
+        if len(entries) > 1 and any(e[1] != entries[0][1] for e in entries[1:]):
+            logger.warning(
+                "autofetch: %s scrapes matchean game_pk=%s (%s @ %s) con cuotas DISTINTAS -- no se aplica ninguna (duplicado/partido erroneo de cuotasahora)",
+                len(entries), cand.game_pk, cand.away_team_name, cand.home_team_name,
+            )
+            continue
+
+        scraped, values = entries[0]
+        await _store_odds(ctx.pool, cand.sport_id, cand.game_pk, values, chat_id=0, message_id=0)
+        matched_count += 1
+
+        learn_away = cand.away_team_id
+        learn_home = cand.home_team_id
+        if learn_away is not None:
+            await aliases.learn_alias(ctx.pool, cand.sport_id, scraped.get("away_team", ""), learn_away, cand.away_team_name)
+        if learn_home is not None:
+            await aliases.learn_alias(ctx.pool, cand.sport_id, scraped.get("home_team", ""), learn_home, cand.home_team_name)
+
+        await _check_gates_and_fire(ctx, cand.sport_id, cand.game_pk, cand.away_team_name, cand.home_team_name)
+
+    return matched_count
+
+
+# Ligas cubiertas por el respaldo de oddspapi.io (2026-08-29) -- MiLB y LMB, alcance acordado con
+# el usuario. MLB queda fuera: Tor ya funciona bien ahi, y odds_api_client.py (otro servicio
+# distinto) ya se probo como fuente primaria de MLB y se desactivo por precision insuficiente.
+ODDSPAPI_LEAGUES = {11, 23}
+
+
+async def _try_oddspapi_fallback(ctx: PipelineContext, sport_id: int, candidates: list[aliases.CandidateGame]) -> bool:
+    """Respaldo tras agotar TODOS los reintentos de Tor (ver autofetch_single_game) -- nunca se
+    prueba antes que Tor. Cualquier cuota real (aunque no sea perfecta) es mejor que la situacion
+    real de MiLB desde junio: ninguna. No toca el cortacircuitos ni la telemetria de Tor
+    (record_activity con source="autofetch") -- serian datos de una fuente distinta, mezclarlos
+    haria ilegible el panel de estado de Tor."""
+    if sport_id not in ODDSPAPI_LEAGUES or not ctx.oddspapi_key:
+        return False
+    league_key = SCRAPER_LEAGUE[sport_id]
+    try:
+        result = await oddspapi_client.get_league_odds(ctx.oddspapi_key, league_key)
+    except Exception:
+        logger.exception("oddspapi fallback fallo para %s", league_key)
+        return False
+    for err in result.get("errors") or []:
+        logger.warning("oddspapi fallback (%s): %s", league_key, err)
+    games = result.get("games") or []
+    if not games:
+        return False
+    matched = await _apply_scraped_games(ctx, sport_id, candidates, games)
+    if matched:
+        logger.info("oddspapi fallback: %s candidato(s) resueltos para %s tras agotar Tor", matched, league_key)
+        await record_activity(
+            ctx.pool, "scrape", ok=True, sport_id=sport_id, league=league_key,
+            status="ok", n_candidates=len(candidates), n_scraped=len(games), n_matched=matched,
+            duration_ms=0, detail="respaldo oddspapi tras agotar Tor", source="oddspapi_fallback",
+        )
+    return matched > 0
+
+
 async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: list[aliases.CandidateGame]) -> int:
     """Nucleo compartido: scrapea la liga (filtrada a candidates via slug de URL, ver
     scraper_cuotasahora.js), empareja, guarda y dispara. Devuelve cuantos candidatos
@@ -469,63 +574,7 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
         return 0, "empty"
     await _notify_status_change(ctx, sport_id, True, "")
 
-    now = dt.datetime.now(dt.timezone.utc)
-    cand_by_pk = {c.game_pk: c for c in candidates}
-
-    # 2026-07-27 (fix B): agrupar los scrapes POR candidato real antes de aplicar. cuotasahora a
-    # veces lista el MISMO partido dos veces con cuotas distintas (p.ej. el de hoy y el de manana,
-    # o un fantasma con el mismo matchup). El bucle anterior asignaba "el primero del scrape" y
-    # eliminaba el candidato -> podia guardar cuotas del partido equivocado, y un scrape que
-    # deberia ir al candidato A podia caer en B tras liberarse A. Ahora: cada scrape se empareja
-    # contra la lista COMPLETA de candidatos; si 2+ scrapes caen en el mismo candidato con cuotas
-    # que DIFIEREN, no se aplica ninguna (fail-safe, misma filosofia que _match_scraped_game:
-    # "mejor perder una cuota que asignarla al partido equivocado"). Si coinciden, se aplica.
-    by_cand: dict[int, list[tuple[dict, dict]]] = {}
-    for scraped in games:
-        cand = _match_scraped_game(scraped, candidates)
-        if cand is None:
-            continue
-        values = _values_from_scraped(scraped)
-        if all(v is None for v in values.values()):
-            continue
-        by_cand.setdefault(cand.game_pk, []).append((scraped, values))
-
-    matched_count = 0
-    for game_pk, entries in by_cand.items():
-        cand = cand_by_pk[game_pk]
-
-        if cand.game_datetime_utc is not None:
-            game_dt = cand.game_datetime_utc
-            if game_dt.tzinfo is None:
-                game_dt = game_dt.replace(tzinfo=dt.timezone.utc)
-            if now - game_dt > MAX_GAME_AGE:
-                logger.info(
-                    "autofetch: descartado game_pk=%s (%s @ %s) -- empezo hace %s, probablemente ya termino",
-                    cand.game_pk, cand.away_team_name, cand.home_team_name, now - game_dt,
-                )
-                continue
-
-        # Fail-safe ante duplicados conflictivos: mismo partido real scrapeado 2+ veces con cuotas
-        # distintas -> no fiarse de ninguna (probable partido erroneo/duplicado de cuotasahora).
-        if len(entries) > 1 and any(e[1] != entries[0][1] for e in entries[1:]):
-            logger.warning(
-                "autofetch: %s scrapes matchean game_pk=%s (%s @ %s) con cuotas DISTINTAS -- no se aplica ninguna (duplicado/partido erroneo de cuotasahora)",
-                len(entries), cand.game_pk, cand.away_team_name, cand.home_team_name,
-            )
-            continue
-
-        scraped, values = entries[0]
-        await _store_odds(ctx.pool, cand.sport_id, cand.game_pk, values, chat_id=0, message_id=0)
-        matched_count += 1
-
-        learn_away = cand.away_team_id
-        learn_home = cand.home_team_id
-        if learn_away is not None:
-            await aliases.learn_alias(ctx.pool, cand.sport_id, scraped.get("away_team", ""), learn_away, cand.away_team_name)
-        if learn_home is not None:
-            await aliases.learn_alias(ctx.pool, cand.sport_id, scraped.get("home_team", ""), learn_home, cand.home_team_name)
-
-        await _check_gates_and_fire(ctx, cand.sport_id, cand.game_pk, cand.away_team_name, cand.home_team_name)
+    matched_count = await _apply_scraped_games(ctx, sport_id, candidates, games)
 
     logger.info(
         "autofetch %s: %s candidatos, %s partidos scrapeados, %s asignados",
@@ -562,7 +611,14 @@ async def autofetch_single_game(
     picks reales (_check_gates_and_fire), asi que la precision importa mas aqui que en el
     comando manual de Telegram -- se salta odds-api.io por completo y se va directo al scraper
     de Tor (mas lento, pero es la fuente que si se verifico que coincide con bet365.com real).
-    get_odds_for_game sigue existiendo en odds_api_client.py por si se recupera con otra fuente."""
+    get_odds_for_game sigue existiendo en odds_api_client.py por si se recupera con otra fuente.
+
+    2026-08-29 AÑADIDO respaldo con oddspapi.io (cuenta/servicio DISTINTO de odds-api.io, ver
+    app/oddspapi_client.py) -- pero solo cuando Tor agota TODOS sus reintentos, nunca antes. A
+    diferencia de odds-api.io, aqui no hubo comparacion en vivo que descartara la precision;
+    se acepta el riesgo porque para MiLB/LMB la alternativa real desde junio es no tener cuotas
+    en absoluto. Alcance acordado con el usuario: solo sport_id 11 (MiLB) y 23 (LMB) -- MLB sigue
+    sin respaldo, Tor le funciona bien."""
     candidate = aliases.CandidateGame(
         sport_id=sport_id, game_pk=game_pk, away_team_id=None, home_team_id=None,
         away_team_name=away_team_name, home_team_name=home_team_name, game_datetime_utc=game_datetime_utc,
@@ -581,7 +637,7 @@ async def autofetch_single_game(
         # ROTA el circuito (NEWNYM) para salir por otro; con circuito estable durante cada scrape y
         # rotacion entre intentos, se cicla hasta un circuito bueno.
         if status not in ("empty", "scraper_failed", "wrong_catalog"):
-            return False
+            break
         if attempt >= retries:
             break
         if game_datetime_utc is not None:
@@ -597,6 +653,10 @@ async def autofetch_single_game(
         )
         # backoff: los indices extra de LMB (mas alla de los 5 de AUTOFETCH_BACKOFF_S) reusan el ultimo (25s)
         await asyncio.sleep(AUTOFETCH_BACKOFF_S[min(attempt, len(AUTOFETCH_BACKOFF_S) - 1)])
+    # Tor agoto sus reintentos (o cedio el turno / cortacircuitos abierto) -- ultimo intento antes
+    # de rendirse (2026-08-29, ver _try_oddspapi_fallback). Nunca se prueba antes que Tor.
+    if await _try_oddspapi_fallback(ctx, sport_id, [candidate]):
+        return True
     return False
 
 

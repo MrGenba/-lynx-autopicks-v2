@@ -329,7 +329,7 @@ async def main() -> None:
         node_bin=cfg.node_bin, vendor_dir=cfg.vendor_dir,
         supabase=supabase, http_client=http_client,
         proxy_server=cfg.proxy_server, proxy_server_lmb=cfg.proxy_server_lmb,
-        odds_api_key=cfg.odds_api_key,
+        odds_api_key=cfg.odds_api_key, oddspapi_key=cfg.oddspapi_key,
     )
 
     scheduler = AsyncIOScheduler()
