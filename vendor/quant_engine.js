@@ -26,10 +26,15 @@ const LEAGUE_CONFIG = {
     bb_pct_mean: 8.4,
     k_pct_mean: 23,
   },
-  11: {  // MiLB AAA - calibrado con backtest real abr-2025?abr-2026 (n=61)
+  11: {  // MiLB AAA - recalibrado 2026-08-30 con backtest real ventana limpia jul-ago 2026 (n=194,
+    // ver _recalibrate_milb.py): el 1.11 (fijado 2026-07-02 para corregir infrapredicción de
+    // entonces) ya sobrecorregía tras los fixes posteriores de lineup_factor/frescura de stats --
+    // el modelo sobrepredecía carreras totales un 8.55% (10.946 predichas vs 10.010 reales).
+    // Confirmado que el sesgo golpeaba desproporcionadamente al edge alto de UNDER (inversion de
+    // edge: a mas edge declarado, mas se disparaba el resultado real por encima de lo predicho).
     league_name: 'MiLB AAA',
     runs_per_team: 4.55,
-    calibration_factor: 1.11,
+    calibration_factor: 1.015,
     nb_k: 3.7,  // 2026-07-04: recalibrado desde 7 con backtest de cola (backtest/backtest_nb_milb.js) -
     // metodo de momentos sobre 2868 partidos AAA reales (media=5.40, varianza=13.08) da k=3.7-4.5;
     // se probo tambien un modelo con shock comun (correlacion away-home=0.075) pero el P/L real en
