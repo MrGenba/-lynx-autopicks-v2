@@ -277,6 +277,38 @@ async def dashboard_page(request: web.Request) -> web.Response:
     )
 
 
+async def circuit_breaker_stats(request: web.Request) -> web.Response:
+    """Diagnostico temporal (2026-08-30): frecuencia real del cortacircuitos por liga/dia en los
+    ultimos 7 dias -- para decidir si ODDS_AUTOFETCH_INTERVAL_SECONDS (900s) merece subirse.
+    Mismo token que el dashboard (solo-lectura). Se puede retirar una vez respondida la pregunta."""
+    cfg: Config = request.app["cfg"]
+    token = request.match_info.get("token", "")
+    if not cfg.dashboard_token or not secrets.compare_digest(token, cfg.dashboard_token):
+        return web.Response(status=404, text="not found")
+    pool = request.app["pool"]
+    try:
+        rows = await pool.fetch("""
+            SELECT league,
+                   to_char(created_at AT TIME ZONE 'Europe/Madrid', 'YYYY-MM-DD') AS dia,
+                   count(*) AS veces,
+                   array_agg(to_char(created_at AT TIME ZONE 'Europe/Madrid', 'HH24:MI') ORDER BY created_at) AS horas,
+                   array_agg(detail ORDER BY created_at) AS detalles
+            FROM tor_activity
+            WHERE status = 'cortacircuitos' AND created_at > now() - interval '7 days'
+            GROUP BY league, dia
+            ORDER BY dia DESC, league
+        """)
+        total = await pool.fetchval(
+            "SELECT count(*) FROM tor_activity WHERE status='cortacircuitos' AND created_at > now() - interval '7 days'"
+        )
+        return web.json_response({
+            "total_7d": total,
+            "por_dia_liga": [dict(r) for r in rows],
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def run_health_server(cfg: Config, pool, port: int = 8080) -> None:
     app = web.Application()
     app["cfg"] = cfg
@@ -289,6 +321,7 @@ async def run_health_server(cfg: Config, pool, port: int = 8080) -> None:
     app.router.add_post("/tor/rotate", tor_rotate)
     app.router.add_get("/tor/status", tor_status)
     app.router.add_get("/d/{token}", dashboard_page)
+    app.router.add_get("/d/{token}/cortacircuitos", circuit_breaker_stats)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
