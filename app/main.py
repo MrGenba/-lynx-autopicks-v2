@@ -309,6 +309,53 @@ async def circuit_breaker_stats(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=500)
 
 
+async def scrape_funnel_stats(request: web.Request) -> web.Response:
+    """Diagnostico temporal (2026-08-30): embudo completo de scraping por liga, 7 dias -- intentos,
+    exitos, motivos de fallo (no_header/sin_match/wrong_catalog/etc), y de donde vino cada exito
+    (tor vs respaldo oddspapi). Pregunta real: por que MiLB salta el cortacircuitos mucho mas que
+    MLB pero produce muchos menos picks reales -- hace falta ver la tasa de exito real, no solo el
+    conteo de cortacircuitos (que depende tambien de cuantos partidos hay en juego cada liga).
+    Mismo token que el dashboard (solo-lectura)."""
+    cfg: Config = request.app["cfg"]
+    token = request.match_info.get("token", "")
+    if not cfg.dashboard_token or not secrets.compare_digest(token, cfg.dashboard_token):
+        return web.Response(status=404, text="not found")
+    pool = request.app["pool"]
+    try:
+        funnel = await pool.fetch("""
+            SELECT league,
+                   count(*) FILTER (WHERE kind='scrape' AND status NOT IN ('obsoleto','cortacircuitos')) AS intentos,
+                   count(*) FILTER (WHERE kind='scrape' AND ok) AS exitos,
+                   count(*) FILTER (WHERE kind='scrape' AND ok AND detail ILIKE '%oddspapi%') AS exitos_oddspapi,
+                   count(*) FILTER (WHERE kind='scrape' AND status='no_header') AS no_header,
+                   count(*) FILTER (WHERE kind='scrape' AND status='sin_match') AS sin_match,
+                   count(*) FILTER (WHERE kind='scrape' AND status='empty') AS empty,
+                   count(*) FILTER (WHERE kind='scrape' AND status='wrong_catalog') AS wrong_catalog,
+                   count(*) FILTER (WHERE kind='scrape' AND status='sin_bookmaker_rows') AS sin_bookmaker,
+                   count(*) FILTER (WHERE status='cortacircuitos') AS cortacircuitos,
+                   count(*) FILTER (WHERE kind='scrape' AND status='obsoleto') AS obsoletos
+            FROM tor_activity
+            WHERE created_at > now() - interval '7 days'
+            GROUP BY league
+            ORDER BY league
+        """)
+        # distribucion de status "sueltos" no cubiertos arriba, por si hay alguno inesperado
+        otros = await pool.fetch("""
+            SELECT league, status, count(*) AS n
+            FROM tor_activity
+            WHERE created_at > now() - interval '7 days' AND kind='scrape'
+              AND status NOT IN ('ok','no_header','sin_match','empty','wrong_catalog','sin_bookmaker_rows','obsoleto','cortacircuitos')
+            GROUP BY league, status
+            ORDER BY league, n DESC
+        """)
+        return web.json_response({
+            "embudo_por_liga": [dict(r) for r in funnel],
+            "otros_status_no_clasificados": [dict(r) for r in otros],
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def run_health_server(cfg: Config, pool, port: int = 8080) -> None:
     app = web.Application()
     app["cfg"] = cfg
@@ -322,6 +369,7 @@ async def run_health_server(cfg: Config, pool, port: int = 8080) -> None:
     app.router.add_get("/tor/status", tor_status)
     app.router.add_get("/d/{token}", dashboard_page)
     app.router.add_get("/d/{token}/cortacircuitos", circuit_breaker_stats)
+    app.router.add_get("/d/{token}/embudo", scrape_funnel_stats)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
