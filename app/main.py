@@ -356,6 +356,46 @@ async def scrape_funnel_stats(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=500)
 
 
+async def empty_detail_sample(request: web.Request) -> web.Response:
+    """Diagnostico temporal (2026-08-30): muestra de 'detail' en filas status='empty' de MiLB,
+    para ver la causa real detras del 49% de intentos vacios (no_header, sin enlaces, timeout,
+    etc. -- el texto exacto queda en detail, no en status). Mismo token que el dashboard."""
+    cfg: Config = request.app["cfg"]
+    token = request.match_info.get("token", "")
+    if not cfg.dashboard_token or not secrets.compare_digest(token, cfg.dashboard_token):
+        return web.Response(status=404, text="not found")
+    pool = request.app["pool"]
+    try:
+        rows = await pool.fetch("""
+            SELECT to_char(created_at AT TIME ZONE 'Europe/Madrid', 'DD/MM HH24:MI') AS ts, duration_ms, detail
+            FROM tor_activity
+            WHERE league='MiLB' AND status='empty' AND created_at > now() - interval '7 days'
+            ORDER BY created_at DESC
+            LIMIT 40
+        """)
+        # bucket rapido por patron de texto para ver que domina
+        patrones = await pool.fetch("""
+            SELECT
+              CASE
+                WHEN detail ILIKE '%no_header%' THEN 'no_header'
+                WHEN detail ILIKE '%is_live%' THEN 'is_live'
+                WHEN detail ILIKE '%timeout%' THEN 'timeout'
+                WHEN detail ILIKE '%sin ningun enlace%' OR detail ILIKE '%sin enlace%' THEN 'sin_enlaces_indice'
+                ELSE 'otro'
+              END AS patron,
+              count(*) AS n
+            FROM tor_activity
+            WHERE league='MiLB' AND status='empty' AND created_at > now() - interval '7 days'
+            GROUP BY patron ORDER BY n DESC
+        """)
+        return web.json_response({
+            "patrones": [dict(r) for r in patrones],
+            "muestra": [dict(r) for r in rows],
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def run_health_server(cfg: Config, pool, port: int = 8080) -> None:
     app = web.Application()
     app["cfg"] = cfg
@@ -370,6 +410,7 @@ async def run_health_server(cfg: Config, pool, port: int = 8080) -> None:
     app.router.add_get("/d/{token}", dashboard_page)
     app.router.add_get("/d/{token}/cortacircuitos", circuit_breaker_stats)
     app.router.add_get("/d/{token}/embudo", scrape_funnel_stats)
+    app.router.add_get("/d/{token}/empty-milb", empty_detail_sample)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
