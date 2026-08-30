@@ -107,6 +107,18 @@ def _values_from_markets(markets: dict) -> dict:
         meta = _MARKETS.get(str(market_id))
         if not meta:
             continue
+        # 2026-08-30: incidente real -- el catalogo original solo guardaba {type, handicap,
+        # outcomes}, sin el "period" que trae /v4/markets. Baseball tiene 12 variantes de cada
+        # mercado (partido completo "result" + una por entrada + 1a-5a + 6a-9a), todas con el
+        # mismo marketType ("totals"/"spreads"/"moneyline") -- sin filtrar por period, un partido
+        # cuya casa no tuviera mainLine marcado en el mercado de partido completo podia colar el
+        # total de "1a a 5a entrada" (linea mucho mas baja, ej. 6.5 en vez de 10.5 real) sin que
+        # nada lo detectara. Confirmado en vivo: Albuquerque Isotopes @ Round Rock Express,
+        # game_id=815042, total_line=6.5 publicado cuando el real rondaba 10.5. Catalogo
+        # regenerado con period incluido; aqui se exige "result" (partido completo, incluye
+        # extra innings) explicitamente.
+        if meta.get("period") != "result":
+            continue
         outcomes = mdata.get("outcomes") or {}
         name_to_id = {v: k for k, v in meta["outcomes"].items()}
 
@@ -132,9 +144,10 @@ def _values_from_markets(markets: dict) -> dict:
 
     if hc_candidates:
         hc_candidates.sort(key=lambda t: (not t[0], t[1]))
-        _, _, handicap, home_price, away_price = hc_candidates[0]
+        _, abs_hc, handicap, home_price, away_price = hc_candidates[0]
         chk = check_overround(away_price, home_price)
-        if chk.ok:
+        # Run line de beisbol: practicamente siempre acaba en .5, abs entre 0.5 y 3.5.
+        if chk.ok and 0.5 <= abs_hc <= 3.5 and abs_hc % 1 == 0.5:
             values["home_hc_val"], values["home_hc_odds"] = handicap, home_price
             values["away_hc_val"], values["away_hc_odds"] = -handicap, away_price
 
@@ -142,7 +155,9 @@ def _values_from_markets(markets: dict) -> dict:
         tot_candidates.sort(key=lambda t: not t[0])
         _, line, over_price, under_price = tot_candidates[0]
         chk = check_overround(over_price, under_price)
-        if chk.ok:
+        # Red de seguridad adicional (mismo rango que vendor/scraper_cuotasahora.js): si pese al
+        # filtro de period=="result" se colara algo raro, mejor sin total que uno absurdo.
+        if chk.ok and 3.5 <= line <= 15.5:
             values["total_line"], values["over_odds"], values["under_odds"] = line, over_price, under_price
 
     return values
