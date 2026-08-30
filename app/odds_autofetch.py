@@ -103,6 +103,13 @@ AUTOFETCH_LEAGUE_RETRIES = 1
 # re-scrapear el partido entero cada 15 min indefinidamente (ver migracion 0004).
 PARTIAL_RETRY_EVERY = dt.timedelta(minutes=60)          # como mucho un reintento por hora
 PARTIAL_GIVE_UP_BEFORE_START = dt.timedelta(minutes=45)  # cerca del inicio, conformarse con lo que hay
+# Freno de partidos SIN NINGUNA cuota (2026-08-30, ver migracion 0005). Antes de esto no tenian
+# freno "porque son el caso que de verdad importa" -- pero eso es exactamente el bucle de
+# realimentacion que el cortacircuitos existe para cortar (ver comentario del cortacircuitos mas
+# abajo), solo que sin freno por partido, no por liga. Mas corto que el de parciales (60 min)
+# porque aqui sí urge mas, pero ya no "cada 15 min sin parar": medido en produccion, eso dejaba a
+# MiLB con 49.3% de intentos "empty" en 7 dias (vs 3.9% de MLB, mismo scraper).
+EMPTY_RETRY_EVERY = dt.timedelta(minutes=20)
 # Descarte al SALIR de la cola (2026-08-15). Un candidato se comprueba cuando se ENCOLA, pero entre
 # eso y su turno puede pasar muchisimo tiempo: el semaforo es de 1 y el disparo puntual mete un
 # create_task por partido con hasta 12 intentos cada uno (LMB), asi que la cola crece mas rapido de
@@ -189,8 +196,14 @@ async def _candidates_needing_odds(pool: asyncpg.Pool, sport_id: int) -> list[al
               AND g.pitchers_confirmed_at IS NOT NULL
               AND g.{GAMES_WINDOW_SQL}
               AND (
-                -- Sin nada utilizable: candidato siempre, sin freno. Es el caso que importa.
-                (o.game_pk IS NULL OR (o.away_ml IS NULL AND o.total_line IS NULL))
+                -- Sin nada utilizable: se sigue intentando (es el caso que mas importa), pero
+                -- acotado (migracion 0005) -- sin esto, el mismo partido se re-scrapea entero
+                -- cada 15 min sin parar durante hasta 7h, agravando el throttle de cuotasahora.
+                (
+                  (o.game_pk IS NULL OR (o.away_ml IS NULL AND o.total_line IS NULL))
+                  AND (g.last_empty_retry_at IS NULL
+                       OR g.last_empty_retry_at < now() - $4::interval)
+                )
                 -- Parciales (tiene ML o total, pero no ambos): se sigue intentando, pero acotado.
                 -- Sin esto, un partido cuyo total Bet365 nunca publica se re-scrapea ENTERO cada
                 -- ciclo hasta que empieza (ver migracion 0004).
@@ -202,7 +215,7 @@ async def _candidates_needing_odds(pool: asyncpg.Pool, sport_id: int) -> list[al
                 )
               )
             """,
-            sport_id, PARTIAL_GIVE_UP_BEFORE_START, PARTIAL_RETRY_EVERY,
+            sport_id, PARTIAL_GIVE_UP_BEFORE_START, PARTIAL_RETRY_EVERY, EMPTY_RETRY_EVERY,
         )
     return [
         aliases.CandidateGame(
@@ -281,21 +294,22 @@ async def _stamp_partial_retry(pool: asyncpg.Pool, sport_id: int, candidates: li
     """Marca que a estos partidos se les acaba de intentar un scrape, sea cual sea el resultado.
 
     Se estampa SIEMPRE (exito, vacio o fallo duro) porque lo que se esta acotando es la CARGA sobre
-    Tor, no el numero de exitos: un intento fallido gasta lo mismo que uno bueno. Solo afecta a los
-    partidos ya parciales -- los que no tienen ninguna cuota ignoran esta marca (ver
-    _candidates_needing_odds). Nunca lanza: es un freno, no una funcion critica."""
+    Tor, no el numero de exitos: un intento fallido gasta lo mismo que uno bueno. Estampa las DOS
+    marcas de freno a la vez (parcial y sin-nada, migraciones 0004/0005) -- cada una solo la lee
+    la rama de _candidates_needing_odds que le corresponde, asi que estampar de mas no hace daño.
+    Nunca lanza: es un freno, no una funcion critica."""
     pks = [c.game_pk for c in candidates]
     if not pks:
         return
     try:
         async with pool.acquire() as conn:
             await conn.execute(
-                "UPDATE games_gate_state SET last_partial_retry_at = now() "
+                "UPDATE games_gate_state SET last_partial_retry_at = now(), last_empty_retry_at = now() "
                 "WHERE sport_id = $1 AND game_pk = ANY($2::bigint[])",
                 sport_id, pks,
             )
     except Exception:
-        logger.exception("no se pudo estampar last_partial_retry_at (sport_id=%s) -- se ignora", sport_id)
+        logger.exception("no se pudo estampar last_partial_retry_at/last_empty_retry_at (sport_id=%s) -- se ignora", sport_id)
 
 
 async def _anotar_breaker(ctx: PipelineContext, sport_id: int, league_key: str, ok: bool) -> None:
