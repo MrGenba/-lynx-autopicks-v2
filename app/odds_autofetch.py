@@ -598,11 +598,21 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
     # ya no es un problema de Tor sino de emparejamiento (nombres/fantasmas/duplicados), y se
     # distingue en el dashboard por el status, no por el color del estado de Tor.
     await _anotar_breaker(ctx, sport_id, league_key, ok=True)
+    # Diagnostico temporal 2026-08-30: en "sin_match" no quedaba constancia de QUE nombres traia
+    # el scraper ni contra QUE candidatos se comparaban -- solo el conteo. Para poder ver si es un
+    # problema real de nombres (vs. partido fantasma/duplicado) sin adivinar.
+    sin_match_detail = None
+    if not matched_count and games:
+        scraped_names = "; ".join(
+            f"{g.get('away_team')} @ {g.get('home_team')}" for g in games[:5]
+        )
+        cand_names = "; ".join(f"{c.away_team_name} @ {c.home_team_name}" for c in candidates[:5])
+        sin_match_detail = f"scrapeado=[{scraped_names}] candidatos=[{cand_names}]"
     await record_activity(
         ctx.pool, "scrape", ok=True, sport_id=sport_id, league=league_key,
         status=("ok" if matched_count else "sin_match"), n_candidates=len(candidates),
         n_scraped=len(games), n_matched=matched_count, duration_ms=_elapsed_ms(),
-        detail=_queue_note().strip() or None, source="autofetch",
+        detail=sin_match_detail or (_queue_note().strip() or None), source="autofetch",
     )
     return matched_count, ("ok" if matched_count else "empty")
 
