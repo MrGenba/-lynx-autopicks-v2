@@ -42,6 +42,11 @@ EDGE_ALERT_SPORT_ID = 1
 EDGE_ALERT_MARKETS = {"HC", "OU"}
 EDGE_ALERT_MIN = 0.08
 _edge_alert_keys: set = set()
+
+# Dedup en memoria del aviso "pick bloqueado por cuota pre-lineup" (FIX #3, ver try_fire_pipeline).
+# Sin esto el detector avisaria en cada tick (cada 180s) del mismo partido. Se pierde al reiniciar
+# el contenedor -- peor caso, un aviso repetido, aceptable.
+_stale_odds_notice_keys: set = set()
 CANDIDATES_HISTORY_TABLE = {1: "mlb_candidates_history", 11: "candidates_history", 23: "lmb_candidates_history"}
 # Columnas reales por tabla (verificadas contra Supabase 2026-07-11 antes de escribir -- mismo
 # bug ya sufrido una vez con prob_edge faltante en mlb_picks_history, ver CLAUDE.md/KNOWN_ISSUES).
@@ -808,12 +813,60 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
 
     async with ctx.pool.acquire() as conn:
         gate_row = await conn.fetchrow(
-            "SELECT away_pitcher_id, home_pitcher_id, game_datetime_utc FROM games_gate_state WHERE sport_id=$1 AND game_pk=$2",
+            "SELECT away_pitcher_id, home_pitcher_id, game_datetime_utc, lineup_confirmed_at "
+            "FROM games_gate_state WHERE sport_id=$1 AND game_pk=$2",
             sport_id, game_pk,
         )
     gate_away_pid = gate_row["away_pitcher_id"] if gate_row else None
     gate_home_pid = gate_row["home_pitcher_id"] if gate_row else None
     gate_dt = gate_row["game_datetime_utc"] if gate_row else None
+
+    # FIX #3 (2026-09-02): la cuota debe ser POSTERIOR a la noticia que el modelo ya conoce.
+    # Aplica a las 3 ligas (esta funcion es agnostica de liga; el detector recorre sport_id 1/11/23)
+    # y a TODOS los caminos de disparo (Gate A/B del detector, cuotas manuales por Telegram,
+    # autofetch periodico), porque todos pasan por aqui.
+    #
+    # Por que solo pipeline 2 (lineup) y no pipeline 1 (abridores): los dos timestamps NO son
+    # igual de fiables como proxy de "cuando se entero el mercado".
+    #   - lineup_confirmed_at: el detector sondea cada 180s dentro de la ventana de 6h, asi que
+    #     cae a ~3 min de la publicacion real del lineup -> buen proxy, la comparacion es valida.
+    #   - pitchers_confirmed_at: se sella con now() la PRIMERA vez que el detector ve el partido,
+    #     y los abridores suelen anunciarse horas o dias antes de que el partido entre en la
+    #     ventana de 6h -> ese timestamp es "cuando el partido entro en nuestro radar", NO cuando
+    #     se entero el mercado. Compararlo daria falsos positivos constantes. Para pipeline 1 el
+    #     que manda es el chequeo de edad absoluta de detector.py (ODDS_MAX_AGE_BEFORE_FIRE).
+    #
+    # Si la cuota es anterior al lineup, se compara un modelo que YA sabe el lineup contra un
+    # precio que todavia no lo sabia: el edge resultante es la diferencia entre dos momentos
+    # informativos, no valor real, y se evapora en cuanto el mercado reacciona (caso Toledo
+    # 2026-09-02, ver CLAUDE.md "CUOTA RANCIA"). NO se reclama la fila de pipeline_runs -> el
+    # proximo tick reintenta cuando haya cuota fresca, igual que hace el camino de game_obj None.
+    if pipeline == 2 and gate_row is not None:
+        lineup_at = gate_row["lineup_confirmed_at"]
+        odds_at = odds["updated_at"] if "updated_at" in odds else None
+        if lineup_at is not None and odds_at is not None and odds_at < lineup_at:
+            logger.warning(
+                "pipeline 2 NO disparado para sport_id=%s game_pk=%s: la cuota es de %s, anterior "
+                "al lineup confirmado a las %s -- precio pre-noticia, se reintentara con cuota fresca",
+                sport_id, game_pk, odds_at, lineup_at,
+            )
+            # Avisar al admin UNA vez por partido: si esto pasa, es que el re-scrape de Gate B
+            # agoto sus reintentos (5 + rotacion Tor + respaldo oddspapi en MiLB/LMB). No dejarlo
+            # solo en el log -- la leccion recurrente del proyecto es que los fallos silenciosos
+            # cuestan semanas de diagnostico.
+            _k = (sport_id, game_pk)
+            if _k not in _stale_odds_notice_keys:
+                _stale_odds_notice_keys.add(_k)
+                try:
+                    await ctx.telegram.send_message(
+                        ctx.admin_chat_id,
+                        f"⏳ {LEAGUE_LABEL.get(sport_id, sport_id)} {away_team} @ {home_team}: pick de "
+                        f"lineup NO publicado -- la única cuota disponible es anterior al lineup "
+                        f"confirmado (precio pre-noticia, edge irreal). Reintentando con cuota fresca.",
+                    )
+                except Exception:
+                    logger.exception("fallo avisando de cuota pre-lineup game_pk=%s", game_pk)
+            return
 
     # gate_dt (hora real del primer lanzamiento, de games_gate_state) -> el clima fresco se coge de
     # la hora del partido de verdad, no de la aproximacion fija de las 20:00 UTC. 2026-08-04.
