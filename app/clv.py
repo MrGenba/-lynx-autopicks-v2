@@ -12,7 +12,23 @@ Notas de diseno (sesion 2026-07-25):
   bet365.com, decision del usuario 2026-07-20).
 - NO re-dispara pipelines ni sobreescribe game_odds: solo lee la linea y la guarda aparte.
 - Desactivada por defecto (CLV_CAPTURE_ENABLED): anade scrapes de Tor extra cerca del cierre.
+
+Fix 2026-09-02 (auditoria de estado del CLV): con la ventana de captura activa desde ~2026-08-02,
+solo 3 de 19 picks elegibles (Auto-Picks v2, ver CLAUDE.md) consiguieron cierre -- 15.8%, y encima
+sin NINGUN rastro de por que fallo el resto: _capture_league() hacia un unico intento de scrape por
+tick, sin reintentar ni rotar circuito si salia vacio/fallaba (a diferencia de
+odds_autofetch.autofetch_single_game, que desde 2026-08-02 reintenta con NEWNYM entre intentos), y
+sin llamar a record_activity() nunca -- un fallo de captura no dejaba NINGUNA fila en tor_activity,
+ni exito ni fracaso. Con una ventana de solo 20 minutos y CLV_CAPTURE_INTERVAL_SECONDS=300 por
+defecto, cada pick tenia como mucho ~3-4 intentos repartidos entre ticks, cada uno de un solo tiro.
+Mismo patron ya visto y corregido en el flujo principal de cuotas (misma leccion del proyecto: "si
+algo falla y no sabes por que, instrumentar primero"). Aplicado aqui el mismo patron de
+autofetch_single_game: reintento con rotacion de circuito + backoff dentro de un mismo tick (tope
+bajo, CAPTURE_RETRIES=2 intentos extra, para no competir de mas con el resto del sistema por el
+semaforo de Tor) y record_activity() en cada intento (source="clv"), visible en el dashboard igual
+que el resto de scrapes.
 """
+import asyncio
 import datetime as dt
 import json
 import logging
@@ -20,15 +36,23 @@ import logging
 from app import aliases
 from app.node_bridge import NodeBridgeError, run_odds_scraper
 from app.odds_autofetch import (
-    SCRAPER_LEAGUE, _match_scraped_game, _scrape_semaphore, _values_from_scraped,
+    AUTOFETCH_BACKOFF_S, SCRAPER_LEAGUE, _match_scraped_game, _scrape_semaphore, _values_from_scraped,
 )
 from app.pipelines import LEAGUE_LABEL, PipelineContext
+from app.tor_control import record_activity, rotate_tor_circuit
 
 logger = logging.getLogger(__name__)
 
 # Partidos que arrancan dentro de estos minutos. Con el tick cada ~5min, el cierre se captura
 # ~0-20min antes del inicio (proxy estandar de 'closing line').
 CAPTURE_WINDOW_MIN = 20
+
+# Reintentos EXTRA dentro de un mismo tick si el scrape sale vacio/falla (2026-09-02). Bajo a
+# proposito: la ventana ya es corta (20 min) y el propio tick (cada
+# CLV_CAPTURE_INTERVAL_SECONDS, 300s por defecto) vuelve a intentarlo -- esto es para no perder
+# TODOS los intentos de un tick a un solo tiro de mala suerte con el circuito de Tor, no para
+# competir de mas con el resto del sistema por el semaforo.
+CAPTURE_RETRIES = 2
 
 
 def _side_base(side: str) -> str:
@@ -105,46 +129,100 @@ async def _capture_league(ctx: PipelineContext, sport_id: int, picks: list[dict]
     ]
     names = [n for c in cands for n in (c.away_team_name, c.home_team_name) if n]
     proxy = ctx.proxy_server_lmb if (sport_id == 23 and ctx.proxy_server_lmb) else ctx.proxy_server
-    try:
-        async with _scrape_semaphore:
-            result = await run_odds_scraper(
-                ctx.node_bin, ctx.vendor_dir, league_key,
-                proxy, candidate_names=names,
-            )
-    except NodeBridgeError as e:
-        logger.warning("CLV: scraper fallo para %s: %s", league_key, e)
-        return 0
-
-    to_insert = []
-    for scraped in (result.get("games") or []):
-        cand = _match_scraped_game(scraped, cands)
-        if cand is None:
-            continue
-        values = _values_from_scraped(scraped)
+    # Minutos hasta el partido MAS PROXIMO de este lote -- si ya esta a <2 min, no tiene sentido
+    # seguir reintentando (mismo corte que autofetch_single_game): para entonces la ventana de
+    # captura casi ha cerrado y un reintento mas solo consumiria turno del semaforo sin utilidad.
+    def _min_minutes_to_start() -> float | None:
+        vals = []
         for p in picks:
-            if p["game_pk"] != cand.game_pk:
+            gdt = p.get("game_datetime_utc")
+            if gdt is None:
                 continue
-            close, opp, line = closing_for_pick(values, p["market"], p["pick_side"])
-            if close is None:
-                continue
-            gdt = cand.game_datetime_utc
-            if gdt is not None and gdt.tzinfo is None:
+            if gdt.tzinfo is None:
                 gdt = gdt.replace(tzinfo=dt.timezone.utc)
-            mins = round((gdt - now).total_seconds() / 60, 1) if gdt else None
-            to_insert.append({
-                "game_pk": str(cand.game_pk), "league": LEAGUE_LABEL.get(sport_id),
-                "market": p["market"], "pick_side": _side_base(p["pick_side"]),
-                "closing_odds": close, "closing_opp_odds": opp, "closing_line": line,
-                "minutes_to_start": mins, "bookmaker": "Bet365", "source": "cuotasahora",
-                "captured_at": now.isoformat(),
-            })
-    if to_insert:
+            vals.append((gdt - dt.datetime.now(dt.timezone.utc)).total_seconds() / 60)
+        return min(vals) if vals else None
+
+    total_inserted = 0
+    pending = list(picks)
+    for attempt in range(1 + CAPTURE_RETRIES):
+        status = "empty"
+        games = []
+        t0 = asyncio.get_event_loop().time()
         try:
-            await ctx.supabase.insert(ctx.http_client, "pick_closing_lines", to_insert)
-            logger.info("CLV: %s cierres capturados (%s)", len(to_insert), league_key)
-        except Exception:
-            logger.exception("CLV: fallo guardando pick_closing_lines (%s)", league_key)
-    return len(to_insert)
+            async with _scrape_semaphore:
+                result = await run_odds_scraper(
+                    ctx.node_bin, ctx.vendor_dir, league_key,
+                    proxy, candidate_names=names,
+                )
+            games = result.get("games") or []
+            if games:
+                status = "ok"
+            elif result.get("wrong_catalog"):
+                status = "wrong_catalog"
+        except NodeBridgeError as e:
+            logger.warning("CLV: scraper fallo para %s: %s", league_key, e)
+            status = "scraper_failed"
+        duration_ms = int((asyncio.get_event_loop().time() - t0) * 1000)
+        await record_activity(
+            ctx.pool, "scrape", ok=bool(games), sport_id=sport_id, league=league_key,
+            status=status, n_candidates=len(pending), n_scraped=len(games),
+            duration_ms=duration_ms, source="clv",
+        )
+
+        to_insert = []
+        matched_pks = set()
+        for scraped in games:
+            cand = _match_scraped_game(scraped, cands)
+            if cand is None:
+                continue
+            values = _values_from_scraped(scraped)
+            for p in pending:
+                if p["game_pk"] != cand.game_pk:
+                    continue
+                close, opp, line = closing_for_pick(values, p["market"], p["pick_side"])
+                if close is None:
+                    continue
+                gdt = cand.game_datetime_utc
+                if gdt is not None and gdt.tzinfo is None:
+                    gdt = gdt.replace(tzinfo=dt.timezone.utc)
+                mins = round((gdt - now).total_seconds() / 60, 1) if gdt else None
+                to_insert.append({
+                    "game_pk": str(cand.game_pk), "league": LEAGUE_LABEL.get(sport_id),
+                    "market": p["market"], "pick_side": _side_base(p["pick_side"]),
+                    "closing_odds": close, "closing_opp_odds": opp, "closing_line": line,
+                    "minutes_to_start": mins, "bookmaker": "Bet365", "source": "cuotasahora",
+                    "captured_at": now.isoformat(),
+                })
+                matched_pks.add(p["game_pk"])
+        if to_insert:
+            try:
+                await ctx.supabase.insert(ctx.http_client, "pick_closing_lines", to_insert)
+                logger.info("CLV: %s cierres capturados (%s, intento %s)", len(to_insert), league_key, attempt + 1)
+                total_inserted += len(to_insert)
+            except Exception:
+                logger.exception("CLV: fallo guardando pick_closing_lines (%s)", league_key)
+
+        pending = [p for p in pending if p["game_pk"] not in matched_pks]
+        if not pending:
+            break  # ya se capturo cierre para todos los picks pedidos
+        if status not in ("empty", "scraper_failed", "wrong_catalog"):
+            break  # trajo pagina real pero no matcheo -- reintentar no lo arregla, es problema de nombres
+        if attempt >= CAPTURE_RETRIES:
+            break
+        mins_to_start = _min_minutes_to_start()
+        if mins_to_start is not None and mins_to_start < 2:
+            logger.info("CLV: %s a <2min del inicio mas cercano -- no se reintenta mas", league_key)
+            break
+        ok, detail = await rotate_tor_circuit()
+        logger.info("CLV retry %s/%s (%s) %s -- NEWNYM %s (%s)",
+                     attempt + 1, CAPTURE_RETRIES, status, league_key, "ok" if ok else "FALLO", detail)
+        await record_activity(
+            ctx.pool, "rotate", ok=ok, sport_id=sport_id, league=league_key,
+            status=f"retry_{status}", detail=detail, source="clv_retry",
+        )
+        await asyncio.sleep(AUTOFETCH_BACKOFF_S[min(attempt, len(AUTOFETCH_BACKOFF_S) - 1)])
+    return total_inserted
 
 
 async def capture_closing_lines_tick(ctx: PipelineContext) -> None:
