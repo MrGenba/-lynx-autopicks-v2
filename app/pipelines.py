@@ -28,6 +28,20 @@ logger = logging.getLogger(__name__)
 
 LEAGUE_KEY = {1: "mlb", 11: "milb", 23: "lmb"}
 LEAGUE_LABEL = {1: "MLB", 11: "MiLB", 23: "LMB"}
+
+# Aviso de banda de edge MLB (2026-09-02, creado con Fable): HC/OU con edge en [8%, umbral de
+# publicacion) -- la banda que el analisis in-sample dio rentable (HC 8-18%: hit 73.3% ROI +36%
+# n=15; OU: hit 55.3% ROI +5.6% n=47; ML en esa banda PIERDE, por eso queda fuera. Ver CLAUDE.md
+# "¿MLB bate al mercado?"). Es SOLO un aviso al chat privado del admin, NUNCA publica al canal ni
+# toca el umbral del 18% (regla del proyecto: umbrales intocables sin backtest concluyente -- el
+# paper-trading paper_trade_mlb_pockets.js esta validando la banda fuera de muestra).
+# Dedup en memoria por (game_pk, market, side): se avisa en la PRIMERA pasada que cruza (abridores
+# o lineup); la pasada de lineup solo re-avisa si es un cruce nuevo que abridores no señalo.
+# Se pierde el dedup si el contenedor se reinicia -- peor caso, un aviso duplicado, aceptable.
+EDGE_ALERT_SPORT_ID = 1
+EDGE_ALERT_MARKETS = {"HC", "OU"}
+EDGE_ALERT_MIN = 0.08
+_edge_alert_keys: set = set()
 CANDIDATES_HISTORY_TABLE = {1: "mlb_candidates_history", 11: "candidates_history", 23: "lmb_candidates_history"}
 # Columnas reales por tabla (verificadas contra Supabase 2026-07-11 antes de escribir -- mismo
 # bug ya sufrido una vez con prob_edge faltante en mlb_picks_history, ver CLAUDE.md/KNOWN_ISSUES).
@@ -896,6 +910,35 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
     # evaluados, no solo el mejor), se haya publicado o no en el canal de produccion.
     full_text = format_full_analysis(league_label, pipeline, away_team, home_team, result, lineup_incomplete)
     await ctx.telegram.send_message(ctx.admin_chat_id, full_text)
+
+    # Aviso destacado de banda de edge MLB (ver constantes EDGE_ALERT_* arriba). Solo informativo,
+    # solo al admin -- nunca bloquea ni altera la publicacion normal.
+    if sport_id == EDGE_ALERT_SPORT_ID:
+        try:
+            avisos = []
+            for c in result.get("candidates") or []:
+                m = (c.get("market") or "").upper()
+                e = c.get("edge") or 0
+                thr = c.get("edge_threshold") or 0.18
+                if m in EDGE_ALERT_MARKETS and EDGE_ALERT_MIN <= e < thr:
+                    k = (game_pk, m, (c.get("pick_side") or "").upper())
+                    if k in _edge_alert_keys:
+                        continue
+                    _edge_alert_keys.add(k)
+                    linea = c.get("total_line") if m == "OU" else c.get("hc_value")
+                    avisos.append(
+                        f"  {m} {c.get('pick_side')}" + (f" {linea}" if linea is not None else "")
+                        + f" @ {c.get('odds')}  ·  edge {e * 100:.1f}%"
+                    )
+            if avisos:
+                pipeline_label = "abridores" if pipeline == 1 else "lineup completo"
+                await ctx.telegram.send_message(
+                    ctx.admin_chat_id,
+                    f"🔔 AVISO edge MLB — banda 8-18% (no se publica)\n"
+                    f"{away_team} @ {home_team} · {pipeline_label}\n" + "\n".join(avisos),
+                )
+        except Exception:
+            logger.exception("fallo el aviso de banda de edge MLB para game_pk=%s", game_pk)
 
     if published:
         text = format_pick_message(league_label, pipeline, away_team, home_team, game_obj, result, lineup_incomplete)
