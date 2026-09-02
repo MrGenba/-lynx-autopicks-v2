@@ -52,19 +52,20 @@ CANDIDATES_HISTORY_COLUMNS = {
         "prob_implied", "prob_edge", "edge", "edge_threshold", "data_score", "published", "result",
         "total_line", "hc_value", "diag_flags", "away_runs_predicted", "home_runs_predicted",
         "league", "created_at", "matchup_label", "prob_model", "market_prob", "fair_odds",
-        "model_version", "source",
+        "model_version", "source", "odds_captured_at",
     },
     "candidates_history": {
         "game_id", "game_date", "market", "pick_side", "pick_team", "odds", "prob_estimated",
         "prob_implied", "prob_edge", "edge", "edge_threshold", "data_score", "published", "result",
         "total_line", "hc_value", "diag_flags", "away_runs_predicted", "home_runs_predicted",
         "league", "created_at", "matchup_label", "away_team", "home_team", "source",
+        "odds_captured_at",
     },
     "lmb_candidates_history": {
         "game_id", "game_date", "market", "pick_side", "pick_team", "odds", "prob_estimated",
         "prob_implied", "prob_edge", "edge", "edge_threshold", "data_score", "published", "result",
         "total_line", "hc_value", "diag_flags", "away_runs_predicted", "home_runs_predicted",
-        "league", "created_at", "source",
+        "league", "created_at", "source", "odds_captured_at",
     },
 }
 
@@ -725,7 +726,8 @@ def _pick_team_for(pick_side: Optional[str], away_team: str, home_team: str) -> 
 
 
 def build_candidates_history_rows(
-    sport_id: int, game_pk: int, game_date, away_team: str, home_team: str, result: dict, published_key
+    sport_id: int, game_pk: int, game_date, away_team: str, home_team: str, result: dict, published_key,
+    odds_captured_at=None,
 ) -> tuple[str, list[dict]]:
     """Mapea los candidatos de un pipeline run al esquema real de *_candidates_history (Supabase),
     marcados con source='autopicks_v2' para distinguirlos de los de produccion (n8n). Solo se
@@ -747,6 +749,11 @@ def build_candidates_history_rows(
     # calidad de datos real (se veian todos los candidatos MiLB con data_score=0). Usar el del
     # resultado como respaldo cuando el candidato no lo trae.
     result_ds = result.get("data_score")
+    # FIX #2 (2026-09-02): momento en que se capturo la cuota usada (game_odds.updated_at). Sin
+    # esto es imposible saber si un candidato se evaluo con una cuota rancia -- el problema que
+    # el usuario detecto con el pick UNDER de Toledo (publicado a 2.05 cuando el mercado ya estaba
+    # a 1.87). Con esta columna, los backtests futuros pueden filtrar por antiguedad de cuota.
+    odds_ts_iso = odds_captured_at.isoformat() if hasattr(odds_captured_at, "isoformat") else odds_captured_at
 
     rows = []
     for c in result.get("candidates") or []:
@@ -776,6 +783,7 @@ def build_candidates_history_rows(
             "model_version": "autopicks_v2",
             "away_team": away_team, "home_team": home_team,
             "source": "autopicks_v2",
+            "odds_captured_at": odds_ts_iso,
         }
         rows.append({k: v for k, v in full_row.items() if k in allowed})
     return table, rows
@@ -900,7 +908,8 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
     # Supabase, source='autopicks_v2'). No critico: si falla, no bloquea el envio de mensajes.
     try:
         table, rows = build_candidates_history_rows(
-            sport_id, game_pk, game_obj.get("game_date"), away_team, home_team, result, published_key
+            sport_id, game_pk, game_obj.get("game_date"), away_team, home_team, result, published_key,
+            odds_captured_at=odds["updated_at"] if "updated_at" in odds else None,
         )
         await ctx.supabase.insert(ctx.http_client, table, rows)
     except Exception:

@@ -38,6 +38,17 @@ ACTIVE_STATUSES = {"Preview", "Pre-Game", "Warmup", "Scheduled"}
 # sin subir tambien esa otra.
 LOOKAHEAD = dt.timedelta(hours=6)
 
+# FIX #1 (2026-09-02): antiguedad maxima tolerada de una cuota ALMACENADA antes de publicar con
+# ella. Gate A dispara pipeline 1 con lo que haya en game_odds sin re-scrapear, decision tomada el
+# 2026-07-11 para no gastar el limite de 100 peticiones/hora de odds-api.io. Esa razon es OBSOLETA
+# desde la migracion a Tor (gratis) -- y el coste real de mantenerla lo encontro el usuario el
+# 2026-09-02: un pick MiLB publicado a cuota 2.05 (edge 18.9%) cuando el mercado ya estaba a 1.87
+# (edge 8.5%, por debajo del umbral: no se habria publicado). Ver CLAUDE.md "CUOTA RANCIA".
+# Con esto, si la cuota guardada supera este umbral de edad, se re-scrapea ANTES de disparar.
+# 20 min es un compromiso: corto para que el precio siga siendo real, largo para no re-scrapear en
+# cada tick del detector (que corre cada 180s) ni saturar el semaforo de Tor con ~30 partidos/dia.
+ODDS_MAX_AGE_BEFORE_FIRE = dt.timedelta(minutes=20)
+
 
 async def upsert_game(pool: asyncpg.Pool, sport_id: int, g: mlb_api.ScheduledGame, game_dt: dt.datetime) -> Optional[dt.datetime]:
     """Devuelve el lineup_confirmed_at YA guardado (si lo habia) -- el llamador lo usa para
@@ -221,6 +232,35 @@ async def detector_tick(ctx: PipelineContext) -> None:
                     first_pitchers = await mark_pitchers_confirmed(ctx.pool, sport_id, g.game_pk)
                     odds = await get_odds(ctx.pool, sport_id, g.game_pk)
                     if odds is not None:
+                        # FIX #1 (2026-09-02): no publicar con una cuota rancia. Si la guardada
+                        # supera ODDS_MAX_AGE_BEFORE_FIRE, re-scrapear primero (Tor es gratis desde
+                        # la migracion; la razon original de no hacerlo -- cuota de odds-api.io --
+                        # ya no aplica). Si el re-scrape lo consigue, autofetch_single_game ya
+                        # dispara el pipeline via _check_gates_and_fire y aqui no hay que hacer
+                        # nada mas; si falla, se sigue con la cuota vieja (mejor un pronostico con
+                        # precio viejo que ningun pronostico) pero queda avisado en el log.
+                        odds_age = None
+                        if odds["updated_at"] is not None:
+                            odds_age = dt.datetime.now(dt.timezone.utc) - odds["updated_at"]
+                        if odds_age is not None and odds_age > ODDS_MAX_AGE_BEFORE_FIRE:
+                            logger.info(
+                                "detector Gate A: cuota de game_pk=%s tiene %s de antigüedad (>%s) -- re-scrapeando antes de publicar",
+                                g.game_pk, odds_age, ODDS_MAX_AGE_BEFORE_FIRE,
+                            )
+                            try:
+                                got_fresh = await autofetch_single_game(
+                                    ctx, sport_id, g.game_pk, g.away_team_name, g.home_team_name, game_dt
+                                )
+                            except Exception:
+                                logger.exception("detector Gate A: re-scrape de cuota fallo game_pk=%s", g.game_pk)
+                                got_fresh = False
+                            if got_fresh:
+                                # autofetch ya disparo el pipeline con la cuota fresca.
+                                continue
+                            logger.warning(
+                                "detector Gate A: no se pudo refrescar la cuota de game_pk=%s -- se dispara con la vieja (%s)",
+                                g.game_pk, odds_age,
+                            )
                         await try_fire_pipeline(ctx, sport_id, g.game_pk, 1, "pitchers_only", g.away_team_name, g.home_team_name)
                     # Gate A: auto-fetch de cuotas por ABRIDORES para MiLB y LMB (2026-07-31). Ambas
                     # sufren lineups tardios/ausentes en StatsAPI: si las cuotas cuelgan solo del
