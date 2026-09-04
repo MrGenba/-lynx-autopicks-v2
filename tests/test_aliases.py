@@ -102,3 +102,26 @@ async def test_relearn_updates_team_id(pool):
     await learn_alias(pool, sport_id=1, alias_text="Los Tigres", team_id=999, team_name="Otro Equipo")
     resolved = await resolve_team_id(pool, sport_id=1, raw_text="Los Tigres")
     assert resolved == 999
+
+
+def test_score_loose_ciudad_al_final_lmb():
+    """LMB (2026-09-04): cuotasahora da la ciudad suelta y en los nombres mexicanos va al final,
+    asi que la regla del prefijo no casa y el partido entero se quedaba por debajo del umbral."""
+    from app.aliases import score_loose
+
+    # score() antiguo: 1 punto por lado -> 2 en total, por debajo de MIN_MATCH_SCORE=4
+    assert score("Tabasco", "Olmecas de Tabasco") == 1
+    assert score("Puebla", "Pericos de Puebla") == 1
+
+    # score_loose: 2 por lado -> 4, justo en el umbral, sin bajarlo
+    assert score_loose("Tabasco", "Olmecas de Tabasco") == 2
+    assert score_loose("Puebla", "Pericos de Puebla") == 2
+    assert score_loose("Mexico", "Diablos Rojos del Mexico") == 2
+
+    # no se degrada lo que ya funcionaba
+    assert score_loose("DET Tigers", "det tigers") == 3
+    assert score_loose("Detroit", "Detroit Tigers") == 2
+
+    # y no inventa parentescos entre equipos distintos
+    assert score_loose("Tabasco", "Pericos de Puebla") == 0
+    assert score_loose("Detroit Tigers", "Cleveland Guardians") == 0

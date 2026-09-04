@@ -234,7 +234,9 @@ def _match_scraped_game(scraped: dict, candidates: list[aliases.CandidateGame]) 
     perder una cuota que asignarla al partido equivocado)."""
     scored = []
     for c in candidates:
-        s = aliases.score(scraped.get("away_team"), c.away_team_name) + aliases.score(scraped.get("home_team"), c.home_team_name)
+        # score_loose (no score): admite que el nombre scrapeado sea la ciudad suelta de un
+        # "<Apodo> de <Ciudad>" -- ver aliases.score_loose, sin lo cual LMB no empareja nunca.
+        s = aliases.score_loose(scraped.get("away_team"), c.away_team_name) + aliases.score_loose(scraped.get("home_team"), c.home_team_name)
         if s < MIN_MATCH_SCORE:
             continue
         scored.append((s, c))

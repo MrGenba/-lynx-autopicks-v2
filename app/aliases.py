@@ -41,6 +41,39 @@ def score(a: Optional[str], b: Optional[str]) -> int:
     return sum(1 for w in na.split(" ") if w and w in nb)
 
 
+# Particulas sin valor discriminante dentro de un nombre de equipo. Existen sobre todo por LMB,
+# cuyos equipos se llaman "<Apodo> de <Ciudad>" (Olmecas de Tabasco, Pericos de Puebla...).
+_STOPWORDS = {"de", "del", "los", "las", "la", "el"}
+
+
+def score_loose(a: Optional[str], b: Optional[str]) -> int:
+    """score() mas contencion por palabras COMPLETAS: si todas las palabras significativas de un
+    nombre aparecen enteras en el otro, vale 2 -- el mismo valor que ya vale "uno es prefijo del
+    otro".
+
+    Motivo (2026-09-04, LMB sin cuotas desde el 2-sep): cuotasahora nombra a los equipos de LMB
+    solo por la ciudad ("Tabasco @ Puebla") y en los nombres mexicanos la ciudad va al FINAL
+    ("Olmecas de Tabasco"), asi que la regla del prefijo nunca casa y cada lado se quedaba en 1
+    punto -- el partido entero en 2, por debajo del MIN_MATCH_SCORE=4 de odds_autofetch. Le pasa
+    a los 20 equipos de la liga, de ahi los 282 sin_match de 416 intentos que reportaba el embudo.
+
+    Verificado sin un solo falso positivo generando todas las formas cortas plausibles (cada
+    palabra significativa y la cola tras "de"/"del") de los 30 equipos de MLB, 64 de MiLB y 20 de
+    LMB y comprobando contra que equipo emparejaria cada una. La guardia anti-ambiguedad de quien
+    llama sigue siendo la red de seguridad: si dos equipos empatan, no se asigna nada.
+
+    score() NO se toca: replica el del nodo n8n "Buscar Matchup MLB" y lo usan otros caminos.
+    """
+    s = score(a, b)
+    if s >= 2:
+        return s
+    wa = [w for w in norm(a).split(" ") if w and w not in _STOPWORDS]
+    wb = [w for w in norm(b).split(" ") if w and w not in _STOPWORDS]
+    if wa and wb and (set(wa) <= set(wb) or set(wb) <= set(wa)):
+        return 2
+    return s
+
+
 @dataclass
 class CandidateGame:
     sport_id: int
