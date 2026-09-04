@@ -366,6 +366,23 @@ def _pick_side_team(c: dict, away: str, home: str) -> str:
     return away
 
 
+def _side_label(c: dict, away: str, home: str) -> str:
+    """Lado apostado en texto legible para los mensajes del canal de cuotas: nombre del equipo en
+    ML/HC (el usuario pidio 2026-09-04 ver el equipo, no 'HOME'/'AWAY') y over/under tal cual en
+    totales, donde el lado no es un equipo. No toca el pick_side que se guarda en la BD."""
+    side = str(c.get("pick_side") or "")
+    upper = side.upper()
+    if "OVER" in upper or "UNDER" in upper:
+        return side
+    if c.get("pick_team"):
+        return str(c["pick_team"])
+    if "AWAY" in upper:
+        return away
+    if "HOME" in upper:
+        return home
+    return side
+
+
 def _handicap_line(c: dict, game_obj: dict, away: str, home: str) -> Optional[float]:
     side = str(c.get("pick_side") or "").upper()
     away_ln = _n(game_obj.get("away_hc_line") if game_obj.get("away_hc_line") is not None else game_obj.get("away_hc_val"))
@@ -706,7 +723,7 @@ def format_full_analysis(league_label: str, pipeline: int, away_team: str, home_
             market_lbl = f"{market} {'+' if _hv >= 0 else ''}{_js_num_str(_hv)}"
         else:
             market_lbl = market
-        lines.append(f"{mark} {market_lbl} — {pick_side}{published_mark}")
+        lines.append(f"{mark} {market_lbl} — {_side_label(c, away_team, home_team)}{published_mark}")
         lines.append(
             f"   Cuota: {_fmt_odds(odds)}  |  Prob. modelo: {prob_model * 100:.1f}%  |  "
             f"Prob. mercado: {prob_implied * 100:.1f}%{blended_txt}"
@@ -989,7 +1006,7 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
                     _edge_alert_keys.add(k)
                     linea = c.get("total_line") if m == "OU" else c.get("hc_value")
                     avisos.append(
-                        f"  {m} {c.get('pick_side')}" + (f" {linea}" if linea is not None else "")
+                        f"  {m} {_side_label(c, away_team, home_team)}" + (f" {linea}" if linea is not None else "")
                         + f" @ {c.get('odds')}  ·  edge {e * 100:.1f}%"
                     )
             if avisos:
