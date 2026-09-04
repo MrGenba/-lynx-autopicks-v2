@@ -134,3 +134,49 @@ def test_innings_no_estandar():
     assert _innings_no_estandar({}) is None                         # desconocido -> no bloquea
     assert _innings_no_estandar({"scheduled_innings": None}) is None
     assert _innings_no_estandar({"scheduled_innings": 0}) is None   # dato basura -> no bloquea
+
+
+def test_prob_modelo_muestra_la_calibrada():
+    """2026-09-04: el mensaje enseñaba la probabilidad CRUDA como 'Prob. modelo' (84.7% cuando la
+    que decidia era 68.5%). La cruda esta sesgada arriba; la calibrada no. Ahora manda la
+    calibrada y la cruda va detras, etiquetada."""
+    from app.pipelines import format_pick_message
+
+    cand = {"market": "UNDER", "pick_side": "under", "odds": 1.80, "total_line": 11.5,
+            "edge": 0.233, "edge_threshold": 0.18, "prob_estimated": 0.685,
+            "prob_model": 0.847, "prob_implied": 0.51}
+    game = {"scheduled_innings": 9, "double_header": "N", "game_number": 1}
+    msg = format_pick_message("MiLB AAA", 1, "A", "B", game,
+                              {"data_score": 0.72, "best_pick": cand, "candidates": [cand]})
+    linea = next(l for l in msg.split("\n") if "Prob. modelo" in l)
+    assert "68.5" in linea                      # manda la calibrada
+    assert "sin calibrar 84.7" in linea         # la cruda, detras y etiquetada
+    assert linea.index("68.5") < linea.index("84.7")
+
+    # MiLB/LMB emiten raw_prob_estimated en vez de prob_model: mismo resultado
+    c2 = {k: v for k, v in cand.items() if k != "prob_model"} | {"raw_prob_estimated": 0.847}
+    msg2 = format_pick_message("MiLB AAA", 1, "A", "B", game,
+                               {"data_score": 0.72, "best_pick": c2, "candidates": [c2]})
+    assert "sin calibrar 84.7" in next(l for l in msg2.split("\n") if "Prob. modelo" in l)
+
+    # sin cruda disponible: no se inventa nada ni sale N/A
+    c3 = {k: v for k, v in cand.items() if k != "prob_model"}
+    msg3 = format_pick_message("MiLB AAA", 1, "A", "B", game,
+                               {"data_score": 0.72, "best_pick": c3, "candidates": [c3]})
+    linea3 = next(l for l in msg3.split("\n") if "Prob. modelo" in l)
+    assert "68.5" in linea3 and "sin calibrar" not in linea3
+
+
+def test_raw_prob_estimated_se_guarda_en_candidates():
+    """La cruda de MiLB/LMB no se persistia en ningun sitio -> el numero mas visible del mensaje
+    era imposible de auditar. Columna desplegada el 2026-09-04 (deploy_raw_prob_estimated.js)."""
+    from app.pipelines import build_candidates_history_rows
+
+    result = {"data_score": 0.8, "away_runs": 4.1, "home_runs": 4.4, "candidates": [
+        {"market": "UNDER", "pick_side": "under", "odds": 1.9, "prob_estimated": 0.55,
+         "raw_prob_estimated": 0.61, "prob_implied": 0.52, "edge": 0.045, "edge_threshold": 0.18},
+    ]}
+    tabla, filas = build_candidates_history_rows(11, 1, "2026-09-04", "A", "B", result, None)
+    assert tabla == "candidates_history"
+    assert filas[0]["raw_prob_estimated"] == 0.61
+    assert filas[0]["prob_estimated"] == 0.55   # la calibrada sigue siendo la que manda

@@ -64,13 +64,13 @@ CANDIDATES_HISTORY_COLUMNS = {
         "prob_implied", "prob_edge", "edge", "edge_threshold", "data_score", "published", "result",
         "total_line", "hc_value", "diag_flags", "away_runs_predicted", "home_runs_predicted",
         "league", "created_at", "matchup_label", "away_team", "home_team", "source",
-        "odds_captured_at",
+        "odds_captured_at", "raw_prob_estimated",
     },
     "lmb_candidates_history": {
         "game_id", "game_date", "market", "pick_side", "pick_team", "odds", "prob_estimated",
         "prob_implied", "prob_edge", "edge", "edge_threshold", "data_score", "published", "result",
         "total_line", "hc_value", "diag_flags", "away_runs_predicted", "home_runs_predicted",
-        "league", "created_at", "source", "odds_captured_at",
+        "league", "created_at", "source", "odds_captured_at", "raw_prob_estimated",
     },
 }
 
@@ -571,10 +571,17 @@ def format_pick_message(
 
     odds = _to_odds_decimal(lead.get("odds"))
     prob_blended = _n(lead.get("prob_blended"))
-    # 2026-08-05: MLB emite prob_model; MiLB/LMB emiten raw_prob_estimated (prob del modelo antes de
-    # calibrar) pero NO prob_model -> el mensaje salia "Prob. modelo: N/A". Fallback a
-    # raw_prob_estimated, y en ultimo caso a prob_estimated (el calibrado), para no mostrar N/A.
-    prob_model = _n(lead.get("prob_model")) or _n(lead.get("raw_prob_estimated")) or _n(lead.get("prob_estimated"))
+    # 2026-09-04: "Prob. modelo" pasa a mostrar la probabilidad CALIBRADA (prob_estimated), que es
+    # la que gobierna el edge y la publicacion y la unica verificada. Antes mostraba la CRUDA
+    # (prob_model en MLB, raw_prob_estimated en MiLB/LMB) y era el numero mas grande y visible del
+    # mensaje siendo el menos fiable: auditada contra 2.364 candidatos MLB resueltos, la cruda
+    # promete 66.8% y entrega 57.4% en el bin 65-70% (n=162, t=-2.41) y 73.9% -> 63.5% por encima
+    # del 70%; la calibrada no se desvia significativamente en ningun bin. Caso que lo destapo:
+    # un pick anunciaba "Prob. modelo 84.7%" cuando la que decidia era 68.5%.
+    # La cruda se sigue enseñando, detras y etiquetada, para no perder informacion.
+    prob_calibrada = _n(lead.get("prob_estimated"))
+    prob_cruda = _n(lead.get("prob_model")) or _n(lead.get("raw_prob_estimated"))
+    prob_model = prob_calibrada if prob_calibrada is not None else (prob_cruda or _n(lead.get("prob_estimated")))
     prob_tip = _n(lead.get("prob_estimated") if lead.get("prob_estimated") is not None else (prob_blended if prob_blended is not None else prob_model))
     prob_imp = _n(lead.get("prob_implied"))
     push_prob = _n(lead.get("push_prob")) or 0
@@ -647,7 +654,8 @@ def format_pick_message(
         f"🎰 Apuesta: {pick_txt}",
         f"💰 Cuota: {odds:.2f}" if odds is not None else "💰 Cuota: N/A",
         "📊 Prob. modelo: " + _pct(prob_model) + (
-            f" → blend {_pct(prob_blended)}" if (prob_blended is not None and prob_model is not None and abs(prob_blended - prob_model) > 0.005) else ""
+            f" · sin calibrar {_pct(prob_cruda)}"
+            if (prob_cruda is not None and prob_model is not None and abs(prob_cruda - prob_model) > 0.005) else ""
         ),
         f"📊 Prob. mercado: {_pct(prob_imp)}",
         f"💰 Cuota justa: {fair_tip:.2f}" if fair_tip is not None else "💰 Cuota justa: -",
@@ -819,6 +827,12 @@ def build_candidates_history_rows(
             "away_team": away_team, "home_team": home_team,
             "source": "autopicks_v2",
             "odds_captured_at": odds_ts_iso,
+            # 2026-09-04: probabilidad del motor ANTES de calibrar -- la que el mensaje enseña como
+            # "Prob. modelo". En MLB ya se guardaba (prob_model); en MiLB/LMB no se guardaba en
+            # ningun sitio, asi que el numero mas visible del mensaje era IMPOSIBLE de auditar.
+            # La auditoria de MLB del mismo dia mostro que esa cruda esta sesgada arriba (promete
+            # 66.8% y entrega 57.4% en el bin 65-70%, n=162, t=-2.41), de ahi el interes.
+            "raw_prob_estimated": c.get("raw_prob_estimated"),
         }
         rows.append({k: v for k, v in full_row.items() if k in allowed})
     return table, rows
