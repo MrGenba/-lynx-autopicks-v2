@@ -122,3 +122,15 @@ def test_no_pick_side_line_leaks_into_milb_side():
     # aunque el pick_side canonico traiga la linea, 'side' queda limpio
     _, row = build_picks_history_row(11, 1, "2026-07-24", "A", "B", RESULT, CAND_OU, 1)
     assert row["side"] in {"over", "under"}
+
+
+def test_innings_no_estandar():
+    """Guarda 2026-09-04: los DH de 7 entradas cotizan con linea de 9 -> no publicar."""
+    from app.pipelines import _innings_no_estandar
+
+    assert _innings_no_estandar({"scheduled_innings": 7}) == 7      # DH -> bloquea
+    assert _innings_no_estandar({"scheduled_innings": 7.0}) == 7
+    assert _innings_no_estandar({"scheduled_innings": 9}) is None   # normal -> publica
+    assert _innings_no_estandar({}) is None                         # desconocido -> no bloquea
+    assert _innings_no_estandar({"scheduled_innings": None}) is None
+    assert _innings_no_estandar({"scheduled_innings": 0}) is None   # dato basura -> no bloquea

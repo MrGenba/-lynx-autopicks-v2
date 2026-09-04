@@ -537,6 +537,19 @@ def _build_analisis_fallback(away_exp, home_exp, total_exp, data_score, edge_ev)
     return (" · ".join(parts) + ".") if parts else "Análisis no disponible."
 
 
+def _innings_no_estandar(game_obj: dict) -> Optional[int]:
+    """Entradas programadas cuando NO son 9 (dobles jornadas de 7); None si son 9 o se desconocen.
+
+    Misma normalizacion que format_pick_message: por debajo de 5 se considera dato basura y se
+    trata como 9 (no bloquear por un valor corrupto).
+    """
+    innings_raw = _n(game_obj.get("scheduled_innings"))
+    if innings_raw is None or innings_raw < 5:
+        return None
+    innings = round(innings_raw)
+    return innings if innings != 9 else None
+
+
 def format_pick_message(
     league_label: str, pipeline: int, away_team: str, home_team: str,
     game_obj: dict, result: dict, lineup_incomplete: bool = False,
@@ -970,6 +983,39 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
                 )
             except Exception:
                 logger.exception("fallo avisando del pick sin linea")
+            best_pick = None
+            published = False
+            published_key = None
+
+    # Guard 2026-09-04: no publicar en partidos que no sean de 9 entradas (dobles jornadas de 7).
+    # Caso real que lo destapo: Rochester @ Syracuse DH G1 (7 entradas) con la casa cotizando total
+    # 11.5 -- una linea de 9. El motor proyecta BIEN las 7 entradas (3.89+3.85=7.74 carreras), pero
+    # restar eso contra una linea de 9 fabrica un edge del 23.3% que no existe: cada lado de la
+    # resta mide una cosa distinta. cuotasahora sirve una unica pagina por enfrentamiento, asi que
+    # no hay forma de saber a cual de los dos partidos del DH pertenece el precio -- de hecho el
+    # mismo juego de cuotas se habia guardado dos dias antes para el OTRO partido de esa doble.
+    # Verificado en el historico (carreras reales menos linea / acierto del UNDER):
+    #     9 entradas: +0.13, UNDER 50.1% (n=337) -- mercado eficiente
+    #     7 entradas: -1.96, UNDER 75.0% (n=24)  -- las dos entradas que faltan
+    # Y 3 de los 5 picks publicados sobre partidos de 7 entradas que llegaron a resolverse acabaron
+    # VOID: la casa no los liquido como nuestro evento. Mismo criterio conservador que la guarda de
+    # arriba -- el candidato SI se guarda (calibracion), solo se suprime la publicacion.
+    if best_pick:
+        _inn = _innings_no_estandar(game_obj)
+        if _inn is not None:
+            logger.warning(
+                "pick NO publicado: partido de %s entradas, la linea del mercado es de 9 (game_pk=%s)",
+                _inn, game_pk,
+            )
+            try:
+                await ctx.telegram.send_message(
+                    ctx.admin_chat_id,
+                    f"⚠️ {league_label} {away_team} @ {home_team}: pick NO publicado -- el partido es "
+                    f"de {_inn} entradas y la cuota que sirve la casa es de 9. No se puede comparar "
+                    f"la proyección con esa línea.",
+                )
+            except Exception:
+                logger.exception("fallo avisando del pick de entradas no estandar")
             best_pick = None
             published = False
             published_key = None
