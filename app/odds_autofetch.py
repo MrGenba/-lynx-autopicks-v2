@@ -345,6 +345,58 @@ async def _notify_status_change(ctx: PipelineContext, sport_id: int, ok: bool, d
         logger.info("cuotas %s: %s", label, detail)
 
 
+# Campos de _values_from_scraped que son LINEA (el numero de la apuesta) y campos que son PRECIO.
+# La distincion la usa _fusionar_duplicados: dos listados del mismo partido pueden diferir en el
+# precio sin que eso signifique que uno de los dos es otro partido, pero si difieren en la LINEA
+# ya no se puede afirmar que hablen del mismo mercado.
+_CAMPOS_LINEA = ("away_hc_val", "home_hc_val", "total_line")
+_CAMPOS_PRECIO = ("away_ml", "home_ml", "away_hc_odds", "home_hc_odds", "over_odds", "under_odds")
+
+
+def _fusionar_duplicados(entries: list[tuple[dict, dict]]) -> dict | None:
+    """Fusiona 2+ listados del MISMO partido quedandose con el precio mas conservador de cada
+    mercado. Devuelve None si no se puede afirmar que sean el mismo evento.
+
+    Contexto (2026-09-04): cuotasahora lista el mismo enfrentamiento DOS veces, con las mismas
+    lineas y precios ligeramente distintos. Caso real verificado, LMB Tabasco @ Puebla:
+        entrada 1: ML 1.83/1.83 · total 11.5 O1.87/U1.80 · HC +1.5@1.45 / -1.5@2.60
+        entrada 2: ML 1.83/1.83 · total 11.5 O1.83/U1.83 · HC +1.5@1.43 / -1.5@2.70
+    El fail-safe original (2026-07-27) descartaba LAS DOS ante cualquier diferencia, porque se
+    escribio pensando en duplicados que son *otro partido* (el de manana, o un fantasma). Con eso,
+    ese partido no conseguia cuotas por mucho que rotara el circuito: tres intentos seguidos en
+    `sin_match`. La firma es identica en MLB (`Detroit Tigers @ Cleveland Guardians` duplicado,
+    2 scrapeados / 0 asignados), donde los nombres no pueden fallar.
+
+    Criterio para fusionar, deliberadamente estricto:
+      - misma hora de inicio segun el propio sitio (si difiere, son partidos distintos -> None);
+      - mismas LINEAS donde ambos listados opinan (si una difiere -> None).
+    Cumplido eso, de cada precio se toma el MINIMO, que es siempre el peor para nosotros: el edge
+    resultante solo puede salir menor, nunca mayor, asi que esto no puede inventar un pick. Es la
+    misma direccion de prudencia que el fix de la cuota rancia del 2026-09-02.
+
+    Nota: tomar el minimo lado a lado puede juntar dos precios que ninguna entrada ofrecia a la
+    vez, con un overround algo mayor que el de cada una. Es intencionado y va a favor de
+    seguridad; NO se re-valida con check_overround para no descartar por ser conservadores (cada
+    entrada ya paso su propia comprobacion dentro de _values_from_scraped).
+    """
+    horas = {str(sc.get("time") or "") for sc, _ in entries}
+    if len(horas) > 1:
+        return None
+    for campo in _CAMPOS_LINEA:
+        distintas = {v[campo] for _, v in entries if v.get(campo) is not None}
+        if len(distintas) > 1:
+            return None
+
+    fusion = dict(entries[0][1])
+    for campo in _CAMPOS_LINEA:
+        vals = [v[campo] for _, v in entries if v.get(campo) is not None]
+        fusion[campo] = vals[0] if vals else None
+    for campo in _CAMPOS_PRECIO:
+        vals = [v[campo] for _, v in entries if v.get(campo) is not None]
+        fusion[campo] = min(vals) if vals else None
+    return fusion
+
+
 async def _apply_scraped_games(
     ctx: PipelineContext, sport_id: int, candidates: list[aliases.CandidateGame], games: list[dict],
 ) -> int:
@@ -389,15 +441,24 @@ async def _apply_scraped_games(
                 continue
 
         # Fail-safe ante duplicados conflictivos: mismo partido real scrapeado 2+ veces con cuotas
-        # distintas -> no fiarse de ninguna (probable partido erroneo/duplicado de cuotasahora).
-        if len(entries) > 1 and any(e[1] != entries[0][1] for e in entries[1:]):
-            logger.warning(
-                "autofetch: %s scrapes matchean game_pk=%s (%s @ %s) con cuotas DISTINTAS -- no se aplica ninguna (duplicado/partido erroneo de cuotasahora)",
+        # distintas. Afinado 2026-09-04 (ver _fusionar_duplicados): si los listados son el MISMO
+        # evento (misma hora, mismas lineas) y solo difieren en el precio, se fusionan tomando el
+        # precio mas conservador en vez de tirar los dos; si difieren en hora o en linea, se sigue
+        # descartando todo, que es para lo que se escribio el fail-safe originalmente.
+        scraped, values = entries[0]
+        if len(entries) > 1 and any(e[1] != values for e in entries[1:]):
+            fusion = _fusionar_duplicados(entries)
+            if fusion is None:
+                logger.warning(
+                    "autofetch: %s scrapes matchean game_pk=%s (%s @ %s) con LINEAS u hora distintas -- no se aplica ninguna (duplicado/partido erroneo de cuotasahora)",
+                    len(entries), cand.game_pk, cand.away_team_name, cand.home_team_name,
+                )
+                continue
+            logger.info(
+                "autofetch: %s listados del mismo partido game_pk=%s (%s @ %s) con lineas iguales -- fusionados al precio mas conservador",
                 len(entries), cand.game_pk, cand.away_team_name, cand.home_team_name,
             )
-            continue
-
-        scraped, values = entries[0]
+            values = fusion
         await _store_odds(ctx.pool, cand.sport_id, cand.game_pk, values, chat_id=0, message_id=0)
         matched_count += 1
 
