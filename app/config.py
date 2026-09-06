@@ -33,6 +33,8 @@ class Config:
     clv_capture_enabled: bool
     odds_snapshots_enabled: bool
     odds_snapshots_hour_utc: int
+    predictions_log_milb_enabled: bool
+    predictions_log_milb_hour_utc: int
     clv_capture_interval_seconds: int
     # Proxy del scraper de cuotas (vendor/run_odds_scraper.js) -- el VPS de Francia esta bloqueado
     # por cuotasahora.com por IP directa, asi que se sale por el Tor local (SOCKS 127.0.0.1:9050,
@@ -92,6 +94,12 @@ class Config:
             # las ~14:00, asi que ese scrape no compite con nada por el semaforo.
             odds_snapshots_enabled=os.environ.get("ODDS_SNAPSHOTS_ENABLED", "true").lower() == "true",
             odds_snapshots_hour_utc=int(os.environ.get("ODDS_SNAPSHOTS_HOUR_UTC", "11")),
+            # predictions_log de MiLB: el mu de TODOS los partidos del dia, tengan cuotas o no,
+            # para poder medir la calibracion de nivel sin sesgo de seleccion (ver
+            # predictions_log_milb.py). 17:00 UTC: la mayoria de abridores ya estan anunciados
+            # (se publican el mismo dia) y aun faltan horas para el primer lanzamiento (~20:00).
+            predictions_log_milb_enabled=os.environ.get("PREDICTIONS_LOG_MILB_ENABLED", "true").lower() == "true",
+            predictions_log_milb_hour_utc=int(os.environ.get("PREDICTIONS_LOG_MILB_HOUR_UTC", "17")),
             clv_capture_interval_seconds=int(os.environ.get("CLV_CAPTURE_INTERVAL_SECONDS", "300")),
             proxy_server=os.environ.get("PROXY_SERVER") or None,
             proxy_server_lmb=os.environ.get("PROXY_SERVER_LMB") or None,

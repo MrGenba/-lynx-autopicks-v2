@@ -21,6 +21,7 @@ from app.config import Config
 from app.dashboard import collect_state, render_html
 from app.detector import detector_tick
 from app.odds_snapshots import capture_early_snapshot_tick
+from app.predictions_log_milb import capture_predictions_tick
 from app.logging_setup import setup_logging
 from app.message_handler import handle_message
 from app.node_bridge import NodeBridgeError, run_odds_scraper
@@ -482,6 +483,18 @@ async def main() -> None:
         logger.info("odds_snapshots_enabled=true -- foto temprana diaria a las %s:00 UTC", cfg.odds_snapshots_hour_utc)
     else:
         logger.info("odds_snapshots_enabled=false -- sin foto temprana")
+
+    # predictions_log de MiLB: mu de TODOS los partidos del dia, con o sin cuotas. Es lo que
+    # permite medir la calibracion de nivel sin el sesgo de seleccion de mirar solo los partidos
+    # que consiguieron precio (hoy 237 de ~1.700). No usa Tor ni scraping.
+    if cfg.predictions_log_milb_enabled:
+        scheduler.add_job(
+            capture_predictions_tick, "cron", hour=cfg.predictions_log_milb_hour_utc, minute=0,
+            args=[ctx], max_instances=1, timezone="UTC",
+        )
+        logger.info("predictions_log_milb_enabled=true -- captura diaria a las %s:00 UTC", cfg.predictions_log_milb_hour_utc)
+    else:
+        logger.info("predictions_log_milb_enabled=false -- sin captura de predicciones MiLB")
 
     # Captura de linea de cierre para CLV (desactivada por defecto -- ver clv.py/config.py).
     if cfg.clv_capture_enabled:
