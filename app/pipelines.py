@@ -821,7 +821,11 @@ def build_candidates_history_rows(
             "away_runs_predicted": away_mu, "home_runs_predicted": home_mu,
             "league": league_label, "created_at": now_iso,
             "matchup_label": f"{away_team} @ {home_team}",
-            "prob_model": prob_model, "market_prob": prob_implied,
+            # 2026-09-06: con el de-vig del motor MLB, `prob_implied` pasa a ser la probabilidad
+            # DE-VIGGEADA (como ya era en MiLB/LMB) y la cruda 1/cuota viaja en `prob_implied_raw`.
+            # `market_prob` pasa a guardar la CRUDA para no perderla -- antes duplicaba
+            # `prob_implied`, asi que esto añade informacion en vez de quitarla.
+            "prob_model": prob_model, "market_prob": c.get("prob_implied_raw") or prob_implied,
             "fair_odds": round(1 / prob_final, 2) if prob_final else None,
             "model_version": "autopicks_v2",
             "away_team": away_team, "home_team": home_team,

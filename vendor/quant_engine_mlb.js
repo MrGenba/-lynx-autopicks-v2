@@ -106,6 +106,27 @@ function oddsToImplied(odds) {
   return decimalToImplied(americanToDecimal(odds));
 }
 
+// De-vig del mercado: normaliza las DOS implicitas crudas del par para que sumen 1, igual que
+// computeFairPair() hace con las dos del modelo.
+//
+// POR QUE (2026-09-06): `oddsToImplied()` devuelve 1/cuota, que LLEVA EL VIG DENTRO. Al mezclar
+// eso con la probabilidad del modelo, el blend heredaba el vig: medido sobre 1.090 mercados de
+// ventana limpia, las dos `prob_estimated` de un par sumaban 1.0282 en vez de 1.000 (las crudas
+// del motor, `prob_model`, sumaban 1.0000 exacto -> el motor calculaba bien, el blend era el que
+// inyectaba el margen). Efecto: cada lado inflado 1.41 puntos de probabilidad y el edge inflado
+// 2.65 puntos porcentuales, o sea que un candidato que mostraba edge 18% tenia en realidad 15.3%.
+// MiLB/LMB no lo sufren: alli `prob_implied` ya venia de-viggeada (suma 0.9996).
+//
+// Si falta un lado no se puede de-viggear y se cae a la cruda -- mismo comportamiento que antes,
+// pero es raro: en ventana limpia 1.090 de 1.090 mercados MLB tenian los dos lados.
+function devigPair(oddsA, oddsB) {
+  const a = oddsToImplied(oddsA), b = oddsToImplied(oddsB);
+  if (a == null || b == null) return null;
+  const total = a + b;
+  if (!(total > 0)) return null;
+  return { first: a / total, second: b / total, overround: total - 1 };
+}
+
 function computeFairPair(pA, pB) {
   const total = pA + pB;
   if (!total) return null;
@@ -281,7 +302,10 @@ function evalCandidate(probModel, probImplied, market, dataScore, odds, extra = 
 
   return {
     market, odds, edge, prob_model: round2(probModel),
-    prob_implied: round2(probImplied), prob_blended: round2(probBlended),
+    // prob_implied pasa a ser la DE-VIGGEADA (2026-09-06), como en MiLB/LMB. La cruda se conserva
+    // aparte para no perder informacion y para poder auditar el vig.
+    prob_implied: round2(probImplied), prob_implied_raw: round2(oddsToImplied(odds)),
+    prob_blended: round2(probBlended),
     data_score: dataScore, edge_threshold: threshold, confidence, ...extra,
   };
 }
@@ -415,16 +439,17 @@ function analyzeMatchup(input = {}) {
 
   // ML
   const mlFair = computeFairPair(pAwayWin, pHomeWin);
+  const mlDevig = devigPair(lines.away_ml, lines.home_ml);
   if (mlFair) {
     if (lines.away_ml != null) {
-      const c = evalCandidate(mlFair.first, oddsToImplied(lines.away_ml),
+      const c = evalCandidate(mlFair.first, mlDevig ? mlDevig.first : oddsToImplied(lines.away_ml),
         "ML", dataScore, lines.away_ml,
         { pick_side: "AWAY", away_team: g.away_team_name, home_team: g.home_team_name }
       );
       if (c) candidates.push(c);
     }
     if (lines.home_ml != null) {
-      const c = evalCandidate(mlFair.second, oddsToImplied(lines.home_ml),
+      const c = evalCandidate(mlFair.second, mlDevig ? mlDevig.second : oddsToImplied(lines.home_ml),
         "ML", dataScore, lines.home_ml,
         { pick_side: "HOME", away_team: g.away_team_name, home_team: g.home_team_name }
       );
@@ -436,6 +461,7 @@ function analyzeMatchup(input = {}) {
   // Convenci�n: hc_value = lo que recibe el visitante en el mercado (+1.5 = dog, -1.5 = fav)
   const hasAwayHc = lines.away_hc != null && lines.away_hc_val != null;
   const hasHomeHc = lines.home_hc != null && lines.home_hc_val != null;
+  const hcDevig = devigPair(lines.away_hc, lines.home_hc);
   if (hasAwayHc || hasHomeHc) {
     if (hasAwayHc) {
       const awayLine = lines.away_hc_val;
@@ -445,7 +471,7 @@ function analyzeMatchup(input = {}) {
           if (a + awayLine > h) pAwayCover += awayDist[a] * homeDist[h];
         }
       }
-      const c = evalCandidate(pAwayCover, oddsToImplied(lines.away_hc),
+      const c = evalCandidate(pAwayCover, hcDevig ? hcDevig.first : oddsToImplied(lines.away_hc),
         "HC", dataScore, lines.away_hc,
         { pick_side: `AWAY ${awayLine >= 0 ? "+" : ""}${awayLine}`, hc_value: awayLine,
           away_team: g.away_team_name, home_team: g.home_team_name }
@@ -460,7 +486,7 @@ function analyzeMatchup(input = {}) {
           if (h + homeLine > a) pHomeCover += awayDist[a] * homeDist[h];
         }
       }
-      const c = evalCandidate(pHomeCover, oddsToImplied(lines.home_hc),
+      const c = evalCandidate(pHomeCover, hcDevig ? hcDevig.second : oddsToImplied(lines.home_hc),
         "HC", dataScore, lines.home_hc,
         { pick_side: `HOME ${homeLine >= 0 ? "+" : ""}${homeLine}`, hc_value: homeLine,
           away_team: g.away_team_name, home_team: g.home_team_name }
@@ -474,9 +500,10 @@ function analyzeMatchup(input = {}) {
     const line = lines.total_line;
     const poF = pOver(line), puF = pUnder(line);
     const ouFair = computeFairPair(poF, puF);
+    const ouDevig = devigPair(lines.over_odds, lines.under_odds);
 
     if (ouFair && lines.over_odds != null) {
-      const c = evalCandidate(ouFair.first, oddsToImplied(lines.over_odds),
+      const c = evalCandidate(ouFair.first, ouDevig ? ouDevig.first : oddsToImplied(lines.over_odds),
         "OU", dataScore, lines.over_odds,
         { pick_side: `OVER ${line}`, total_line: line,
           away_team: g.away_team_name, home_team: g.home_team_name }
@@ -484,7 +511,7 @@ function analyzeMatchup(input = {}) {
       if (c) candidates.push(c);
     }
     if (ouFair && lines.under_odds != null) {
-      const c = evalCandidate(ouFair.second, oddsToImplied(lines.under_odds),
+      const c = evalCandidate(ouFair.second, ouDevig ? ouDevig.second : oddsToImplied(lines.under_odds),
         "OU", dataScore, lines.under_odds,
         { pick_side: `UNDER ${line}`, total_line: line,
           away_team: g.away_team_name, home_team: g.home_team_name }
