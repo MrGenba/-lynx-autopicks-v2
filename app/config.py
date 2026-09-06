@@ -31,6 +31,8 @@ class Config:
     # apuesta) y la guarda en Supabase pick_closing_lines. Desactivada por defecto: anade
     # scrapes de Tor extra cerca del cierre -- activar tras revisar el gasto de proxy.
     clv_capture_enabled: bool
+    odds_snapshots_enabled: bool
+    odds_snapshots_hour_utc: int
     clv_capture_interval_seconds: int
     # Proxy del scraper de cuotas (vendor/run_odds_scraper.js) -- el VPS de Francia esta bloqueado
     # por cuotasahora.com por IP directa, asi que se sale por el Tor local (SOCKS 127.0.0.1:9050,
@@ -83,6 +85,13 @@ class Config:
             odds_autofetch_interval_seconds=int(os.environ.get("ODDS_AUTOFETCH_INTERVAL_SECONDS", "900")),
             odds_autofetch_enabled=os.environ.get("ODDS_AUTOFETCH_ENABLED", "false").lower() == "true",
             clv_capture_enabled=os.environ.get("CLV_CAPTURE_ENABLED", "false").lower() == "true",
+            # Foto temprana de la linea, antes de que se anuncien los abridores (ver
+            # odds_snapshots.py). Un solo scrape al dia. Se puede apagar desde EasyPanel sin
+            # redesplegar. La hora por defecto (11:00 UTC) es la mas muerta: los partidos de MiLB
+            # empiezan entre las 20:00 y las 02:00 y la ventana de 6h del detector no abre hasta
+            # las ~14:00, asi que ese scrape no compite con nada por el semaforo.
+            odds_snapshots_enabled=os.environ.get("ODDS_SNAPSHOTS_ENABLED", "true").lower() == "true",
+            odds_snapshots_hour_utc=int(os.environ.get("ODDS_SNAPSHOTS_HOUR_UTC", "11")),
             clv_capture_interval_seconds=int(os.environ.get("CLV_CAPTURE_INTERVAL_SECONDS", "300")),
             proxy_server=os.environ.get("PROXY_SERVER") or None,
             proxy_server_lmb=os.environ.get("PROXY_SERVER_LMB") or None,

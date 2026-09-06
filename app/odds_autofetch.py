@@ -462,6 +462,20 @@ async def _apply_scraped_games(
         await _store_odds(ctx.pool, cand.sport_id, cand.game_pk, values, chat_id=0, message_id=0)
         matched_count += 1
 
+        # Foto "gate_a" de la linea, coste CERO en scrapes: son las cuotas que acabamos de
+        # capturar de todos modos. Junto con la foto "early" (odds_snapshots.py) permite medir si
+        # el mercado se movio al anunciarse los abridores. Nunca bloquea el pipeline.
+        try:
+            from app.odds_snapshots import SCRAPER_LEAGUE as _SNAP_LIGAS, guardar as _guardar_snapshot, _valores as _snap_valores
+            if cand.sport_id in _SNAP_LIGAS:
+                await _guardar_snapshot(
+                    ctx, cand.sport_id, cand.game_pk, "gate_a", _snap_valores(scraped),
+                    away_team=cand.away_team_name, home_team=cand.home_team_name,
+                    starters_known=True,
+                )
+        except Exception:
+            logger.exception("odds_snapshots: fallo la foto gate_a de game_pk=%s", cand.game_pk)
+
         learn_away = cand.away_team_id
         learn_home = cand.home_team_id
         if learn_away is not None:

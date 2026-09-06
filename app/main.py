@@ -20,6 +20,7 @@ from app.clv import capture_closing_lines_tick
 from app.config import Config
 from app.dashboard import collect_state, render_html
 from app.detector import detector_tick
+from app.odds_snapshots import capture_early_snapshot_tick
 from app.logging_setup import setup_logging
 from app.message_handler import handle_message
 from app.node_bridge import NodeBridgeError, run_odds_scraper
@@ -470,6 +471,18 @@ async def main() -> None:
         )
     else:
         logger.info("odds_autofetch_enabled=false -- job automatico NO registrado, solo /fetchodds manual")
+    # Foto temprana de la linea de MiLB, ANTES de que se anuncien los abridores (odds_snapshots.py).
+    # Un unico scrape al dia para todo el slate: el scraper visita varios partidos por pasada, asi
+    # que el coste es ~5 min de semaforo, no 15 jobs. A las 11:00 UTC no compite con nada.
+    if cfg.odds_snapshots_enabled:
+        scheduler.add_job(
+            capture_early_snapshot_tick, "cron", hour=cfg.odds_snapshots_hour_utc, minute=0,
+            args=[ctx], max_instances=1, timezone="UTC",
+        )
+        logger.info("odds_snapshots_enabled=true -- foto temprana diaria a las %s:00 UTC", cfg.odds_snapshots_hour_utc)
+    else:
+        logger.info("odds_snapshots_enabled=false -- sin foto temprana")
+
     # Captura de linea de cierre para CLV (desactivada por defecto -- ver clv.py/config.py).
     if cfg.clv_capture_enabled:
         scheduler.add_job(
