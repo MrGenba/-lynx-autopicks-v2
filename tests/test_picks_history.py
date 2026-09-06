@@ -1,3 +1,4 @@
+import pytest
 from app.pipelines import (
     PICKS_HISTORY_COLUMNS,
     build_picks_history_row,
@@ -180,3 +181,39 @@ def test_raw_prob_estimated_se_guarda_en_candidates():
     assert tabla == "candidates_history"
     assert filas[0]["raw_prob_estimated"] == 0.61
     assert filas[0]["prob_estimated"] == 0.55   # la calibrada sigue siendo la que manda
+
+
+@pytest.mark.asyncio
+async def test_distingue_abridor_debutante_de_dato_que_falta():
+    """2026-09-06: hasta ahora un abridor SIN historial y un abridor AUN sin anunciar daban el
+    mismo aviso y el mismo reintento cada 180s. Caso real: MiLB 815407, Case Williams (id 695406),
+    sin una sola entrada de pitcheo ni en la API oficial -- reintentar 20 veces no podia cambiarlo.
+    """
+    from app.pipelines import _abridores_sin_historial
+
+    class _Supa:
+        def __init__(self, con_stats): self.con_stats = con_stats
+        async def select_one(self, client, tabla, params):
+            assert tabla == "player_stats"
+            pid = int(params["player_id"].split(".")[1])
+            return {"player_id": pid} if pid in self.con_stats else None
+
+    class _Ctx:
+        def __init__(self, supa): self.supabase = supa; self.http_client = None
+
+    # uno con historial y otro sin el -> se señala solo el que falta
+    ctx = _Ctx(_Supa({682077}))
+    assert await _abridores_sin_historial(ctx, 682077, 695406) == [695406]
+
+    # los dos con historial -> nada que señalar (el fallo sera otro)
+    ctx = _Ctx(_Supa({1, 2}))
+    assert await _abridores_sin_historial(ctx, 1, 2) == []
+
+    # sin pitcher_id todavia -> NO se considera debutante: el dato puede llegar, hay que reintentar
+    ctx = _Ctx(_Supa(set()))
+    assert await _abridores_sin_historial(ctx, None, None) == []
+
+    # si la consulta falla, se prefiere el comportamiento de siempre (reintentar) a descartar
+    class _SupaRota:
+        async def select_one(self, *a, **k): raise RuntimeError("supabase caido")
+    assert await _abridores_sin_historial(_Ctx(_SupaRota()), 1, 2) == []

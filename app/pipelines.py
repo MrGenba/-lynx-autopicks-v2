@@ -47,6 +47,43 @@ _edge_alert_keys: set = set()
 # Sin esto el detector avisaria en cada tick (cada 180s) del mismo partido. Se pierde al reiniciar
 # el contenedor -- peor caso, un aviso repetido, aceptable.
 _stale_odds_notice_keys: set = set()
+
+_datos_insuf_notice_keys: set[tuple[int, int, int]] = set()
+
+
+async def _abridores_sin_historial(ctx, away_pid, home_pid) -> list[int]:
+    """De los abridores YA identificados, cuales no tienen ninguna fila en `player_stats`.
+
+    Distingue dos situaciones que hasta ahora se trataban igual (2026-09-06):
+      - sin `pitcher_id` todavia -> el dato puede llegar, reintentar tiene sentido.
+      - CON `pitcher_id` pero sin historial -> no es que el dato no haya llegado, es que **no
+        existe**. Caso real: MiLB 815407, Case Williams (id 695406), sin una sola entrada de
+        pitcheo ni siquiera en la API oficial. Reintentar cada 180s hasta el primer lanzamiento
+        no puede cambiar nada.
+
+    Los tres adaptadores usan `player_stats` como fuente de stats de abridor, asi que la
+    comprobacion vale para las tres ligas. En LMB es frecuente: su adaptador ya documenta que
+    ~la mitad de sus lanzadores no tienen stats.
+
+    Ante cualquier error devuelve [] a proposito: sin certeza, se prefiere el comportamiento de
+    siempre (reintentar) antes que descartar un partido por una consulta fallida.
+    """
+    sin_historial = []
+    for pid in (away_pid, home_pid):
+        if not pid:
+            continue
+        try:
+            fila = await ctx.supabase.select_one(
+                ctx.http_client, "player_stats", {"player_id": f"eq.{pid}", "select": "player_id"}
+            )
+        except Exception:
+            logger.warning("no se pudo comprobar el historial del abridor %s", pid)
+            return []
+        if fila is None:
+            sin_historial.append(pid)
+    return sin_historial
+
+
 CANDIDATES_HISTORY_TABLE = {1: "mlb_candidates_history", 11: "candidates_history", 23: "lmb_candidates_history"}
 # Columnas reales por tabla (verificadas contra Supabase 2026-07-11 antes de escribir -- mismo
 # bug ya sufrido una vez con prob_edge faltante en mlb_picks_history, ver CLAUDE.md/KNOWN_ISSUES).
@@ -920,12 +957,52 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
     # la hora del partido de verdad, no de la aproximacion fija de las 20:00 UTC. 2026-08-04.
     game_obj = await adapter.build_game_object(game_pk, mode, gate_away_pid, gate_home_pid, gate_dt)
     if game_obj is None:
-        # Datos incompletos (p.ej. ERA de abridores aun sin poblar) -- NO se reclama la fila,
-        # asi que se puede reintentar en un proximo tick del detector sin violar idempotencia.
-        await ctx.telegram.send_message(
-            ctx.admin_chat_id,
-            f"⚠️ {LEAGUE_LABEL.get(sport_id, sport_id)} game_pk={game_pk}: datos insuficientes para calcular ({mode}), reintentando en próximos ticks.",
-        )
+        liga = LEAGUE_LABEL.get(sport_id, sport_id)
+        clave = (sport_id, game_pk, pipeline)
+        sin_historial = await _abridores_sin_historial(ctx, gate_away_pid, gate_home_pid)
+
+        if sin_historial:
+            # Reintentar NO sirve: el dato no es que no haya llegado, es que no existe. Se reclama
+            # la fila de pipeline_runs (mismo mecanismo de idempotencia que el camino normal) para
+            # que el detector no lo reintente cada 180s hasta el primer lanzamiento -- unas 20
+            # veces por partido, con su aviso cada vez.
+            async with ctx.pool.acquire() as conn:
+                claim = await conn.fetchrow(
+                    "INSERT INTO pipeline_runs (sport_id, game_pk, pipeline) VALUES ($1,$2,$3) "
+                    "ON CONFLICT (sport_id, game_pk, pipeline) DO NOTHING RETURNING id",
+                    sport_id, game_pk, pipeline,
+                )
+                if claim is not None:
+                    await conn.execute(
+                        "UPDATE pipeline_runs SET error=$1 WHERE id=$2",
+                        f"abridor sin historial en player_stats: {sin_historial}", claim["id"],
+                    )
+            if claim is not None:
+                logger.info(
+                    "game_pk=%s no se analiza: abridor(es) %s sin historial en player_stats",
+                    game_pk, sin_historial,
+                )
+                try:
+                    await ctx.telegram.send_message(
+                        ctx.admin_chat_id,
+                        f"🆕 {liga} {away_team} @ {home_team}: NO se analiza -- abridor sin "
+                        f"historial (debutante, id {', '.join(str(x) for x in sin_historial)}). "
+                        f"Reintentar no serviría: el dato no existe, tampoco en la API oficial.",
+                    )
+                except Exception:
+                    logger.exception("fallo avisando de abridor sin historial game_pk=%s", game_pk)
+            return
+
+        # Datos incompletos pero recuperables (p.ej. el abridor aun no esta anunciado, o su ERA
+        # todavia no se ha sincronizado) -- NO se reclama la fila, asi que se reintenta en un
+        # proximo tick sin violar idempotencia. El aviso va UNA sola vez por partido y pipeline:
+        # antes se repetia en cada tick mientras durase la ventana.
+        if clave not in _datos_insuf_notice_keys:
+            _datos_insuf_notice_keys.add(clave)
+            await ctx.telegram.send_message(
+                ctx.admin_chat_id,
+                f"⚠️ {liga} game_pk={game_pk}: datos insuficientes para calcular ({mode}), reintentando en próximos ticks.",
+            )
         return
 
     # La hora del partido NO viene en las vistas de matchup (game_date es solo DATE) -> el mensaje
