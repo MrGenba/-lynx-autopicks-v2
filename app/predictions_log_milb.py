@@ -53,15 +53,41 @@ def _nb_k_del_motor(vendor_dir: str) -> Optional[float]:
         logger.warning("predictions_log MiLB: no se pudo leer nb_k del motor")
         return None
 
+STATS_API = "https://statsapi.mlb.com/api/v1"
+
+
 async def _partidos_de_hoy(ctx) -> list[dict]:
+    """El calendario Y los abridores se leen de la API EN VIVO, no de `daily_games`.
+
+    Verificado el 2026-09-06 a las 17:55 UTC: `daily_games` tenia los dos abridores en **1 de 21**
+    partidos mientras la API ya publicaba **12 de 15**. El sync de Supabase va por detras, y sin
+    pitcher_id el adaptador devuelve None -- o sea que leer de Supabase habria dejado esta tabla
+    con un 5% de cobertura y con el mismo sesgo de seleccion que viene a eliminar.
+
+    El adaptador acepta los pitcher_id como fallback precisamente para este caso (lo dice su
+    docstring), que es lo que hace el detector desde siempre.
+    """
     hoy = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
-    filas = await ctx.supabase.select(ctx.http_client, "daily_games", {
-        "select": "game_id,game_date,away_team_name,home_team_name,away_pitcher_id,home_pitcher_id",
-        "game_date": f"gte.{hoy}",
-        "order": "game_id.asc",
-        "limit": "80",
-    })
-    return [f for f in filas if str(f.get("game_date", ""))[:10] == hoy]
+    r = await ctx.http_client.get(
+        f"{STATS_API}/schedule", params={"sportId": 11, "date": hoy, "hydrate": "probablePitcher"},
+        timeout=20.0,
+    )
+    r.raise_for_status()
+    partidos = []
+    for dia in r.json().get("dates", []):
+        for g in dia.get("games", []):
+            away = (g.get("teams", {}).get("away", {}) or {})
+            home = (g.get("teams", {}).get("home", {}) or {})
+            ap, hp = away.get("probablePitcher"), home.get("probablePitcher")
+            partidos.append({
+                "game_id": g["gamePk"],
+                "game_date": hoy,
+                "away_team_name": (away.get("team") or {}).get("name"),
+                "home_team_name": (home.get("team") or {}).get("name"),
+                "away_pitcher_id": ap.get("id") if ap else None,
+                "home_pitcher_id": hp.get("id") if hp else None,
+            })
+    return partidos
 
 
 async def _ya_guardado(ctx, game_pk: int) -> bool:

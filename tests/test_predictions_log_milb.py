@@ -36,12 +36,9 @@ def test_linea_estandar_es_fija():
 
 
 class _SupaFake:
-    def __init__(self, partidos, ya=None):
-        self.partidos = partidos
+    def __init__(self, ya=None):
         self.ya = ya or set()
         self.insertados = []
-    async def select(self, client, tabla, params):
-        return self.partidos
     async def select_one(self, client, tabla, params):
         pk = int(params["game_pk"].split(".")[1])
         return {"id": 1} if pk in self.ya else None
@@ -50,28 +47,70 @@ class _SupaFake:
         self.insertados.extend(filas)
 
 
+class _RespFake:
+    def __init__(self, payload): self._p = payload
+    def raise_for_status(self): pass
+    def json(self): return self._p
+
+
+class _HttpFake:
+    """El calendario y los abridores se leen de la API EN VIVO, no de daily_games: el sync de
+    Supabase va por detras (1 de 21 partidos con abridores frente a 12 de 15 en la API,
+    medido el 2026-09-06)."""
+    def __init__(self, juegos): self.juegos = juegos
+    async def get(self, url, params=None, timeout=None):
+        assert "statsapi.mlb.com" in url and params["sportId"] == 11
+        return _RespFake({"dates": [{"games": self.juegos}]})
+
+
+def _juego_api(pk, ap=None, hp=None):
+    return {"gamePk": pk, "teams": {
+        "away": {"team": {"name": "A"}, "probablePitcher": {"id": ap} if ap else None},
+        "home": {"team": {"name": "B"}, "probablePitcher": {"id": hp} if hp else None}}}
+
+
 class _AdapterFake:
     def __init__(self, devuelve=None): self.devuelve = devuelve
     async def build_game_object(self, *a, **k): return self.devuelve
 
 
 class _CtxFake:
-    def __init__(self, supa, adapter):
+    def __init__(self, supa, adapter, juegos):
         self.supabase = supa
-        self.http_client = None
+        self.http_client = _HttpFake(juegos)
         self.adapters = {11: adapter}
         self.node_bin = "node"
         self.vendor_dir = "vendor"
 
 
 @pytest.mark.asyncio
-async def test_no_reescribe_lo_ya_guardado(monkeypatch):
-    import datetime as dt
-    hoy = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
-    supa = _SupaFake([{"game_id": 111, "game_date": hoy}], ya={111})
-    ctx = _CtxFake(supa, _AdapterFake({"x": 1}))
+async def test_no_reescribe_lo_ya_guardado():
+    supa = _SupaFake(ya={111})
+    ctx = _CtxFake(supa, _AdapterFake({"x": 1}), [_juego_api(111, 1, 2)])
     await capture_predictions_tick(ctx)
     assert supa.insertados == []       # ya estaba -> no se duplica
+
+
+@pytest.mark.asyncio
+async def test_pasa_al_adaptador_los_abridores_de_la_API(monkeypatch):
+    """Sin esto la cobertura cae al 5%: daily_games no tiene los pitcher_id a tiempo."""
+    import app.predictions_log_milb as mod
+    recibidos = {}
+
+    class _AdapterEspia:
+        async def build_game_object(self, game_pk, mode, ap=None, hp=None, dt_=None):
+            recibidos[game_pk] = (ap, hp)
+            return {"game_id": game_pk}
+
+    async def _quant_fake(*a, **k):
+        return {"away_runs": 4.0, "home_runs": 4.2, "over_win": 0.4, "under_win": 0.6,
+                "away_ml_win": 0.49, "home_ml_win": 0.51, "data_score": 0.6}
+    monkeypatch.setattr(mod, "run_quant", _quant_fake)
+
+    supa = _SupaFake()
+    ctx = _CtxFake(supa, _AdapterEspia(), [_juego_api(555, 700, 800)])
+    await capture_predictions_tick(ctx)
+    assert recibidos[555] == (700, 800)
 
 
 @pytest.mark.asyncio
@@ -88,8 +127,8 @@ async def test_guarda_mu_y_probabilidades(monkeypatch):
                 "under_win": 0.58, "away_ml_win": 0.48, "home_ml_win": 0.52, "data_score": 0.71}
     monkeypatch.setattr(mod, "run_quant", _quant_fake)
 
-    supa = _SupaFake([{"game_id": 222, "game_date": hoy, "away_pitcher_id": 1, "home_pitcher_id": 2}])
-    ctx = _CtxFake(supa, _AdapterFake({"game_id": 222}))
+    supa = _SupaFake()
+    ctx = _CtxFake(supa, _AdapterFake({"game_id": 222}), [_juego_api(222, 1, 2)])
     await capture_predictions_tick(ctx)
 
     assert len(supa.insertados) == 1
@@ -117,8 +156,8 @@ async def test_un_partido_sin_datos_no_tumba_el_resto(monkeypatch):
         async def build_game_object(self, game_pk, *a, **k):
             return None if game_pk == 1 else {"game_id": game_pk}   # el primero sin datos
 
-    supa = _SupaFake([{"game_id": 1, "game_date": hoy}, {"game_id": 2, "game_date": hoy}])
-    ctx = _CtxFake(supa, _AdapterMixto())
+    supa = _SupaFake()
+    ctx = _CtxFake(supa, _AdapterMixto(), [_juego_api(1), _juego_api(2, 5, 6)])
     await capture_predictions_tick(ctx)
 
     assert len(supa.insertados) == 1
