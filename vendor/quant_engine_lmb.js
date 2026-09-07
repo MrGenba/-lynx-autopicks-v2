@@ -7,7 +7,7 @@
 
 // Promedio hist�rico LMB: ~5.97 RPG/equipo (vs 4.55 MiLB AAA).
 // Fuente: 1,512 juegos 2024-2025 importados de MLB Stats API.
-const LEAGUE_RUNS_PER_TEAM = 5.97;
+const LEAGUE_RUNS_PER_TEAM = 5.52;  // 2026-09-06: recalibrado por metodo de momentos, n=740 partidos limpios de 2026 (ver fix_lmb_recalibracion.js)
 
 // Sin backtest a�n ? calibraci�n neutra. Ajustar tras ?50 juegos resueltos.
 const RUN_CALIBRATION_FACTOR = 1.0;
@@ -17,7 +17,7 @@ const LEAGUE_K9  = 7.5;
 const LEAGUE_BB9 = 3.5;
 
 // Negative Binomial k=7 (igualado con MiLB v2 - Severini �6.5: ligas menores tienen m�s varianza)
-const NB_K = 7;
+const NB_K = 3.5;  // 2026-09-06: recalibrado por metodo de momentos, n=740 partidos limpios de 2026 (ver fix_lmb_recalibracion.js)
 
 // Umbral m�nimo de diferencial de carreras para publicar HC
 const RUNLINE_MIN_DIFF = 0.80;
