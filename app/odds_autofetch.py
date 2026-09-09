@@ -22,6 +22,7 @@ Dos formas de disparo, mismo motor por debajo:
 import asyncio
 import contextlib
 import datetime as dt
+import re
 import logging
 import time
 
@@ -227,6 +228,86 @@ async def _candidates_needing_odds(pool: asyncpg.Pool, sport_id: int) -> list[al
     ]
 
 
+# --------------------------------------------------------------------------------------------
+# Guarda de HORA en el emparejamiento (2026-09-09)
+#
+# `_match_scraped_game` decidia SOLO por nombres de equipo. Con series de 3-4 partidos seguidos
+# entre los mismos dos equipos (lo normal en MLB), si cuotasahora lista otro dia de la serie el
+# nombre casa igual y se asignan las cuotas del partido equivocado. El usuario lo reporto asi:
+# "las cuotas son de la proxima vez que juegan".
+#
+# El sitio solo publica "HH:MM" (RE_TIME en vendor/parser_cuotasahora.js), sin fecha, y ADEMAS en
+# la zona del navegador del contenedor, que ya dio un desfase de 1h sin explicar (ver el
+# diagnostico de 2026-07-11 en vendor/scraper_cuotasahora.js). Por eso la guarda **no asume
+# ninguna zona**: aprende el desfase del propio lote.
+#
+# Como funciona: para cada pareja (scrapeado, candidato) que casa por nombre se calcula
+# `delta = hora_mostrada - hora_UTC_del_partido` (mod 24h). Si el sitio es coherente, todas las
+# parejas correctas comparten el mismo delta. El delta mayoritario del lote es el desfase real, y
+# cualquier pareja que se salga de el es un partido distinto.
+#
+# LO QUE ESTA GUARDA NO PUEDE ATRAPAR, y conviene saberlo: dos partidos de la misma serie a la
+# MISMA hora de reloj en dias distintos (p.ej. Rays @ Braves el 08 y el 09, ambos a las 23:15 UTC)
+# son indistinguibles con solo HH:MM. Para cerrar ese hueco haria falta que el scraper capturase
+# la FECHA de la pagina, que hoy no coge.
+_DESFASE_SITIO_MIN: int | None = None          # aprendido, en minutos
+_TOLERANCIA_HORA_MIN = 15                      # margen: el sitio redondea a veces
+
+
+def _hhmm_a_minutos(txt) -> int | None:
+    m = re.match(r"^\s*(\d{1,2}):(\d{2})\s*$", str(txt or ""))
+    if not m:
+        return None
+    h, mi = int(m.group(1)), int(m.group(2))
+    return h * 60 + mi if 0 <= h < 24 and 0 <= mi < 60 else None
+
+
+def _delta_min(scraped: dict, c: "aliases.CandidateGame") -> int | None:
+    """Diferencia en minutos (mod 24h) entre la hora que muestra el sitio y la UTC del partido."""
+    mostrada = _hhmm_a_minutos(scraped.get("time"))
+    if mostrada is None or not c.game_datetime_utc:
+        return None
+    utc = c.game_datetime_utc.astimezone(dt.timezone.utc)
+    return (mostrada - (utc.hour * 60 + utc.minute)) % 1440
+
+
+def aprender_desfase_del_sitio(scrapeados: list[dict], candidatos: list["aliases.CandidateGame"]) -> int | None:
+    """Delta mayoritario del lote. Se guarda entre ejecuciones para poder comprobar tambien los
+    lotes de un solo partido, donde no hay con que votar."""
+    global _DESFASE_SITIO_MIN
+    votos: dict[int, int] = {}
+    for sc in scrapeados or []:
+        for c in candidatos or []:
+            if aliases.score_loose(sc.get("away_team"), c.away_team_name) + \
+               aliases.score_loose(sc.get("home_team"), c.home_team_name) < MIN_MATCH_SCORE:
+                continue
+            d = _delta_min(sc, c)
+            if d is not None:
+                votos[d] = votos.get(d, 0) + 1
+    if not votos:
+        return _DESFASE_SITIO_MIN
+    mejor, n = max(votos.items(), key=lambda kv: kv[1])
+    # con un solo voto no se aprende nada nuevo: podria ser justo el emparejamiento erroneo
+    if n >= 2:
+        if _DESFASE_SITIO_MIN != mejor:
+            logger.info("autofetch: desfase horario de cuotasahora aprendido = %+d min (votos %s)", mejor, votos)
+        _DESFASE_SITIO_MIN = mejor
+    return _DESFASE_SITIO_MIN
+
+
+def _hora_compatible(scraped: dict, c: "aliases.CandidateGame") -> bool:
+    """False solo cuando hay evidencia de que son partidos distintos. Si falta el dato de un lado
+    o aun no se conoce el desfase, se deja pasar: la guarda nunca debe volver el sistema mas
+    restrictivo por falta de informacion."""
+    if _DESFASE_SITIO_MIN is None:
+        return True
+    d = _delta_min(scraped, c)
+    if d is None:
+        return True
+    diff = min((d - _DESFASE_SITIO_MIN) % 1440, (_DESFASE_SITIO_MIN - d) % 1440)
+    return diff <= _TOLERANCIA_HORA_MIN
+
+
 def _match_scraped_game(scraped: dict, candidates: list[aliases.CandidateGame]) -> aliases.CandidateGame | None:
     """A diferencia de aliases.match_game() no hay ambiguedad de orden -- el scraper ya resuelve
     home/away real del sitio, asi que solo hace falta comparar away<->away y home<->home. Guardia
@@ -238,6 +319,16 @@ def _match_scraped_game(scraped: dict, candidates: list[aliases.CandidateGame]) 
         # "<Apodo> de <Ciudad>" -- ver aliases.score_loose, sin lo cual LMB no empareja nunca.
         s = aliases.score_loose(scraped.get("away_team"), c.away_team_name) + aliases.score_loose(scraped.get("home_team"), c.home_team_name)
         if s < MIN_MATCH_SCORE:
+            continue
+        # 2026-09-09: el nombre no basta. En una serie de varios partidos seguidos entre los mismos
+        # equipos, cuotasahora puede estar listando OTRO dia y el nombre casa igual.
+        if not _hora_compatible(scraped, c):
+            logger.info(
+                "autofetch: descartado %s @ %s por hora incompatible (sitio %s, partido %s UTC) -- "
+                "probablemente otro partido de la misma serie",
+                scraped.get("away_team"), scraped.get("home_team"), scraped.get("time"),
+                c.game_datetime_utc.isoformat() if c.game_datetime_utc else "?",
+            )
             continue
         scored.append((s, c))
     if not scored:
@@ -416,6 +507,9 @@ async def _apply_scraped_games(
     # que DIFIEREN, no se aplica ninguna (fail-safe, misma filosofia que _match_scraped_game:
     # "mejor perder una cuota que asignarla al partido equivocado"). Si coinciden, se aplica.
     by_cand: dict[int, list[tuple[dict, dict]]] = {}
+    # Antes de emparejar, aprender el desfase horario del sitio con este mismo lote: es lo que
+    # permite despues descartar los partidos de otro dia de la misma serie (ver la guarda arriba).
+    aprender_desfase_del_sitio(games, candidates)
     for scraped in games:
         cand = _match_scraped_game(scraped, candidates)
         if cand is None:
