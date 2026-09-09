@@ -553,6 +553,32 @@ def _game_time_label(raw, date_only: Optional[str]) -> str:
     return "hora N/A ES / hora N/A ET"
 
 
+def _game_time_label_local(raw, date_only: Optional[str], tz_name: Optional[str]) -> str:
+    """Como _game_time_label pero con la hora LOCAL DEL ESTADIO en vez de la del Este.
+
+    2026-09-09: el analisis completo no llevaba ni fecha ni hora, asi que no habia forma de ver a
+    que partido correspondia -- el usuario sospecho que un analisis traia las cuotas del dia
+    siguiente y no se podia comprobar en el mensaje. Y no es paranoia: un partido a las 22:40 UTC
+    empieza a las 00:40 del DIA SIGUIENTE en hora espanola, asi que la fecha ES y la del partido no
+    coinciden a diario.
+
+    `tz_name` es la zona IANA real del estadio (`*_park_factors.time_zone`, traida de
+    statsapi.mlb.com). Si no la hay, se cae a _game_time_label (ES/ET) en vez de inventarsela: ET
+    solo es la hora local en la costa este y se equivoca en tres horas en la oeste.
+    """
+    if not tz_name:
+        return _game_time_label(raw, date_only)
+    es = _dt_parts(raw, "Europe/Madrid")
+    loc = _dt_parts(raw, tz_name)
+    if not (es and loc):
+        return _game_time_label(raw, date_only)
+    corta = tz_name.split("/")[-1].replace("_", " ")
+    if es["date"] == loc["date"]:
+        return f"{es['date']} · {es['time']}h ES / {loc['time']}h local ({corta})"
+    # el caso que confunde: en Espana ya es el dia siguiente
+    return f"ES {es['date']} {es['time']}h / local {loc['date']} {loc['time']}h ({corta})"
+
+
 def _build_lectura_simple(pick_txt, odds, edge_ev, prob_tip, prob_imp, pick_side) -> str:
     edge_pct = f"{edge_ev * 100:.1f}%" if edge_ev is not None else "?"
     odds_txt = f"{odds:.2f}" if odds is not None else "?"
@@ -737,7 +763,52 @@ def format_pick_message(
     return "\n".join(lines)
 
 
-def format_full_analysis(league_label: str, pipeline: int, away_team: str, home_team: str, result: dict, lineup_incomplete: bool = False) -> str:
+_VENUE_TZ_CACHE: dict[str, str] = {}
+_VENUE_TZ_AT: Optional[dt.datetime] = None
+_VENUE_TZ_TTL = dt.timedelta(hours=24)
+
+
+async def _venue_timezone(ctx, game_obj: Optional[dict]) -> Optional[str]:
+    """Zona IANA del estadio del partido, de `*_park_factors.time_zone`.
+
+    Datos reales de statsapi.mlb.com (ver deploy_venue_timezone.js), no estimados por longitud:
+    este proyecto ya midio que los datos geograficos puestos "de memoria" salen PEOR que no
+    tenerlos. Si el estadio no esta en la tabla se devuelve None y el mensaje cae a ES/ET.
+
+    El mapa se cachea 24h en memoria: son ~65 estadios que no cambian de zona.
+    """
+    global _VENUE_TZ_AT
+    if not game_obj:
+        return None
+    nombre = game_obj.get("venue_name") or game_obj.get("stadium_name")
+    if not nombre:
+        return None
+    ahora = dt.datetime.now(dt.timezone.utc)
+    if _VENUE_TZ_AT is None or (ahora - _VENUE_TZ_AT) > _VENUE_TZ_TTL:
+        nuevo: dict[str, str] = {}
+        for tabla in ("mlb_park_factors", "park_factors"):
+            try:
+                filas = await ctx.supabase.select(
+                    ctx.http_client, tabla,
+                    {"select": "stadium_name,time_zone", "time_zone": "not.is.null", "limit": "500"},
+                )
+            except Exception:
+                logger.exception("no se pudo leer time_zone de %s", tabla)
+                continue
+            for f in filas or []:
+                n = (f.get("stadium_name") or "").strip().lower()
+                if n and f.get("time_zone"):
+                    nuevo.setdefault(n, f["time_zone"])
+        if nuevo:
+            _VENUE_TZ_CACHE.clear()
+            _VENUE_TZ_CACHE.update(nuevo)
+            _VENUE_TZ_AT = ahora
+    return _VENUE_TZ_CACHE.get(nombre.strip().lower())
+
+
+def format_full_analysis(league_label: str, pipeline: int, away_team: str, home_team: str, result: dict,
+                         lineup_incomplete: bool = False, game_obj: Optional[dict] = None,
+                         venue_tz: Optional[str] = None) -> str:
     """Desglose completo de TODOS los mercados evaluados (no solo el mejor) -- para el chat
     privado del admin via @Cuotasodds_bot, en todo pipeline run, se haya publicado o no."""
     pipeline_label = "abridores" if pipeline == 1 else "lineup completo"
@@ -749,6 +820,22 @@ def format_full_analysis(league_label: str, pipeline: int, away_team: str, home_
     lines = [
         f"🔍 Análisis completo ({league_label} · {pipeline_label})",
         f"{away_team} @ {home_team}",
+    ]
+    # Fecha, hora (ES + local del estadio) y abridores: sin esto no se puede saber a que partido
+    # corresponde el analisis, que es justo lo que pidio el usuario el 2026-09-09.
+    g = game_obj or {}
+    _raw = g.get("game_datetime_utc") or g.get("forecast_time_utc")
+    _solo_fecha = _date_only(g.get("game_date"))
+    if _raw or _solo_fecha:
+        lines.append(f"📅 {_game_time_label_local(_raw, _solo_fecha, venue_tz)}")
+    _ap = g.get("away_pitcher_name")
+    _hp = g.get("home_pitcher_name")
+    if _ap or _hp:
+        lines.append(f"👥 Abridores: {_ap or 'N/A'} vs {_hp or 'N/A'}")
+    _est = g.get("venue_name") or g.get("stadium_name")
+    if _est:
+        lines.append(f"🏟 {_est}")
+    lines += [
         f"data_score: {data_score:.2f}",
         "",
     ]
@@ -1128,7 +1215,9 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
 
     # El admin (@Cuotasodds_bot) recibe SIEMPRE el analisis completo (todos los mercados
     # evaluados, no solo el mejor), se haya publicado o no en el canal de produccion.
-    full_text = format_full_analysis(league_label, pipeline, away_team, home_team, result, lineup_incomplete)
+    venue_tz = await _venue_timezone(ctx, game_obj)
+    full_text = format_full_analysis(league_label, pipeline, away_team, home_team, result,
+                                     lineup_incomplete, game_obj=game_obj, venue_tz=venue_tz)
     await ctx.telegram.send_message(ctx.admin_chat_id, full_text)
 
     # Aviso destacado de banda de edge MLB (ver constantes EDGE_ALERT_* arriba). Solo informativo,
