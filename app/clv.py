@@ -33,7 +33,7 @@ import datetime as dt
 import json
 import logging
 
-from app import aliases
+from app import aliases, odds_snapshots
 from app.node_bridge import NodeBridgeError, run_odds_scraper
 from app.odds_autofetch import (
     AUTOFETCH_BACKOFF_S, SCRAPER_LEAGUE, _match_scraped_game, _scrape_semaphore, _values_from_scraped,
@@ -105,6 +105,48 @@ async def _published_picks_starting_soon(ctx: PipelineContext) -> list[dict]:
     return out
 
 
+async def _games_starting_soon(ctx: PipelineContext) -> list[dict]:
+    """TODOS los partidos que empiezan dentro de la ventana, haya pick publicado o no.
+
+    Por que (2026-09-14, encargo del usuario): `pick_closing_lines` solo guarda el cierre de los
+    picks PUBLICADOS, que son poquisimos -- 7 filas desde el 2-ago, una por semana. El CLV es el
+    arbitro designado del edge (el P/L a corto es demasiado ruidoso: harian falta 5.036
+    observaciones en MLB y 6.664 en MiLB para zanjarlo), asi que a ese ritmo no responde nunca.
+
+    En cambio el sistema EVALUA ~50 candidatos al dia. Capturando el cierre de todos los partidos,
+    cada candidato de `*_candidates_history` puede cruzarse luego con su cierre, y la muestra pasa
+    de ~4/mes a miles. **Y no cuesta ni un scrape mas por partido**: el scraper ya devuelve TODOS
+    los partidos de la liga en cada pasada, asi que solo cambia a quien se le guarda la linea.
+    Lo que si aumenta es el numero de PASADAS, porque antes solo se scrapeaba si habia un pick
+    publicado a punto de empezar; ahora se scrapea cuando empieza cualquier partido.
+    """
+    async with ctx.pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT sport_id, game_pk, away_team_name, home_team_name, game_datetime_utc
+            FROM games_gate_state
+            WHERE game_datetime_utc BETWEEN now() AND now() + interval '{CAPTURE_WINDOW_MIN} minutes'
+            """
+        )
+    return [dict(r) for r in rows]
+
+
+async def _cierres_ya_guardados(ctx: PipelineContext, game_pks: list) -> set:
+    """game_pk que ya tienen foto de cierre, para no re-scrapear por gusto."""
+    if not game_pks:
+        return set()
+    ids = ",".join(str(g) for g in sorted(set(game_pks)))
+    try:
+        rows = await ctx.supabase.select(
+            ctx.http_client, "odds_snapshots",
+            {"game_id": f"in.({ids})", "fase": "eq.cierre", "select": "game_id"},
+        )
+        return {str(r["game_id"]) for r in rows}
+    except Exception:
+        logger.exception("CLV: no se pudo consultar cierres ya guardados")
+        return set()
+
+
 async def _already_captured(ctx: PipelineContext, game_pks: list) -> set:
     if not game_pks:
         return set()
@@ -116,17 +158,28 @@ async def _already_captured(ctx: PipelineContext, game_pks: list) -> set:
     return {(str(r["game_pk"]), r["market"], r["pick_side"]) for r in rows}
 
 
-async def _capture_league(ctx: PipelineContext, sport_id: int, picks: list[dict], now: dt.datetime) -> int:
+async def _capture_league(ctx: PipelineContext, sport_id: int, picks: list[dict], now: dt.datetime,
+                          partidos: list[dict] | None = None) -> int:
+    """`picks` alimenta `pick_closing_lines` (una fila por pick publicado, como siempre).
+    `partidos` son TODOS los partidos que empiezan pronto: de cada uno se guarda la linea completa
+    en `odds_snapshots` con fase='cierre'. Si no se pasa, se comporta como antes."""
     league_key = SCRAPER_LEAGUE.get(sport_id)
     if not league_key:
         return 0
+    # El lote de busqueda es la UNION: hay que nombrar en el scrape a todos los partidos de los que
+    # queramos linea, tengan pick o no. Deduplicado por game_pk.
+    lote: dict = {}
+    for p in list(partidos or []) + list(picks):
+        lote.setdefault(str(p["game_pk"]), p)
     cands = [
         aliases.CandidateGame(
             sport_id=sport_id, game_pk=p["game_pk"], away_team_id=None, home_team_id=None,
             away_team_name=p["away_team_name"], home_team_name=p["home_team_name"],
             game_datetime_utc=p["game_datetime_utc"],
-        ) for p in picks
+        ) for p in lote.values()
     ]
+    if not lote:
+        return 0  # nada que capturar: no se gasta turno del semaforo de Tor
     names = [n for c in cands for n in (c.away_team_name, c.home_team_name) if n]
     proxy = ctx.proxy_server_lmb if (sport_id == 23 and ctx.proxy_server_lmb) else ctx.proxy_server
     # Minutos hasta el partido MAS PROXIMO de este lote -- si ya esta a <2 min, no tiene sentido
@@ -134,7 +187,7 @@ async def _capture_league(ctx: PipelineContext, sport_id: int, picks: list[dict]
     # captura casi ha cerrado y un reintento mas solo consumiria turno del semaforo sin utilidad.
     def _min_minutes_to_start() -> float | None:
         vals = []
-        for p in picks:
+        for p in lote.values():
             gdt = p.get("game_datetime_utc")
             if gdt is None:
                 continue
@@ -145,6 +198,7 @@ async def _capture_league(ctx: PipelineContext, sport_id: int, picks: list[dict]
 
     total_inserted = 0
     pending = list(picks)
+    cierres_ok: set = set()   # game_pk cuya linea de cierre ya se guardo en esta llamada
     for attempt in range(1 + CAPTURE_RETRIES):
         status = "empty"
         games = []
@@ -177,6 +231,21 @@ async def _capture_league(ctx: PipelineContext, sport_id: int, picks: list[dict]
             if cand is None:
                 continue
             values = _values_from_scraped(scraped)
+
+            # Linea COMPLETA del partido (ML + total + handicap) con fase='cierre', haya pick o no.
+            # Misma tabla y misma forma que las fotos 'early' y 'gate_a', asi que el analisis puede
+            # comparar apertura -> gate -> cierre del mismo partido sin cruzar tablas distintas.
+            # `guardar` hace upsert (on_conflict game_id,fase) y NUNCA lanza: es telemetria y no
+            # puede tumbar la captura de los picks, que es el trabajo util de esta funcion.
+            if str(cand.game_pk) not in cierres_ok:
+                g = lote.get(str(cand.game_pk), {})
+                await odds_snapshots.guardar(
+                    ctx, sport_id, cand.game_pk, "cierre", values,
+                    away_team=g.get("away_team_name"), home_team=g.get("home_team_name"),
+                    game_date=g.get("game_datetime_utc"),
+                )
+                cierres_ok.add(str(cand.game_pk))
+
             for p in pending:
                 if p["game_pk"] != cand.game_pk:
                     continue
@@ -204,8 +273,9 @@ async def _capture_league(ctx: PipelineContext, sport_id: int, picks: list[dict]
                 logger.exception("CLV: fallo guardando pick_closing_lines (%s)", league_key)
 
         pending = [p for p in pending if p["game_pk"] not in matched_pks]
-        if not pending:
-            break  # ya se capturo cierre para todos los picks pedidos
+        faltan_cierres = [k for k in lote if k not in cierres_ok]
+        if not pending and not faltan_cierres:
+            break  # capturado todo: picks y lineas de cierre del lote
         if status not in ("empty", "scraper_failed", "wrong_catalog"):
             break  # trajo pagina real pero no matcheo -- reintentar no lo arregla, es problema de nombres
         if attempt >= CAPTURE_RETRIES:
@@ -230,18 +300,26 @@ async def capture_closing_lines_tick(ctx: PipelineContext) -> None:
     No debe tumbar el scheduler pase lo que pase -> todo envuelto en try/except."""
     try:
         picks = await _published_picks_starting_soon(ctx)
-        if not picks:
-            return
         captured = await _already_captured(ctx, [p["game_pk"] for p in picks])
         pending = [p for p in picks
                    if (str(p["game_pk"]), p["market"], _side_base(p["pick_side"])) not in captured]
-        if not pending:
+
+        # Y ademas TODOS los partidos que empiezan pronto, para la linea de cierre completa.
+        partidos = await _games_starting_soon(ctx)
+        ya = await _cierres_ya_guardados(ctx, [g["game_pk"] for g in partidos])
+        partidos = [g for g in partidos if str(g["game_pk"]) not in ya]
+
+        if not pending and not partidos:
             return
-        by_sport: dict[int, list] = {}
+
+        by_sport: dict[int, dict] = {}
         for p in pending:
-            by_sport.setdefault(p["sport_id"], []).append(p)
+            by_sport.setdefault(p["sport_id"], {"picks": [], "partidos": []})["picks"].append(p)
+        for g in partidos:
+            by_sport.setdefault(g["sport_id"], {"picks": [], "partidos": []})["partidos"].append(g)
+
         now = dt.datetime.now(dt.timezone.utc)
-        for sport_id, sport_picks in by_sport.items():
-            await _capture_league(ctx, sport_id, sport_picks, now)
+        for sport_id, lote in by_sport.items():
+            await _capture_league(ctx, sport_id, lote["picks"], now, partidos=lote["partidos"])
     except Exception:
         logger.exception("capture_closing_lines_tick fallo")
