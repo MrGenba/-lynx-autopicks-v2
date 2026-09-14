@@ -297,6 +297,57 @@ footer{margin:26px 0 8px;color:var(--muted);font-size:12px}
 """
 
 
+def _pid_pressure() -> dict:
+    """Presion de PIDs dentro del contenedor: cuantos procesos hay, cuantos son zombis y cual es
+    el tope del cgroup.
+
+    Existe por el apagon del 2026-09-13: Python corria como PID 1 sin init, los nietos de Chrome
+    (renderers y `chrome_crashpad_handler`) quedaban sin recoger, y se acumularon 9.458 zombis
+    hasta dejar `pids.current` en 9.477 de 9.483. A partir de ahi `posix_spawn` devolvia EAGAIN,
+    Chrome no arrancaba y el sistema paso ~19 h sin conseguir una sola cuota. Nada lo vio venir
+    porque este numero no estaba en ningun sitio observable: habia que entrar al contenedor.
+
+    `tini` (commit 56a85c6) corrige la causa, pero esto se queda igualmente: es el indicador
+    ADELANTADO -- da dias de margen, mientras que el resto del dashboard solo ve el fallo cuando ya
+    esta ocurriendo. Si tini funciona, `zombis` se queda en ~0 por muchos dias de uptime que pase.
+
+    No lanza NUNCA: un fallo aqui no puede tumbar el dashboard entero (misma regla que el bloque de
+    clima de los scrapers). Devuelve None en lo que no pueda leer.
+    """
+    out = {"pids": None, "pids_max": None, "zombis": None}
+    try:
+        with open("/sys/fs/cgroup/pids.current") as fh:
+            out["pids"] = int(fh.read().strip())
+    except Exception:
+        pass
+    try:
+        with open("/sys/fs/cgroup/pids.max") as fh:
+            raw = fh.read().strip()
+            out["pids_max"] = None if raw == "max" else int(raw)
+    except Exception:
+        pass
+    try:
+        import os
+        zombis = 0
+        for nombre in os.listdir("/proc"):
+            if not nombre.isdigit():
+                continue
+            try:
+                with open(f"/proc/{nombre}/stat") as fh:
+                    linea = fh.read()
+                # El campo `comm` va entre parentesis y puede contener espacios: el estado es el
+                # primer caracter despues del ULTIMO ')'.
+                estado = linea[linea.rindex(")") + 2]
+                if estado == "Z":
+                    zombis += 1
+            except Exception:
+                continue  # el proceso murio mientras lo leiamos, o no hay permiso
+        out["zombis"] = zombis
+    except Exception:
+        pass
+    return out
+
+
 def render_html(state: dict, refresh_s: int = 60) -> str:
     tor, summary = state["tor"], state["summary"] or {}
     cls, titulo, explica = _tor_verdict(tor, summary)
@@ -346,6 +397,32 @@ def render_html(state: dict, refresh_s: int = 60) -> str:
                       f"<div class='v {q_cls}'>{used}/{quota['limit']}</div>"
                       f"<div class='muted'>gastadas este mes · comprobado {_esc(_age((dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(quota['checked_at'])).total_seconds()))}</div></div>")
 
+    # Presion de PIDs -- el indicador ADELANTADO del apagon de cuotas (ver _pid_pressure).
+    # El texto es estable a proposito: `LYNX_VIGILANCIA_CUOTAS` (n8n) lo parsea buscando la
+    # etiqueta y leyendo las dos lineas siguientes. No cambiar el formato sin tocar ese workflow.
+    pp = _pid_pressure()
+    if pp["pids"] is None and pp["zombis"] is None:
+        tile_pids = ("<div class='card tile'><div class='k'>PIDs del contenedor</div>"
+                     "<div class='v muted'>sin datos</div>"
+                     "<div class='muted'>no se pudo leer /proc ni el cgroup</div></div>")
+    else:
+        pids = pp["pids"]
+        pmax = pp["pids_max"]
+        zom = pp["zombis"]
+        frac = (pids / pmax) if (pids is not None and pmax) else 0.0
+        # El umbral manda sobre la fraccion: 2.000 zombis ya es fuga aunque quede sitio de sobra.
+        p_cls = "bad" if (frac >= 0.70 or (zom or 0) >= 5000) else \
+                "warn" if (frac >= 0.40 or (zom or 0) >= 1000) else "ok"
+        valor = f"{pids}/{pmax}" if (pids is not None and pmax) else (str(pids) if pids is not None else "?")
+        detalle = f"{zom} zombis" if zom is not None else "zombis: ?"
+        if pids is not None and pmax:
+            detalle += f" · {frac * 100:.0f}% del tope"
+        if p_cls != "ok":
+            detalle += " · ¿reiniciar?"
+        tile_pids = (f"<div class='card tile'><div class='k'>PIDs del contenedor</div>"
+                     f"<div class='v {p_cls}'>{_esc(valor)}</div>"
+                     f"<div class='muted'>{_esc(detalle)}</div></div>")
+
     ahora = dt.datetime.now(dt.timezone.utc).strftime("%d/%m %H:%M:%S UTC")
 
     return f"""<!doctype html>
@@ -384,6 +461,7 @@ def render_html(state: dict, refresh_s: int = 60) -> str:
   <div class="card tile"><div class="k">Partidos con cuotas</div><div class="v">{con_cuotas}/{len(games)}</div>
     <div class="muted">{f'{parciales} parcial(es) en reintento' if parciales else 'ML + total · ventana -6h/+30h'}</div></div>
   {tile_quota}
+  {tile_pids}
 </div>
 
 <h2>Partidos y cuotas</h2>
