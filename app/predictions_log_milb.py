@@ -26,6 +26,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from app import mlb_stats_client
 from app.node_bridge import NodeBridgeError, run_quant
 
 logger = logging.getLogger(__name__)
@@ -53,9 +54,6 @@ def _nb_k_del_motor(vendor_dir: str) -> Optional[float]:
         logger.warning("predictions_log MiLB: no se pudo leer nb_k del motor")
         return None
 
-STATS_API = "https://statsapi.mlb.com/api/v1"
-
-
 async def _partidos_de_hoy(ctx) -> list[dict]:
     """El calendario Y los abridores se leen de la API EN VIVO, no de `daily_games`.
 
@@ -66,28 +64,31 @@ async def _partidos_de_hoy(ctx) -> list[dict]:
 
     El adaptador acepta los pitcher_id como fallback precisamente para este caso (lo dice su
     docstring), que es lo que hace el detector desde siempre.
+
+    **ARREGLO 2026-09-14 -- por esto la tabla llevaba UNA fila desde el 6-sep.** Antes se llamaba
+    a `statsapi.mlb.com` con `ctx.http_client.get()` + `raise_for_status()` directamente. Pero
+    **statsapi bloquea la IP de la VPS y devuelve 406**: visto en los logs del contenedor del
+    13-sep para esta misma URL (`sportId=11&date=...&hydrate=probablePitcher`). El 406 levantaba
+    excepcion, la capturaba el `except` del tick, se registraba "no se pudo leer el calendario" y
+    **se volvia sin guardar nada, todos los dias**.
+
+    `mlb_stats_client.get_schedule()` existe justo para eso —lleva el fallback a r.jina.ai desde
+    2026-07-09— y ademas ya devuelve los `probablePitcher`. Se reutiliza en vez de duplicar el
+    parseo: la duplicacion ERA el fallo, porque la copia se quedo sin la resiliencia del original.
     """
     hoy = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
-    r = await ctx.http_client.get(
-        f"{STATS_API}/schedule", params={"sportId": 11, "date": hoy, "hydrate": "probablePitcher"},
-        timeout=20.0,
-    )
-    r.raise_for_status()
-    partidos = []
-    for dia in r.json().get("dates", []):
-        for g in dia.get("games", []):
-            away = (g.get("teams", {}).get("away", {}) or {})
-            home = (g.get("teams", {}).get("home", {}) or {})
-            ap, hp = away.get("probablePitcher"), home.get("probablePitcher")
-            partidos.append({
-                "game_id": g["gamePk"],
-                "game_date": hoy,
-                "away_team_name": (away.get("team") or {}).get("name"),
-                "home_team_name": (home.get("team") or {}).get("name"),
-                "away_pitcher_id": ap.get("id") if ap else None,
-                "home_pitcher_id": hp.get("id") if hp else None,
-            })
-    return partidos
+    juegos = await mlb_stats_client.get_schedule(ctx.http_client, SPORT_ID, hoy)
+    return [
+        {
+            "game_id": g.game_pk,
+            "game_date": hoy,
+            "away_team_name": g.away_team_name,
+            "home_team_name": g.home_team_name,
+            "away_pitcher_id": g.away_pitcher_id,
+            "home_pitcher_id": g.home_pitcher_id,
+        }
+        for g in juegos
+    ]
 
 
 async def _ya_guardado(ctx, game_pk: int) -> bool:
