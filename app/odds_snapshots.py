@@ -34,6 +34,44 @@ SCRAPER_LEAGUE = {11: "MiLB"}
 LEAGUE_LABEL = {1: "MLB", 11: "MiLB", 23: "LMB"}
 TABLA = "odds_snapshots"
 
+# Cuanto hacia delante mira la foto temprana. 18 h desde el tick (11:00 UTC) cubre la jornada
+# americana entera -- de 22:00 UTC a 02:00 UTC del dia siguiente -- sin llegar a tocar la del dia
+# de despues, que ademas la casa todavia no cotiza.
+VENTANA_SLATE = dt.timedelta(hours=18)
+
+
+def partidos_del_slate(partidos: list[dict], ahora: dt.datetime,
+                       ventana: dt.timedelta = VENTANA_SLATE) -> list[dict]:
+    """Los partidos que AUN NO han empezado y arrancan dentro de la ventana.
+
+    Antes esto era `str(game_date)[:10] == hoy_utc` y era el bug (2026-09-15): `game_date` es un
+    timestamptz y la jornada de MiLB cae a caballo de la medianoche UTC, asi que a las 11:02 UTC
+    ese filtro cogia los partidos de ANOCHE -- ya jugados hacia 9-10 h -- y dejaba fuera los de
+    esta noche que empiezan despues de las 00:00 UTC. Lo que define el slate no es la fecha UTC,
+    es que el partido este por jugarse.
+    """
+    fuera = []
+    for p in partidos:
+        inicio = inicio_utc(p)
+        if inicio is None:
+            continue
+        if ahora < inicio <= ahora + ventana:
+            fuera.append(p)
+    return fuera
+
+
+def inicio_utc(partido: dict) -> Optional[dt.datetime]:
+    """La hora de inicio como datetime con zona, o None si la fila no la trae legible."""
+    crudo = partido.get("game_date")
+    if not crudo:
+        return None
+    try:
+        inicio = dt.datetime.fromisoformat(str(crudo).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        logger.warning("odds_snapshots: game_date ilegible %r en game_id=%s", crudo, partido.get("game_id"))
+        return None
+    return inicio if inicio.tzinfo else inicio.replace(tzinfo=dt.timezone.utc)
+
 
 def _valores(scraped: dict) -> dict:
     """Extrae las cuotas del formato del scraper. A diferencia de _values_from_scraped de
@@ -94,7 +132,10 @@ async def _partidos_de_hoy(ctx, sport_id: int) -> list[dict]:
     return await ctx.supabase.select(ctx.http_client, "daily_games", {
         "select": "game_id,game_date,away_team_name,home_team_name,away_pitcher_id,home_pitcher_id",
         "game_date": f"gte.{hoy}",
-        "order": "game_id.asc",
+        # Ordenado por FECHA, no por game_id: la consulta no tiene tope superior, asi que trae
+        # tambien los partidos de dias siguientes y con `limit 60` podrian empujar fuera a los de
+        # esta noche, que son justo los que se quieren fotografiar.
+        "order": "game_date.asc",
         "limit": "60",
     })
 
@@ -109,10 +150,11 @@ async def capture_early_snapshot_tick(ctx) -> None:
         except Exception:
             logger.exception("odds_snapshots: no se pudo leer el calendario de %s", league_key)
             continue
-        hoy = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
-        partidos = [p for p in partidos if str(p.get("game_date", ""))[:10] == hoy]
+        ahora = dt.datetime.now(dt.timezone.utc)
+        partidos = partidos_del_slate(partidos, ahora)
         if not partidos:
-            logger.info("odds_snapshots: sin partidos de %s hoy -- nada que fotografiar", league_key)
+            logger.info("odds_snapshots: sin partidos de %s por jugar en las proximas %s -- nada que "
+                        "fotografiar", league_key, VENTANA_SLATE)
             continue
 
         nombres = [n for p in partidos for n in (p.get("away_team_name"), p.get("home_team_name")) if n]
@@ -139,7 +181,10 @@ async def capture_early_snapshot_tick(ctx) -> None:
                 sport_id=sport_id, game_pk=p["game_id"],
                 away_team_id=None, home_team_id=None,
                 away_team_name=p.get("away_team_name") or "", home_team_name=p.get("home_team_name") or "",
-                game_datetime_utc=None,
+                # CON la hora: sin ella `_hora_compatible` deja pasar cualquier cosa "por falta
+                # de informacion" y la linea de esta noche acaba pegada al game_pk de anoche,
+                # porque los nombres se repiten toda la serie. Es el bug del 2026-09-15.
+                game_datetime_utc=inicio_utc(p),
             ) for p in partidos
         ]
         por_pk = {p["game_id"]: p for p in partidos}

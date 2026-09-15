@@ -105,3 +105,52 @@ async def test_guardar_nunca_propaga_el_error():
 def test_solo_milb_de_momento():
     assert set(SCRAPER_LEAGUE) == {11}
     assert LEAGUE_LABEL[11] == "MiLB"
+
+
+# ── El slate de la foto temprana (2026-09-15) ────────────────────────────────────────────────
+#
+# Que fallaba: `capture_early_snapshot_tick` elegia los partidos cuya `game_date` empezaba por la
+# FECHA UTC de hoy. Pero `daily_games.game_date` es un timestamptz y la jornada americana de MiLB
+# cae a caballo de la medianoche UTC (de 22:00 a 02:00), asi que a las 11:02 UTC ese filtro metia
+# los partidos de ANOCHE -- ya jugados hacia 9-10 h -- y dejaba fuera los de esta noche que
+# empiezan pasada la medianoche UTC.
+#
+# Y el emparejador no lo cazaba porque los candidatos se construian con `game_datetime_utc=None`,
+# lo que desactiva la guarda de hora de `2a85a17` (`_hora_compatible` deja pasar "por falta de
+# informacion"). Como los nombres se repiten toda la serie, la linea de esta noche se guardaba
+# contra el game_pk de anoche. Resultado medido: las 7 unicas filas `early` que llego a haber eran
+# fotos de partidos ya terminados, y sus "parejas" con `gate_a` estaban invertidas en el tiempo.
+from app.odds_snapshots import VENTANA_SLATE, partidos_del_slate
+
+AHORA = dt.datetime(2026, 9, 15, 11, 2, tzinfo=dt.timezone.utc)
+
+
+def _p(pk, iso):
+    return {"game_id": pk, "game_date": iso, "away_team_name": "A", "home_team_name": "B"}
+
+
+def test_el_slate_excluye_los_partidos_de_anoche():
+    """El caso real: a las 11:02 UTC, un partido que empezo a las 00:35 de ese mismo dia UTC lleva
+    diez horas jugado. Fotografiar su linea no mide nada."""
+    anoche = _p(1, "2026-09-15T00:35:00+00:00")
+    assert partidos_del_slate([anoche], AHORA) == []
+
+
+def test_el_slate_incluye_los_de_esta_noche_aunque_crucen_la_medianoche_utc():
+    """Lo que el filtro viejo tiraba: 01:45 UTC del dia siguiente es la misma jornada americana."""
+    pronto = _p(2, "2026-09-15T22:05:00+00:00")
+    tarde = _p(3, "2026-09-16T01:45:00+00:00")
+    assert [p["game_id"] for p in partidos_del_slate([pronto, tarde], AHORA)] == [2, 3]
+
+
+def test_el_slate_no_se_estira_al_dia_siguiente():
+    """Mas alla de la ventana ya es otra jornada, y ademas la casa no la ha cotizado todavia."""
+    pasado = _p(4, "2026-09-16T22:05:00+00:00")
+    assert partidos_del_slate([pasado], AHORA) == []
+    assert VENTANA_SLATE < dt.timedelta(hours=24)
+
+
+def test_el_slate_tolera_fechas_invalidas_sin_reventar():
+    """La telemetria no puede tumbar nada: una fila rara se ignora y las buenas siguen."""
+    bueno = _p(5, "2026-09-15T23:00:00+00:00")
+    assert [p["game_id"] for p in partidos_del_slate([_p(6, ""), _p(7, None), bueno], AHORA)] == [5]
