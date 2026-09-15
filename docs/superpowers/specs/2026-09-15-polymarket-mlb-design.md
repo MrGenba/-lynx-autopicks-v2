@@ -1,153 +1,163 @@
-# Cuotas de Polymarket para MLB al completarse el lineup
+# Edge Hunter: línea nueva de Polymarket para MLB
 
 **Fecha**: 2026-09-15
-**Estado**: diseño aprobado, pendiente de plan de implementación
+**Estado**: diseño aprobado; condiciones y cantidades de apuesta **pendientes de que las dé el usuario**
 **Encargo del usuario**: *"quiero que en MLB saques las cuotas de polymarket cuando tengas los
-lineup completos"*
+lineup completos"*, y después: *"no modifiques nada de lo antiguo, esto quiero que sea una línea
+nueva, quiero que me avises en el mismo canal de edge hunter, quiero que haga las apuestas
+automáticas cuando se cumplan las condiciones que te diga"*.
+
+> **Reescrito el mismo día.** La primera versión de este spec enganchaba la captura en el Gate B de
+> `app/detector.py`. **Queda descartada**: el usuario pidió explícitamente no tocar nada de lo
+> existente. Lo que sigue es una línea independiente que solo **lee**.
 
 ---
 
-## Por qué esto importa más de lo que parece
+## Por qué esto importa
 
-El proyecto tiene identificado desde el 2026-09-10 que **su palanca más grande no es el modelo, es
-el precio**: con el mismo acierto, las mismas apuestas pasan de **+5,5 % a +12,5 % de yield** solo
-cambiando de un libro al 9,3 % de vig a uno al 2,5 %. Nuestro vig medido en MLB con bet365 es
-**5,26 %**.
+La palanca más grande medida en el proyecto no es el modelo, es el precio: con el mismo acierto, las
+mismas apuestas pasan de **+5,5 % a +12,5 % de yield** cambiando de un libro al 9,3 % de vig a uno
+al 2,5 %. Nuestro vig en MLB con bet365 es **5,26 %**.
 
-Medido el 2026-09-15 contra la API de Gamma, los mercados de MLB de Polymarket publican precios que
-**suman 1.000 exacto**:
+Medido en vivo el 2026-09-15: los 6 partidos de esa noche tenían mercado en Polymarket, con precios
+que **suman 1.000 exacto** y un libro real de **bid 0.68 / ask 0.69** en el Dodgers-Reds, o sea
+**~1,45 % de spread**. Si eso aguanta con muestra, es tres veces más barato que donde apostamos hoy.
 
-| Partido (15-sep) | Precios | Liquidez |
+⚠️ **Y el aviso que tiene que viajar con este documento**: las auditorías del 2026-09-14 dan **MLB a
+−5,2 % de yield (n=4.122)** y **ningún corte de edge —8 %, 12 % ni 18 %— distinguible de cero**. La
+única señal que apuntaba a algo se apagó (t = −1,67 → −0,81 en cuatro lecturas). **Automatizar
+apuestas sobre el edge que produce el motor hoy es automatizar pérdidas.** Si esta línea llega a
+apostar, tiene que ser porque sus condiciones explotan algo distinto —el precio, no el modelo— y eso
+hay que demostrarlo con sus propios datos antes de enviar una orden.
+
+## Principio rector: no se toca nada de lo viejo
+
+- **Cero modificaciones** en `autopicks_v2`, en sus 27 workflows de n8n, en sus tablas o en sus
+  picks. Esta línea **solo lee**.
+- No comparte proceso, ni despliegue, ni cadena de fallos con el sistema de picks. Si Edge Hunter se
+  cae, Lynx Hunter no se entera.
+- Tabla propia (`edge_hunter_*`), canal propio de Telegram, ciclo propio.
+- Tampoco depende de la tabla `lineup_watch` del Lineup Watcher, aunque exista y tenga los datos:
+  eso acoplaría la línea nueva a la cadencia de la vieja. Edge Hunter detecta el lineup por su
+  cuenta contra StatsAPI.
+
+## Fases
+
+| Fase | Qué hace | Qué la desbloquea |
 |---|---|---|
-| Dodgers vs Reds | 0.685 / 0.315 | 269.859 $ |
-| White Sox vs Guardians | 0.425 / 0.575 | 353.933 $ |
-| Brewers vs Pirates | 0.665 / 0.335 | 345.381 $ |
-| Phillies vs Nationals | 0.655 / 0.345 | 248.762 $ |
-| Tigers vs Blue Jays | 0.435 / 0.565 | 252.938 $ |
+| **A** | Detecta lineup completo, captura Polymarket, avisa al canal, y evalúa las condiciones **en modo papel** (registra "habría apostado X" sin enviar nada) | Ya: no necesita nada del usuario salvo el chat id |
+| **B** | Envía órdenes reales al CLOB | Condiciones y cantidades del usuario **+** una semana de modo papel cuadrada **+** los topes de seguridad activos |
 
-⚠️ **El precio publicado NO es el coste.** En un libro de órdenes el peaje está en el *spread* entre
-el mejor bid y el mejor ask, y Gamma no lo muestra. **Que sumen 1.000 no demuestra que el vig sea
-cero**: es la razón por la que este diseño captura también el libro del CLOB, y por la que la fase 2
-no se desbloquea sin esa medición. Cualquier conclusión sobre "cuánto nos ahorramos" antes de tener
-el spread medido es exactamente el tipo de afirmación que este proyecto ya ha tenido que retirar dos
-veces por ruido.
+**Este spec cubre la fase A completa y el diseño de la B.** Los números de la B (umbrales, stakes,
+límites) los dará el usuario y entran como **configuración**, no como código.
 
-## Alcance
-
-**Fase 1 — medir, no publicar.** La captura no toca el motor, ni el edge, ni lo que se publica. Es
-telemetría comparable con lo que ya tenemos de bet365.
-
-**Fase 2 — conectar al motor**, solo cuando se cumplan **las dos** condiciones fijadas por
-adelantado:
-
-1. **Spread real medido** sobre el libro del CLOB (mejor bid/ask), no sobre el precio publicado.
-2. **≥ 200 partidos capturados.**
-
-Es el mismo listón que el proyecto ya fijó para el CLV, y está puesto aquí a propósito para no
-repetir el error documentado en `CLAUDE.md` de decidir con n=14.
-
-**Fuera de alcance en las dos fases**: operar en Polymarket (no se firma nada, no se envía ninguna
-orden, no se toca la `CLOB_API_KEY`), y cualquier liga que no sea MLB.
-
-## Arquitectura
+## Arquitectura de la fase A
 
 ### Dónde corre
 
-En el contenedor **`autopicks_v2`**, módulo nuevo `app/polymarket.py`.
+**Un workflow nuevo de n8n**, `EDGE_HUNTER_POLYMARKET`, cada 10 minutos. Es la infraestructura que
+ya está en el VPS, no hay que montar nada, y añadir un workflow no modifica ninguno de los 27
+existentes.
 
-Alternativas descartadas y por qué:
+Alternativas descartadas:
+- **Meterlo en `autopicks_v2`**: viola el principio de arriba.
+- **Un servicio nuevo en EasyPanel**: es lo que hará falta para la fase B (firmar órdenes necesita
+  `py-clob-client` o `@polymarket/clob-client`, que no se pueden cargar en un nodo Code de n8n),
+  pero montar repo + imagen + servicio para la fase A es infraestructura antes de tener la
+  medición que la justifique.
+- **La box `polymarket/flow-alerts`**: es código de junio que ya corre; tocarlo es exactamente lo
+  que el usuario ha pedido no hacer.
 
-- **La box `polymarket/flow-alerts`** (que ya tiene cliente propio para las tres APIs): **no expone
-  ni puertos ni dominios**, así que habría que abrirle una API y meter un servicio más en el camino
-  crítico de los picks. Se reaprovecha su *conocimiento* (endpoints, el detalle de que los deportes
-  americanos llevan `game_start_time` en el CLOB), no su proceso.
-- **Un workflow de n8n sondeando cada X minutos**: no está atado al lineup, que es justo el disparo
-  que pidió el usuario, y duplicaría la lógica de saber cuándo el lineup está completo.
+### Ciclo, cada 10 minutos
 
-### Disparo
+1. **Partidos de hoy**: `GET statsapi.mlb.com/api/v1/schedule?sportId=1&date=<hoy ET>`. Se queda con
+   los que empiezan en las próximas 6 h y aún no han empezado.
+2. **¿Lineup completo?**: `GET /game/<pk>/boxscore` y comprobar `battingOrder >= 9` en los dos
+   equipos — el mismo criterio que usa el sistema viejo, reimplementado, no importado.
+3. **Si está completo y este partido no se ha capturado aún**: se pide a Gamma el evento por slug
+   `mlb-<visitante>-<local>-<fecha ET>` y al CLOB el libro de los dos tokens del moneyline.
+4. **Se guarda** en `edge_hunter_snapshots` (tabla propia).
+5. **Se avisa** al canal de edge hunter con el precio, el spread y la comparación con nuestra
+   probabilidad si la hay.
+6. **Se evalúan las condiciones en modo papel** y se registra la apuesta hipotética.
 
-En la rama de **Gate B / `full_lineup` de MLB** (`sport_id=1`), una llamada a
-`capturar_al_lineup(ctx, game_pk, away, home, game_date)`.
-
-**Envuelta en try/except sin excepción.** Es telemetría: un fallo de Polymarket no puede tumbar el
-pipeline de picks. El proyecto ya pagó esto tres veces (17 días de apagón de NPB, el clima de CPBL,
-`predictions_log`), y la regla escrita es: *lo que va DESPUÉS del trabajo útil no puede poder
-tumbarlo*.
-
-### Encontrar el mercado
-
-Slug `mlb-<visitante>-<local>-<AAAA-MM-DD>` contra `GET gamma-api.polymarket.com/events?slug=...`.
-
-Dos trampas identificadas antes de escribir código:
-
-1. **La fecha del slug es la americana del partido**, no la UTC. Se toma de `mlb_games.game_date`,
-   que ya es la fecha oficial. Calcularla desde el `datetime` UTC es el mismo error que acaba de
-   costar el experimento de los abridores (ver `CLAUDE.md`, 2026-09-15): la jornada americana cae a
-   caballo de la medianoche UTC.
-2. **Las abreviaturas necesitan tabla propia.** En la prueba del 15-sep casaron 5 de 6 partidos; el
-   que falló fue **Athletics @ Rays**, porque los Athletics ya no son `oak`. El mapa vive en el
-   módulo, con un test por cada caso raro conocido.
-
-**Un slug que no casa NO es un error silencioso**: se escribe igualmente una fila con
-`encontrado=false` y el slug intentado, de modo que la cobertura sea una cifra medible y no una
-ausencia invisible. Esa es la diferencia entre "no hay datos" y "no sabemos si hay datos", que en
-este proyecto ya ha escondido una pérdida parcial más de una vez.
+**La fecha del slug es la americana (ET)**, nunca la UTC: la jornada de MLB cae a caballo de la
+medianoche UTC y ese error ya invalidó el experimento de los abridores el mismo día que se escribe
+esto.
 
 ### Qué se guarda
 
-Tabla nueva en Supabase, **`polymarket_snapshots`**:
+Tabla **`edge_hunter_snapshots`**: `game_pk`, `game_date`, `captured_at`, `slug`, `encontrado`,
+`evento` (JSONB, **los 17 mercados tal cual**), `libro` (JSONB, bid/ask del moneyline), `ml_away`,
+`ml_home`, `spread_pct`, `prob_modelo_away` (si la tenemos), `edge_pct`, `decision` (texto),
+`papel` (boolean). `UNIQUE (game_pk)`.
 
-| Columna | Tipo | Para qué |
-|---|---|---|
-| `id` | BIGSERIAL | |
-| `game_pk` | BIGINT | el partido nuestro |
-| `liga` | TEXT | 'MLB' de momento |
-| `game_date` | DATE | fecha americana |
-| `captured_at` | TIMESTAMPTZ | |
-| `fase` | TEXT | `full_lineup` ahora; deja sitio a `cierre` después |
-| `slug` | TEXT | el slug intentado, casara o no |
-| `encontrado` | BOOLEAN | cobertura medible |
-| `evento` | JSONB | **el evento entero, los 17 mercados tal cual** |
-| `libro` | JSONB | mejor bid/ask de los dos tokens del moneyline |
-| `ml_away`, `ml_home` | NUMERIC | derivadas, para leer sin parsear |
-| `spread_pct` | NUMERIC | derivada: el coste real |
+La probabilidad del modelo se **lee** de `predictions_log` (que ya escribe el sistema viejo para
+todos los partidos del día, tenga cuotas o no). Si no hay fila, se guarda igual con `edge_pct` nulo:
+la captura del precio vale por sí sola.
 
-El JSON crudo es deliberado: el usuario pidió los 17 mercados y **todavía no sabemos leer 15 de
-ellos**. Fijar hoy columnas para eso sería adivinar. Las derivadas cubren la lectura diaria.
+### El aviso
 
-`UNIQUE (game_pk, fase)` y `on_conflict` en el upsert: sin `on_conflict` explícito PostgREST
-**no hace upsert, hace INSERT**, y devuelve 409 en silencio — ya documentado en este repo dos veces.
+Al canal de edge hunter, un mensaje por partido cuando se captura:
 
-### Cómo se vigila
+```
+⚾ Edge Hunter · Dodgers @ Reds
+Polymarket  LAD 0.685 / CIN 0.315  ·  libro 0.68/0.69  ·  spread 1,45%
+Modelo      LAD 0.71                ·  edge +3,7%
+Decisión    PAPEL: habría apostado — (sin condiciones configuradas)
+```
 
-Una línea más en `LYNX_SALUD_DIARIA` (18:00 UTC): **capturas / partidos del día y spread mediano**.
-Si la captura se cae, llega en el resumen diario sin que nadie tenga que mirar nada — que es la
-regla de que la vigilancia vive en el VPS, no en el PC del usuario.
+## Diseño de la fase B (apuestas reales)
 
-## Tests (antes del código)
+**No se implementa hasta tener las condiciones**, pero el diseño se fija ahora para que la fase A no
+haya que rehacerla.
 
-1. **Slug**: construcción normal, la excepción de Athletics, y que la fecha sea la americana aunque
-   el partido empiece pasada la medianoche UTC.
-2. **Aislamiento**: si la API falla, lanza o devuelve basura, `capturar_al_lineup` no propaga nada y
-   el pipeline sigue.
-3. **Cobertura**: un slug que no casa escribe fila con `encontrado=false`.
-4. **Spread**: cálculo sobre un libro de ejemplo, incluido el caso de libro vacío (spread nulo, no
-   cero — que no es lo mismo y confundirlos inventaría un coste de 0 %).
+### Dónde
 
-## Despliegue
+Servicio nuevo en EasyPanel (proyecto `polymarket`, servicio `edge-hunter`), con su propio
+repositorio. Motivo: firmar una orden del CLOB requiere una librería que un nodo Code de n8n no
+puede cargar, y la clave privada del monedero no debe vivir en n8n junto a 27 workflows ajenos.
 
-1. **DDL por la Management API de Supabase** (`deploy_odds_snapshots_fase_cierre.js` es el patrón
-   vivo). Ojo: el patrón viejo de DDL por un workflow temporal de n8n con nodo Postgres **ya no
-   funciona** — esa credencial no existe.
-2. Commit y **rebuild del contenedor**; verificar por `/version` contra `python -m app.version`.
-3. Redesplegar el nodo de `LYNX_SALUD_DIARIA` con la línea nueva.
+### Las condiciones, como configuración
+
+Las dará el usuario y entran como una tabla `edge_hunter_config` de un solo registro, **no como
+código**, para poder cambiarlas sin desplegar:
+
+| Campo | Qué es |
+|---|---|
+| `activo` | interruptor maestro; si es `false`, todo sigue en papel |
+| `edge_minimo` | edge mínimo contra el precio de Polymarket |
+| `spread_maximo` | si el libro está más ancho que esto, no se apuesta |
+| `liquidez_minima` | tamaño mínimo en el mejor precio |
+| `stake` | cantidad por apuesta |
+| `max_diario` | exposición máxima en 24 h |
+| `max_abiertas` | posiciones abiertas simultáneas |
+| `mercados` | lista blanca de mercados permitidos |
+
+### Las cuatro salvaguardas, no negociables
+
+1. **Modo papel primero.** Mismo código, misma decisión, misma alerta; sin enviar orden. Se levanta
+   solo cuando una semana de papel cuadra.
+2. **Topes duros.** Stake por apuesta, exposición diaria y posiciones abiertas. Al superarse: no
+   apuesta y avisa.
+3. **Interruptor de parada** accionable desde Telegram, respetado en el ciclo siguiente.
+4. **Se escribe antes de enviar.** La fila de la apuesta se guarda *antes* de firmar la orden, para
+   que no pueda existir una orden sin registro. Una orden enviada no se puede deshacer; una fila
+   huérfana sí se limpia.
+
+### Lo que esta línea NO hará nunca
+
+- Retirar fondos, mover el monedero o firmar nada que no sea una orden dentro de los topes.
+- Apostar en una liga que no sea MLB.
+- Tocar los picks, el motor ni las tablas del sistema viejo.
 
 ## Riesgos conocidos
 
-- **El `startDate` de Gamma no es de fiar**: en la prueba devolvió `2026-09-09` para partidos del 15.
-  Se usa nuestra hora del partido, nunca la suya.
-- **Liquidez y spread pueden variar mucho por partido**: un mercado con 250.000 $ de liquidez no
-  garantiza un spread estrecho en el momento de la captura. Por eso el criterio de fase 2 es el
-  spread medido, no la liquidez anunciada.
-- **Cobertura desconocida**: 5 de 6 en una muestra de un día no es una medición. La propia columna
-  `encontrado` la convertirá en una cifra a la semana de correr.
+- **El `startDate` de Gamma no es de fiar** (devolvió `2026-09-09` para partidos del 15): se usa
+  siempre nuestra hora.
+- **Cobertura no medida**: 6 de 6 en una noche no es una medición. La columna `encontrado` la
+  convierte en cifra en una semana.
+- **Liquidez ≠ spread estrecho**: 250.000 $ anunciados no garantizan un buen precio en el momento de
+  apostar. Por eso `spread_maximo` y `liquidez_minima` son condiciones de entrada, no adornos.
+- **El modelo no tiene ventaja demostrada hoy.** Ver el aviso de arriba. La fase B solo tiene sentido
+  si sus propios datos muestran otra cosa.
