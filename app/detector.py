@@ -22,6 +22,44 @@ from app.pipelines import PipelineContext, get_odds, try_fire_pipeline
 logger = logging.getLogger(__name__)
 
 ACTIVE_STATUSES = {"Preview", "Pre-Game", "Warmup", "Scheduled"}
+
+# ── Aviso de schedule caido: solo cuando de verdad hay algo que mirar ─────────────────────────
+# 2026-09-15. El detector avisaba por Telegram en CADA fallo del schedule, y el tick es de 180 s.
+# Como statsapi devuelve 406 a sportId 11 y 23 desde esta VPS (a sportId 1 no), esas dos ligas
+# pasan SIEMPRE por r.jina.ai, y un tropiezo suyo -- 470 usos, 1 timeout -- llegaba al Telegram del
+# usuario con la misma fuerza que un apagon real. Un fallo que se arregla solo en 3 minutos no es
+# una alarma; lo que hay que avisar es la racha.
+FALLOS_ANTES_DE_AVISAR = 3                       # ~9 min de tick
+COOLDOWN_AVISO = dt.timedelta(hours=1)           # si sigue roto, recordarlo una vez por hora
+_estado_schedule: dict[int, dict] = {}           # sport_id -> {"seguidos": int, "ultimo_aviso": dt}
+
+
+def registrar_fallo_schedule(sport_id: int, ahora: dt.datetime) -> bool:
+    """Anota un fallo del schedule de esa liga y devuelve si toca avisar.
+
+    Cada liga lleva su cuenta: MiLB y LMB fallan por la misma causa pero no tienen por que fallar
+    a la vez, y mezclarlas haria saltar un aviso con un solo fallo en cada una."""
+    st = _estado_schedule.setdefault(sport_id, {"seguidos": 0, "ultimo_aviso": None})
+    st["seguidos"] += 1
+    if st["seguidos"] < FALLOS_ANTES_DE_AVISAR:
+        return False
+    ultimo = st["ultimo_aviso"]
+    if ultimo is not None and ahora - ultimo < COOLDOWN_AVISO:
+        return False
+    st["ultimo_aviso"] = ahora
+    return True
+
+
+def registrar_exito_schedule(sport_id: int) -> None:
+    """La liga ha vuelto: se reinicia la racha (el aviso mira fallos SEGUIDOS, no acumulados)."""
+    st = _estado_schedule.get(sport_id)
+    if st:
+        st["seguidos"] = 0
+
+
+def reiniciar_estado_schedule() -> None:
+    """Solo para los tests: deja el contador como recien arrancado el proceso."""
+    _estado_schedule.clear()
 # 2026-08-06 se subio SOLO LMB de 3h a 6h: cuotasahora publica sus lineas ANTES de 3h del inicio
 # (verificado con Toros@Caliente, ML/Total/HC a 3h33m), y con 3h el detector no las pedia a tiempo.
 # A MLB/MiLB se les dejo en 3h asumiendo que "sus cuotas salen ~al lineup".
@@ -192,14 +230,20 @@ async def detector_tick(ctx: PipelineContext) -> None:
         for sport_id, cfg in ((1, {}), (11, {}), (23, {"league_id": 125})):
             try:
                 games = await mlb_api.get_schedule(client, sport_id, today, cfg.get("league_id"))
+                registrar_exito_schedule(sport_id)
             except Exception as e:
                 logger.exception("detector: fallo el schedule de sport_id=%s", sport_id)
                 # Sin acceso a logs del contenedor, avisar tambien por Telegram es la unica
-                # forma practica de detectar este tipo de fallo en producción.
-                await ctx.telegram.send_message(
-                    ctx.admin_chat_id,
-                    f"❌ Detector: fallo el schedule de sport_id={sport_id}: {str(e)[:250]}",
-                )
+                # forma practica de detectar este tipo de fallo en producción -- pero solo si la
+                # liga lleva varios ticks seguidos caida (ver FALLOS_ANTES_DE_AVISAR). El fallo
+                # suelto queda en el log, que es donde corresponde.
+                if registrar_fallo_schedule(sport_id, dt.datetime.now(dt.timezone.utc)):
+                    seguidos = _estado_schedule[sport_id]["seguidos"]
+                    await ctx.telegram.send_message(
+                        ctx.admin_chat_id,
+                        f"❌ Detector: el schedule de sport_id={sport_id} lleva "
+                        f"{seguidos} ticks fallando: {str(e)[:220]}",
+                    )
                 continue
 
             for g in games:

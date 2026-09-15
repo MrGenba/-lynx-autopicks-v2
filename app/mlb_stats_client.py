@@ -47,18 +47,35 @@ async def _fetch_jina(client: httpx.AsyncClient, url: str, retries: int = 1) -> 
     # (detector_tick usaba esto para CADA partido activo en CADA tick de 180s para siempre,
     # ver el fix en detector.py que ya reduce el volumen; este reintento es solo la red de
     # seguridad adicional para picos puntuales, no el arreglo principal).
+    #
+    # 2026-09-15: el reintento cubria SOLO el 429, y el fallo real que llego fue un TIMEOUT, que
+    # se propagaba tal cual y dejaba a la liga sin schedule ese tick. Importa mas de lo que parece
+    # porque statsapi devuelve 406 a sportId 11 y 23 desde esta VPS (a sportId 1 no): para MiLB y
+    # LMB esto NO es un fallback, es el unico camino. Ahora se reintenta ante cualquier fallo
+    # transitorio -- red, timeout o 429 -- que es lo que ya hacia el camino directo.
+    last_exc: Exception | None = None
     for attempt in range(retries + 1):
-        jina_resp = await client.get(
-            f"https://r.jina.ai/{url}",
-            headers={"Accept": "text/plain", "X-Return-Format": "text"},
-            timeout=15.0,
-        )
-        if jina_resp.status_code == 429 and attempt < retries:
-            await asyncio.sleep(3.0)
-            continue
-        jina_resp.raise_for_status()
-        body = jina_resp.text
-        return json.loads(body) if isinstance(body, str) else body
+        try:
+            jina_resp = await client.get(
+                f"https://r.jina.ai/{url}",
+                headers={"Accept": "text/plain", "X-Return-Format": "text"},
+                timeout=15.0,
+            )
+            if jina_resp.status_code == 429 and attempt < retries:
+                await asyncio.sleep(3.0)
+                continue
+            jina_resp.raise_for_status()
+            body = jina_resp.text
+            return json.loads(body) if isinstance(body, str) else body
+        except Exception as e:
+            last_exc = e
+            if attempt < retries:
+                await asyncio.sleep(3.0)
+                continue
+            raise
+    # Solo se llega aqui si el ultimo intento fue un 429 con `continue` (no puede pasar con
+    # retries>=0, pero dejarlo mudo seria el tipo de silencio que este proyecto ya ha pagado caro).
+    raise last_exc if last_exc else RuntimeError(f"jina no devolvio nada para {url}")
 
 
 @dataclass
