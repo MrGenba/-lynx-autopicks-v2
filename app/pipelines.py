@@ -48,6 +48,11 @@ _edge_alert_keys: set = set()
 # el contenedor -- peor caso, un aviso repetido, aceptable.
 _stale_odds_notice_keys: set = set()
 
+# Dedup del aviso "no se guardaron los candidatos" (2026-09-16). Mismo criterio: un reinicio puede
+# repetir un aviso, y se prefiere eso a callarse -- callarse es justo lo que costo ~800
+# evaluaciones de pipeline 2 perdidas por un 409 que solo iba a un logger.exception.
+_cand_save_notice_keys: set[tuple[int, int, int]] = set()
+
 _datos_insuf_notice_keys: set[tuple[int, int, int]] = set()
 
 
@@ -85,6 +90,14 @@ async def _abridores_sin_historial(ctx, away_pid, home_pid) -> list[int]:
 
 
 CANDIDATES_HISTORY_TABLE = {1: "mlb_candidates_history", 11: "candidates_history", 23: "lmb_candidates_history"}
+# Candidatos de PIPELINE 2 (lineup confirmado). Tabla APARTE, y no es un capricho: la base tiene
+# UNIQUE (game_id, market, pick_side), asi que el INSERT de pipeline 2 devolvia 409, el
+# `raise_for_status()` lanzaba y el try/except de mas abajo lo enterraba en un logger.exception.
+# Medido en pipeline_runs el 2026-09-16: 532 runs de pipeline 2 en MLB con 500 quant_result y
+# 344/310 en MiLB -- o sea ~800 evaluaciones CON lineup calculadas y tiradas en silencio.
+# Mezclarlas en la base habria hecho que pipeline 2 pisara a pipeline 1 (upsert) o que todas las
+# auditorias y `resolveCandTable` contaran doble (quitando el indice). Ver deploy_candidates_lineup.js.
+CANDIDATES_LINEUP_TABLE = {1: "mlb_candidates_lineup", 11: "candidates_lineup", 23: "lmb_candidates_lineup"}
 # Columnas reales por tabla (verificadas contra Supabase 2026-07-11 antes de escribir -- mismo
 # bug ya sufrido una vez con prob_edge faltante en mlb_picks_history, ver CLAUDE.md/KNOWN_ISSUES).
 # Solo se envian las columnas que existen de verdad en cada tabla, nunca el superset completo.
@@ -894,14 +907,17 @@ def _pick_team_for(pick_side: Optional[str], away_team: str, home_team: str) -> 
 
 def build_candidates_history_rows(
     sport_id: int, game_pk: int, game_date, away_team: str, home_team: str, result: dict, published_key,
-    odds_captured_at=None,
+    odds_captured_at=None, pipeline: int = 1,
 ) -> tuple[str, list[dict]]:
     """Mapea los candidatos de un pipeline run al esquema real de *_candidates_history (Supabase),
     marcados con source='autopicks_v2' para distinguirlos de los de produccion (n8n). Solo se
     incluyen columnas que existen de verdad en cada tabla (CANDIDATES_HISTORY_COLUMNS) -- ver
     comentario en la constante, mismo bug que el prob_edge de mlb_picks_history a evitar."""
-    table = CANDIDATES_HISTORY_TABLE[sport_id]
-    allowed = CANDIDATES_HISTORY_COLUMNS[table]
+    base_table = CANDIDATES_HISTORY_TABLE[sport_id]
+    # Pipeline 2 va a su gemela `*_candidates_lineup`, clonada con LIKE de la base, asi que la
+    # allowlist de columnas es la MISMA (verificado: 33/39/29 columnas, identicas a su base).
+    table = CANDIDATES_LINEUP_TABLE[sport_id] if pipeline == 2 else base_table
+    allowed = CANDIDATES_HISTORY_COLUMNS[base_table]
     league_label = LEAGUE_LABEL.get(sport_id, str(sport_id))
     # 2026-08-29: el motor vendorizado (quant_engine*.js) devuelve away_runs/home_runs, no
     # away_mu/home_mu -- esas claves nunca existieron, away_runs_predicted/home_runs_predicted
@@ -1202,16 +1218,34 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
             published = False
             published_key = None
 
-    # Candidatos evaluados -> mismo pool de calibracion que produccion (*_candidates_history en
-    # Supabase, source='autopicks_v2'). No critico: si falla, no bloquea el envio de mensajes.
+    # Candidatos evaluados -> mismo pool de calibracion que produccion (source='autopicks_v2').
+    # Pipeline 1 a `*_candidates_history`; pipeline 2 a `*_candidates_lineup` (ver
+    # CANDIDATES_LINEUP_TABLE). No critico: si falla, no bloquea el envio de mensajes.
     try:
         table, rows = build_candidates_history_rows(
             sport_id, game_pk, game_obj.get("game_date"), away_team, home_team, result, published_key,
-            odds_captured_at=odds["updated_at"] if "updated_at" in odds else None,
+            odds_captured_at=odds["updated_at"] if "updated_at" in odds else None, pipeline=pipeline,
         )
-        await ctx.supabase.insert(ctx.http_client, table, rows)
-    except Exception:
-        logger.exception("fallo guardando candidates_history en Supabase para game_pk=%s pipeline=%s", game_pk, pipeline)
+        if pipeline == 2:
+            await ctx.supabase.upsert(ctx.http_client, table, rows, "game_id,market,pick_side")
+        else:
+            await ctx.supabase.insert(ctx.http_client, table, rows)
+    except Exception as e:
+        logger.exception("fallo guardando candidatos en Supabase para game_pk=%s pipeline=%s", game_pk, pipeline)
+        # Que no vuelva a pasar lo de antes: este mismo except lleva desde julio tragandose un 409
+        # por partido de pipeline 2, y nadie lee los logger.exception. Aviso UNA vez por
+        # (liga, partido, pipeline) -- mismo criterio que el aviso de cuota pre-lineup.
+        _k = (sport_id, game_pk, pipeline)
+        if _k not in _cand_save_notice_keys:
+            _cand_save_notice_keys.add(_k)
+            try:
+                await ctx.telegram.send_message(
+                    ctx.admin_chat_id,
+                    f"⚠️ {LEAGUE_LABEL.get(sport_id, sport_id)} {away_team} @ {home_team} (p{pipeline}): "
+                    f"los candidatos NO se guardaron en {table} -- {str(e)[:160]}",
+                )
+            except Exception:
+                logger.exception("fallo avisando del guardado de candidatos game_pk=%s", game_pk)
 
     # El admin (@Cuotasodds_bot) recibe SIEMPRE el analisis completo (todos los mercados
     # evaluados, no solo el mejor), se haya publicado o no en el canal de produccion.
