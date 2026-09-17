@@ -10,8 +10,14 @@ el precio no tiene; si se mueve, el problema es de velocidad y no de conocimient
 Hoy eso no se puede medir: MiLB se mira UNA sola vez por partido (550 de 550), asi que no existe ni
 una observacion de la misma linea en dos momentos. Este modulo crea esa observacion.
 
-  fase='early'   foto temprana, antes de que se anuncien los abridores. UN scrape al dia para todo
-                 el slate (el scraper acepta varios partidos por pasada via candidate_names).
+  fase='early'   foto temprana, antes de que se anuncien los abridores. El scraper acepta varios
+                 partidos por pasada (candidate_names), asi que es UN scrape por pasada para todo
+                 el slate -- no uno por partido.
+                 2026-09-17: se intenta a VARIAS horas (ODDS_SNAPSHOTS_HOURS_UTC, por defecto
+                 13,15,17 UTC) en vez de una sola. Con la unica pasada de las 11:00 se capturaban
+                 2 fotos de ~16 partidos porque a esa hora la casa aun no ha publicado la linea de
+                 MiLB. Cada partido se fotografia UNA vez, en la primera pasada en que ya tenga
+                 linea; las siguientes solo persiguen lo que falta y no scrapean si no falta nada.
   fase='gate_a'  la que ya capturamos al confirmarse los abridores. CERO scrapes extra: se copia
                  de lo que Gate A guarda de todos modos.
 
@@ -140,6 +146,21 @@ async def _partidos_de_hoy(ctx, sport_id: int) -> list[dict]:
     })
 
 
+async def _ya_fotografiados(ctx, game_ids: list[int]) -> set:
+    """Los game_id que ya tienen fila `early`. Se consulta en bloques de 50 para no montar una URL
+    interminable, mismo criterio que el resto del proyecto."""
+    vistos = set()
+    for i in range(0, len(game_ids), 50):
+        trozo = [str(g) for g in game_ids[i:i + 50]]
+        filas = await ctx.supabase.select(ctx.http_client, TABLA, {
+            "select": "game_id",
+            "fase": "eq.early",
+            "game_id": "in.(" + ",".join(trozo) + ")",
+        })
+        vistos.update(f["game_id"] for f in filas)
+    return vistos
+
+
 async def capture_early_snapshot_tick(ctx) -> None:
     """Una pasada al dia, temprano: foto de la linea de TODO el slate antes de que se anuncien los
     abridores. UN solo scrape -- el scraper filtra por candidate_names y visita varios partidos en
@@ -156,6 +177,26 @@ async def capture_early_snapshot_tick(ctx) -> None:
             logger.info("odds_snapshots: sin partidos de %s por jugar en las proximas %s -- nada que "
                         "fotografiar", league_key, VENTANA_SLATE)
             continue
+
+        # Solo los que TODAVIA no tienen foto: el tick corre a varias horas y cada partido se
+        # fotografia una sola vez, en la primera en que la casa ya haya publicado su linea. Sin
+        # esto, la segunda pasada volveria a scrapear el slate entero para reescribir lo mismo.
+        total = len(partidos)
+        try:
+            # El set se calcula UNA vez; meterlo dentro de la comprension lanzaria una consulta
+            # por partido.
+            vistos = await _ya_fotografiados(ctx, [p["game_id"] for p in partidos])
+            partidos = [p for p in partidos if p["game_id"] not in vistos]
+        except Exception:
+            logger.exception("odds_snapshots: no se pudo leer que partidos ya tienen foto; se "
+                             "sigue con todos (peor caso, se reescribe una foto ya buena)")
+        if not partidos:
+            logger.info("odds_snapshots: los %s partidos de %s ya tienen foto temprana -- no se "
+                        "scrapea", total, league_key)
+            continue
+        if total != len(partidos):
+            logger.info("odds_snapshots: %s de %s partidos de %s ya tenian foto; se buscan los %s "
+                        "que faltan", total - len(partidos), total, league_key, len(partidos))
 
         nombres = [n for p in partidos for n in (p.get("away_team_name"), p.get("home_team_name")) if n]
         logger.info("odds_snapshots: foto temprana de %s -- %s partidos, un solo scrape",

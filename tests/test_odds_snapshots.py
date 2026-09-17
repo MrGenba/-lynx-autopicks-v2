@@ -154,3 +154,74 @@ def test_el_slate_tolera_fechas_invalidas_sin_reventar():
     """La telemetria no puede tumbar nada: una fila rara se ignora y las buenas siguen."""
     bueno = _p(5, "2026-09-15T23:00:00+00:00")
     assert [p["game_id"] for p in partidos_del_slate([_p(6, ""), _p(7, None), bueno], AHORA)] == [5]
+
+
+# ── Varias pasadas en vez de una (2026-09-17) ────────────────────────────────────────────────
+# Por que existen estos tests: con UNA sola pasada a las 11:00 UTC la foto temprana capturaba
+# **2 partidos de ~16** durante dias, sin dar error -- a esa hora la casa aun no ha publicado la
+# linea de MiLB. El arreglo intenta a varias horas y fotografia cada partido UNA vez, en la primera
+# en que ya haya linea. Lo que estos tests fijan es justo lo que no puede volver a romperse: que la
+# lista de horas se lea bien y que una segunda pasada no vuelva a scrapear lo ya hecho.
+from app.config import _horas_utc
+from app.odds_snapshots import _ya_fotografiados
+
+
+def test_horas_utc_lee_una_lista():
+    assert _horas_utc("13,15,17") == [13, 15, 17]
+
+
+def test_horas_utc_admite_el_nombre_antiguo_en_singular():
+    """ODDS_SNAPSHOTS_HOUR_UTC=11 seguia siendo valido: una sola hora es una lista de una."""
+    assert _horas_utc("11") == [11]
+
+
+def test_horas_utc_ordena_y_quita_repetidas():
+    assert _horas_utc("17, 13 ,15,13") == [13, 15, 17]
+
+
+def test_horas_utc_ignora_basura_en_vez_de_reventar():
+    """Una variable mal escrita en EasyPanel no puede tumbar el arranque del contenedor."""
+    assert _horas_utc("13,manzana,15") == [13, 15]
+    assert _horas_utc("25,-3,99") == [13, 15, 17]     # nada valido -> el valor por defecto
+    assert _horas_utc("") == [13, 15, 17]
+
+
+class _SupaFalso:
+    """Devuelve los game_id que se le digan, y cuenta las consultas para comprobar el troceado."""
+    def __init__(self, ya):
+        self.ya = set(ya)
+        self.consultas = 0
+
+    async def select(self, _client, _tabla, params):
+        self.consultas += 1
+        assert params["fase"] == "eq.early"
+        pedidos = params["game_id"][len("in.("):-1].split(",")
+        return [{"game_id": int(g)} for g in pedidos if int(g) in self.ya]
+
+
+class _CtxFalso:
+    def __init__(self, ya):
+        self.supabase = _SupaFalso(ya)
+        self.http_client = None
+
+
+@pytest.mark.asyncio
+async def test_ya_fotografiados_devuelve_solo_los_que_tienen_foto():
+    ctx = _CtxFalso(ya=[101, 103])
+    assert await _ya_fotografiados(ctx, [101, 102, 103, 104]) == {101, 103}
+
+
+@pytest.mark.asyncio
+async def test_ya_fotografiados_trocea_de_50_en_50():
+    """Sin trocear, un slate grande montaria una URL interminable. Y una consulta POR PARTIDO
+    —que es el error que se colo al escribir esto— seria una llamada por fila."""
+    ctx = _CtxFalso(ya=[])
+    await _ya_fotografiados(ctx, list(range(1, 121)))
+    assert ctx.supabase.consultas == 3      # 120 ids -> 50 + 50 + 20
+
+
+@pytest.mark.asyncio
+async def test_ya_fotografiados_sin_partidos_no_consulta():
+    ctx = _CtxFalso(ya=[])
+    assert await _ya_fotografiados(ctx, []) == set()
+    assert ctx.supabase.consultas == 0

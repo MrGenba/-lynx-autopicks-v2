@@ -10,6 +10,23 @@ def _require(name: str) -> str:
     return value
 
 
+def _horas_utc(bruto: str) -> list[int]:
+    """"13,15,17" -> [13, 15, 17]. Descarta lo que no sea una hora valida en vez de reventar el
+    arranque entero: una variable mal escrita en EasyPanel no puede tumbar el contenedor."""
+    horas = []
+    for trozo in str(bruto).split(","):
+        trozo = trozo.strip()
+        if not trozo:
+            continue
+        try:
+            h = int(trozo)
+        except ValueError:
+            continue
+        if 0 <= h <= 23 and h not in horas:
+            horas.append(h)
+    return sorted(horas) or [13, 15, 17]
+
+
 @dataclass(frozen=True)
 class Config:
     database_url: str
@@ -32,7 +49,7 @@ class Config:
     # scrapes de Tor extra cerca del cierre -- activar tras revisar el gasto de proxy.
     clv_capture_enabled: bool
     odds_snapshots_enabled: bool
-    odds_snapshots_hour_utc: int
+    odds_snapshots_horas_utc: list[int]
     predictions_log_milb_enabled: bool
     predictions_log_milb_hour_utc: int
     clv_capture_interval_seconds: int
@@ -88,12 +105,19 @@ class Config:
             odds_autofetch_enabled=os.environ.get("ODDS_AUTOFETCH_ENABLED", "false").lower() == "true",
             clv_capture_enabled=os.environ.get("CLV_CAPTURE_ENABLED", "false").lower() == "true",
             # Foto temprana de la linea, antes de que se anuncien los abridores (ver
-            # odds_snapshots.py). Un solo scrape al dia. Se puede apagar desde EasyPanel sin
-            # redesplegar. La hora por defecto (11:00 UTC) es la mas muerta: los partidos de MiLB
-            # empiezan entre las 20:00 y las 02:00 y la ventana de 6h del detector no abre hasta
-            # las ~14:00, asi que ese scrape no compite con nada por el semaforo.
+            # odds_snapshots.py). Se puede apagar desde EasyPanel sin redesplegar.
+            #
+            # 2026-09-17: paso de UNA hora a VARIAS. Con la unica pasada a las 11:00 UTC se
+            # capturaban 2 fotos de ~16 partidos: a esa hora la casa casi no ha publicado linea de
+            # MiLB. La hora se habia elegido por ser la mas muerta para el semaforo, que es cierto
+            # e irrelevante si no hay nada que fotografiar. Ahora se intenta a varias horas y cada
+            # partido se fotografia UNA sola vez, en la primera en que ya tenga linea; las pasadas
+            # siguientes solo persiguen lo que falta y, si no falta nada, no scrapean.
             odds_snapshots_enabled=os.environ.get("ODDS_SNAPSHOTS_ENABLED", "true").lower() == "true",
-            odds_snapshots_hour_utc=int(os.environ.get("ODDS_SNAPSHOTS_HOUR_UTC", "11")),
+            odds_snapshots_horas_utc=_horas_utc(
+                os.environ.get("ODDS_SNAPSHOTS_HOURS_UTC")
+                or os.environ.get("ODDS_SNAPSHOTS_HOUR_UTC")   # nombre antiguo, en singular
+                or "13,15,17"),
             # predictions_log de MiLB: el mu de TODOS los partidos del dia, tengan cuotas o no,
             # para poder medir la calibracion de nivel sin sesgo de seleccion (ver
             # predictions_log_milb.py). 17:00 UTC: la mayoria de abridores ya estan anunciados

@@ -473,14 +473,20 @@ async def main() -> None:
     else:
         logger.info("odds_autofetch_enabled=false -- job automatico NO registrado, solo /fetchodds manual")
     # Foto temprana de la linea de MiLB, ANTES de que se anuncien los abridores (odds_snapshots.py).
-    # Un unico scrape al dia para todo el slate: el scraper visita varios partidos por pasada, asi
-    # que el coste es ~5 min de semaforo, no 15 jobs. A las 11:00 UTC no compite con nada.
+    # Un scrape por pasada para todo el slate: el scraper visita varios partidos a la vez, asi que
+    # el coste es ~5 min de semaforo, no 15 jobs. 2026-09-17: varias pasadas en vez de una, porque
+    # a las 11:00 UTC la casa aun no ha publicado la linea de MiLB y se capturaban 2 de 16. Las
+    # pasadas posteriores solo persiguen los partidos que faltan y no scrapean si no falta ninguno.
     if cfg.odds_snapshots_enabled:
-        scheduler.add_job(
-            capture_early_snapshot_tick, "cron", hour=cfg.odds_snapshots_hour_utc, minute=0,
-            args=[ctx], max_instances=1, timezone="UTC",
-        )
-        logger.info("odds_snapshots_enabled=true -- foto temprana diaria a las %s:00 UTC", cfg.odds_snapshots_hour_utc)
+        for _h in cfg.odds_snapshots_horas_utc:
+            scheduler.add_job(
+                capture_early_snapshot_tick, "cron", hour=_h, minute=0,
+                args=[ctx], max_instances=1, timezone="UTC",
+                id=f"odds_snapshots_{_h}",
+            )
+        logger.info("odds_snapshots_enabled=true -- foto temprana a las %s UTC (cada partido se "
+                    "fotografia una sola vez, en la primera pasada con linea publicada)",
+                    ", ".join(f"{h:02d}:00" for h in cfg.odds_snapshots_horas_utc))
     else:
         logger.info("odds_snapshots_enabled=false -- sin foto temprana")
 
