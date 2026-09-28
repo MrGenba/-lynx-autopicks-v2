@@ -275,35 +275,35 @@ def aprender_desfase_del_sitio(scrapeados: list[dict], candidatos: list["aliases
     """Delta mayoritario del lote. Se guarda entre ejecuciones para poder comprobar tambien los
     lotes de un solo partido, donde no hay con que votar."""
     global _DESFASE_SITIO_MIN
-    votos: dict[int, int] = {}
+    votos: dict[int, set[tuple[str, str]]] = {}
     for sc in scrapeados or []:
-        for c in candidatos or []:
-            if aliases.score_loose(sc.get("away_team"), c.away_team_name) + \
-               aliases.score_loose(sc.get("home_team"), c.home_team_name) < MIN_MATCH_SCORE:
-                continue
-            d = _delta_min(sc, c)
-            if d is not None:
-                votos[d] = votos.get(d, 0) + 1
+        compatibles = [c for c in candidatos or []
+                       if aliases.score_loose(sc.get("away_team"), c.away_team_name) +
+                       aliases.score_loose(sc.get("home_team"), c.home_team_name) >= MIN_MATCH_SCORE]
+        if len(compatibles) != 1:
+            continue
+        d = _delta_min(sc, compatibles[0])
+        if d is not None:
+            pareja = (aliases.norm(sc.get("away_team")), aliases.norm(sc.get("home_team")))
+            votos.setdefault(d, set()).add(pareja)
     if not votos:
         return _DESFASE_SITIO_MIN
-    mejor, n = max(votos.items(), key=lambda kv: kv[1])
-    # con un solo voto no se aprende nada nuevo: podria ser justo el emparejamiento erroneo
-    if n >= 2:
+    mejor, parejas = max(votos.items(), key=lambda kv: len(kv[1]))
+    segundo = max((len(p) for d, p in votos.items() if d != mejor), default=0)
+    if len(parejas) >= 2 and len(parejas) > segundo:
         if _DESFASE_SITIO_MIN != mejor:
-            logger.info("autofetch: desfase horario de cuotasahora aprendido = %+d min (votos %s)", mejor, votos)
+            logger.info("autofetch: desfase horario de cuotasahora aprendido = %+d min (%s parejas distintas)", mejor, len(parejas))
         _DESFASE_SITIO_MIN = mejor
     return _DESFASE_SITIO_MIN
 
 
 def _hora_compatible(scraped: dict, c: "aliases.CandidateGame") -> bool:
-    """False solo cuando hay evidencia de que son partidos distintos. Si falta el dato de un lado
-    o aun no se conoce el desfase, se deja pasar: la guarda nunca debe volver el sistema mas
-    restrictivo por falta de informacion."""
+    """MLB exige hora contrastable; las otras ligas conservan el criterio permisivo previo."""
     if _DESFASE_SITIO_MIN is None:
-        return True
+        return c.sport_id != 1
     d = _delta_min(scraped, c)
     if d is None:
-        return True
+        return c.sport_id != 1
     diff = min((d - _DESFASE_SITIO_MIN) % 1440, (_DESFASE_SITIO_MIN - d) % 1440)
     return diff <= _TOLERANCIA_HORA_MIN
 

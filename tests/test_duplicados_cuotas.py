@@ -6,6 +6,10 @@ cuotas: tres intentos seguidos en `sin_match` con `2 scrapeados - 0 asignados`. 
 fijan el criterio: fusionar solo cuando se puede afirmar que es el MISMO evento, y siempre al
 precio mas conservador.
 """
+import datetime as dt
+
+from app import odds_autofetch
+from app.aliases import CandidateGame
 from app.odds_autofetch import _fusionar_duplicados, _values_from_scraped
 
 
@@ -80,3 +84,46 @@ def test_la_fusion_nunca_mejora_el_precio():
     v1, v2 = _values_from_scraped(e1), _values_from_scraped(e2)
     for campo in ("away_ml", "home_ml", "away_hc_odds", "home_hc_odds", "over_odds", "under_odds"):
         assert f[campo] <= min(v1[campo], v2[campo])
+
+
+def _candidato(game_pk, hora, away="Chicago Cubs", home="Boston Red Sox", sport_id=1):
+    return CandidateGame(
+        sport_id=sport_id, game_pk=game_pk, away_team_id=None, home_team_id=None,
+        away_team_name=away, home_team_name=home,
+        game_datetime_utc=dt.datetime(2026, 9, 25, hora, 5, tzinfo=dt.timezone.utc),
+    )
+
+
+def test_doblete_mlb_no_acepta_cuota_del_primero_sin_desfase(monkeypatch):
+    monkeypatch.setattr(odds_autofetch, "_DESFASE_SITIO_MIN", None)
+    segundo = _candidato(824706, 22)
+    primero_scrapeado = {"away_team": "Chicago Cubs", "home_team": "Boston Red Sox", "time": "18:05"}
+    assert odds_autofetch._match_scraped_game(primero_scrapeado, [segundo]) is None
+    assert odds_autofetch._match_scraped_game({**primero_scrapeado, "time": None}, [segundo]) is None
+
+
+def test_dos_listados_del_mismo_partido_no_calibran_el_reloj(monkeypatch):
+    monkeypatch.setattr(odds_autofetch, "_DESFASE_SITIO_MIN", None)
+    segundo = _candidato(824706, 22)
+    primero_scrapeado = {"away_team": "Chicago Cubs", "home_team": "Boston Red Sox", "time": "18:05"}
+    assert odds_autofetch.aprender_desfase_del_sitio([primero_scrapeado, primero_scrapeado], [segundo]) is None
+
+
+def test_doblete_mlb_solo_acepta_la_hora_correcta_con_reloj_calibrado(monkeypatch):
+    monkeypatch.setattr(odds_autofetch, "_DESFASE_SITIO_MIN", None)
+    segundo = _candidato(824706, 22)
+    muestras = [
+        {"away_team": "New York Mets", "home_team": "Washington Nationals", "time": "19:45"},
+        {"away_team": "Cincinnati Reds", "home_team": "Toronto Blue Jays", "time": "20:07"},
+    ]
+    referencias = [
+        CandidateGame(1, 1, None, None, "New York Mets", "Washington Nationals",
+                      dt.datetime(2026, 9, 25, 18, 45, tzinfo=dt.timezone.utc)),
+        CandidateGame(1, 2, None, None, "Cincinnati Reds", "Toronto Blue Jays",
+                      dt.datetime(2026, 9, 25, 19, 7, tzinfo=dt.timezone.utc)),
+    ]
+    assert odds_autofetch.aprender_desfase_del_sitio(muestras, referencias) == 60
+    primero = {"away_team": "Chicago Cubs", "home_team": "Boston Red Sox", "time": "18:05"}
+    segundo_scrapeado = {**primero, "time": "23:05"}
+    assert odds_autofetch._match_scraped_game(primero, [segundo]) is None
+    assert odds_autofetch._match_scraped_game(segundo_scrapeado, [segundo]) == segundo
