@@ -1,0 +1,38 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: autopicks_test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: autopicks_test
+        options: >-
+          --health-cmd "pg_isready -U autopicks_test -d autopicks_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    env:
+      DATABASE_URL_TEST: postgresql://autopicks_test:test@localhost:5432/autopicks_test
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest -q -p no:cacheprovider
