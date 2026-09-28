@@ -1062,7 +1062,7 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
     if game_obj is None:
         liga = LEAGUE_LABEL.get(sport_id, sport_id)
         clave = (sport_id, game_pk, pipeline)
-        sin_historial = await _abridores_sin_historial(ctx, gate_away_pid, gate_home_pid)
+        sin_historial = [] if sport_id == 1 else await _abridores_sin_historial(ctx, gate_away_pid, gate_home_pid)
 
         if sin_historial:
             # Reintentar NO sirve: el dato no es que no haya llegado, es que no existe. Se reclama
@@ -1118,6 +1118,10 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
         # (fallo silencioso que dejaba la fila pipeline_runs claimed pero sin quant_result ni error,
         # 0 picks del 30-jul al 02-ago). _dt_parts hace str()+fromisoformat, asi que el ISO va bien.
         game_obj["game_datetime_utc"] = gate_row["game_datetime_utc"].isoformat()
+
+    if sport_id == 1 and _lineup_incomplete(sport_id, pipeline, game_obj):
+        logger.warning("pipeline 2 pendiente para game_pk=%s: lineup_watch aún sin ambos factores", game_pk)
+        return
 
     # Punto de reclamo atomico -- a partir de aqui, cualquier llamada concurrente para el
     # mismo (sport_id, game_pk, pipeline) recibira claim=None y no hara nada.

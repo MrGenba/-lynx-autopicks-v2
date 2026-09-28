@@ -3,11 +3,13 @@ pesados (stats de abridor, bullpen, ofensiva, park factors, clima, Statcast, SIE
 nombra las columnas como away_p_*/home_p_* etc., igual que consume "Motor MLB" en n8n.
 """
 import logging
+import math
 from typing import Optional
 
 import httpx
 
 from app.adapters import Mode
+from app.mlb_stats_client import STATS_API, fetch_with_fallback
 from app.supabase_client import SupabaseClient
 from app.weather_client import fetch_fresh_weather
 
@@ -21,19 +23,49 @@ class MlbAdapter:
         self.supabase = supabase
         self.http_client = http_client
 
-    async def _pitcher_era_fip(self, player_id: Optional[int]) -> dict:
-        """Fallback de stats de abridor por player_id -- player_stats es combinada (MLB+MiLB) y
-        suele tener el ERA/FIP antes de que el sync los propague a vw_mlb_matchups_ready."""
-        if not player_id:
+    async def _pitcher_name(self, player_id: int) -> Optional[str]:
+        try:
+            data = await fetch_with_fallback(
+                self.http_client, f"{STATS_API}/people/{player_id}", direct_retries=0,
+            )
+            people = data.get("people") or []
+            return people[0].get("fullName") if people else None
+        except (KeyError, TypeError, ValueError, httpx.HTTPError):
+            return None
+
+    async def _pitcher_mlb_stats(self, player_id: Optional[int], season: int) -> dict:
+        if not player_id or not season:
             return {}
         try:
-            rows = await self.supabase.select(
-                self.http_client, "player_stats",
-                {"player_id": f"eq.{player_id}", "order": "season.desc", "limit": "1", "select": "era,fip"},
+            data = await fetch_with_fallback(
+                self.http_client,
+                f"{STATS_API}/people/{player_id}/stats?stats=season&group=pitching&season={season}&sportIds=1&gameType=R",
+                direct_retries=0,
             )
-            return rows[0] if rows else {}
-        except Exception:
-            logger.warning("fallback ERA MLB fallo para player_id=%s", player_id)
+            splits = [split for group in data.get("stats", []) for split in group.get("splits", [])
+                      if str(split.get("season")) == str(season)]
+            if len(splits) != 1:
+                return {}
+            stats = splits[0].get("stat") or {}
+            innings_text = str(stats.get("inningsPitched") or "")
+            whole, dot, outs = innings_text.partition(".")
+            if not whole.isdigit() or (dot and outs not in ("0", "1", "2")):
+                return {}
+            innings = int(whole) + (int(outs) / 3 if dot else 0)
+            era = float(stats["era"])
+            if innings <= 0 or not math.isfinite(era) or era < 0:
+                return {}
+            strikeouts = stats.get("strikeOuts")
+            walks = stats.get("baseOnBalls")
+            return {
+                "era": era,
+                "ip_season": innings,
+                "k_9": 9 * float(strikeouts) / innings if strikeouts is not None else None,
+                "bb_9": 9 * float(walks) / innings if walks is not None else None,
+                "stats_season": season,
+            }
+        except (KeyError, TypeError, ValueError, OverflowError, httpx.HTTPError):
+            logger.warning("stats MLB oficiales no disponibles para player_id=%s season=%s", player_id, season)
             return {}
 
     async def build_game_object(
@@ -53,22 +85,24 @@ class MlbAdapter:
 
         game = dict(row)
 
-        # Fallback de abridor (2026-08-05): la vista a veces no tiene el ERA/FIP del abridor a tiempo
-        # (lag del sync -> "datos insuficientes" recurrente, p.ej. Dodgers@Cubs). Se busca directo en
-        # player_stats por el pitcher_id que el detector confirmo en vivo (games_gate_state, pasado
-        # como away/home_pitcher_id) o, en su defecto, el de la propia vista. Igual criterio que MiLB.
-        if game.get("away_p_era") is None:
-            fb = await self._pitcher_era_fip(away_pitcher_id or game.get("away_pitcher_id"))
-            if fb.get("era") is not None:
-                game["away_p_era"] = fb["era"]
-                if game.get("away_p_fip") is None:
-                    game["away_p_fip"] = fb.get("fip")
-        if game.get("home_p_era") is None:
-            fb = await self._pitcher_era_fip(home_pitcher_id or game.get("home_pitcher_id"))
-            if fb.get("era") is not None:
-                game["home_p_era"] = fb["era"]
-                if game.get("home_p_fip") is None:
-                    game["home_p_fip"] = fb.get("fip")
+        season = int(game.get("season") or str(game.get("game_date") or "")[:4] or 0)
+        for side, confirmed_id in (("away", away_pitcher_id), ("home", home_pitcher_id)):
+            view_id = game.get(f"{side}_pitcher_id")
+            pitcher_id = confirmed_id or view_id
+            mismatch = confirmed_id is not None and str(confirmed_id) != str(view_id)
+            if mismatch:
+                for field in game:
+                    if field.startswith(f"{side}_p_"):
+                        game[field] = None
+                game[f"{side}_pitcher_id"] = confirmed_id
+                game[f"{side}_pitcher_name"] = None
+            if mismatch or game.get(f"{side}_p_era") is None:
+                stats = await self._pitcher_mlb_stats(pitcher_id, season)
+                if stats:
+                    for field, value in stats.items():
+                        game[f"{side}_p_{field}"] = value
+                    if mismatch:
+                        game[f"{side}_pitcher_name"] = await self._pitcher_name(pitcher_id)
 
         if any(game.get(f) is None for f in REQUIRED_FIELDS):
             logger.info("game_pk=%s sin ERA de abridores todavia (ni con fallback), se omite", game_pk)
@@ -81,13 +115,16 @@ class MlbAdapter:
         if mode == "full_lineup":
             lineup_row = await self.supabase.select_one(
                 self.http_client, "lineup_watch",
-                {"game_pk": f"eq.{game_pk}", "select": "lineup_factor_away,lineup_factor_home,lineup_woba_away,lineup_woba_home"},
+                {"game_pk": f"eq.{game_pk}", "select": "lineup_factor_away,lineup_factor_home,lineup_woba_away,lineup_woba_home,lineup_away_detected_at,lineup_home_detected_at,reevaluado_at"},
             )
             if lineup_row:
                 game["lineup_factor_away"] = lineup_row.get("lineup_factor_away")
                 game["lineup_factor_home"] = lineup_row.get("lineup_factor_home")
                 game["lineup_woba_away"] = lineup_row.get("lineup_woba_away")
                 game["lineup_woba_home"] = lineup_row.get("lineup_woba_home")
+                game["lineup_away_detected_at"] = lineup_row.get("lineup_away_detected_at")
+                game["lineup_home_detected_at"] = lineup_row.get("lineup_home_detected_at")
+                game["lineup_reevaluado_at"] = lineup_row.get("reevaluado_at")
             # 2026-07-21: volver a consultar el clima real en este momento (en vez de conformarse
             # con el snapshot que ya trajo vw_mlb_matchups_ready) -- decision del usuario. Si
             # falla o el estadio no tiene lat/lon conocidas, se conserva el snapshot previo.

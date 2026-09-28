@@ -104,8 +104,16 @@ async def upsert_game(pool: asyncpg.Pool, sport_id: int, g: mlb_api.ScheduledGam
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
             ON CONFLICT (sport_id, game_pk) DO UPDATE SET
               status = EXCLUDED.status,
-              away_pitcher_id = COALESCE(games_gate_state.away_pitcher_id, EXCLUDED.away_pitcher_id),
-              home_pitcher_id = COALESCE(games_gate_state.home_pitcher_id, EXCLUDED.home_pitcher_id),
+              away_pitcher_id = CASE
+                WHEN games_gate_state.sport_id = 1 AND games_gate_state.lineup_confirmed_at IS NULL
+                  THEN COALESCE(EXCLUDED.away_pitcher_id, games_gate_state.away_pitcher_id)
+                ELSE COALESCE(games_gate_state.away_pitcher_id, EXCLUDED.away_pitcher_id)
+              END,
+              home_pitcher_id = CASE
+                WHEN games_gate_state.sport_id = 1 AND games_gate_state.lineup_confirmed_at IS NULL
+                  THEN COALESCE(EXCLUDED.home_pitcher_id, games_gate_state.home_pitcher_id)
+                ELSE COALESCE(games_gate_state.home_pitcher_id, EXCLUDED.home_pitcher_id)
+              END,
               updated_at = now()
             RETURNING lineup_confirmed_at
             """,
@@ -145,15 +153,18 @@ async def fill_pitcher_ids_from_lineup(
     2026-07-11 -- Rochester @ Worcester, home.probablePitcher ausente del schedule pese a que el
     boxscore ya tenia el abridor real y el lineup completo publicado). Sin este relleno, el
     adaptador de MiLB/LMB se queda sin pitcher_id para ese lado y bloquea el analisis entero
-    ("datos insuficientes") aunque las stats del pitcher SI existen en Supabase.
-    COALESCE no pisa un valor ya bueno -- solo rellena huecos."""
+    ("datos insuficientes") aunque las stats del pitcher SI existen en Supabase. En MLB el
+    boxscore confirmado sustituye al probable, que puede haber cambiado; en MiLB/LMB se
+    conserva el comportamiento de rellenar solo los huecos."""
     if away_pitcher_id is None and home_pitcher_id is None:
         return
     async with pool.acquire() as conn:
         await conn.execute(
             "UPDATE games_gate_state SET "
-            "away_pitcher_id = COALESCE(away_pitcher_id, $3), "
-            "home_pitcher_id = COALESCE(home_pitcher_id, $4) "
+            "away_pitcher_id = CASE WHEN sport_id = 1 THEN COALESCE($3, away_pitcher_id) "
+            "ELSE COALESCE(away_pitcher_id, $3) END, "
+            "home_pitcher_id = CASE WHEN sport_id = 1 THEN COALESCE($4, home_pitcher_id) "
+            "ELSE COALESCE(home_pitcher_id, $4) END "
             "WHERE sport_id=$1 AND game_pk=$2",
             sport_id, game_pk, away_pitcher_id, home_pitcher_id,
         )
@@ -394,10 +405,13 @@ async def detector_tick(ctx: PipelineContext) -> None:
                     continue
 
                 if away_lineup.published and home_lineup.published:
-                    first_time = await mark_lineup_confirmed(ctx.pool, sport_id, g.game_pk)
+                    if sport_id == 1 and (away_lineup.pitcher_id is None or home_lineup.pitcher_id is None):
+                        logger.warning("detector: lineup MLB sin ambos abridores para game_pk=%s", g.game_pk)
+                        continue
                     await fill_pitcher_ids_from_lineup(
                         ctx.pool, sport_id, g.game_pk, away_lineup.pitcher_id, home_lineup.pitcher_id,
                     )
+                    first_time = await mark_lineup_confirmed(ctx.pool, sport_id, g.game_pk)
                     # "Fresco siempre" (2026-07-26): al confirmarse el lineup (o en reintento con
                     # cooldown si el intento anterior falló) se re-scrapean cuotas FRESCAS -- las
                     # líneas se mueven justo cuando salen los lineups. Solo se llega aquí si pipeline
