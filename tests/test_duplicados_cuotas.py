@@ -7,10 +7,17 @@ fijan el criterio: fusionar solo cuando se puede afirmar que es el MISMO evento,
 precio mas conservador.
 """
 import datetime as dt
+import pytest
 
 from app import odds_autofetch
 from app.aliases import CandidateGame
 from app.odds_autofetch import _fusionar_duplicados, _values_from_scraped
+
+
+@pytest.fixture(autouse=True)
+def limpiar_calibracion(monkeypatch):
+    monkeypatch.setattr(odds_autofetch, "_DESFASE_SITIO_MIN", None)
+    monkeypatch.setattr(odds_autofetch, "_VOTOS_DESFASE", {})
 
 
 def _scraped(time="01:00", ml=(1.83, 1.83), total=(11.5, 1.87, 1.80), rl=(-1.5, 2.60, 1.5, 1.45)):
@@ -127,3 +134,45 @@ def test_doblete_mlb_solo_acepta_la_hora_correcta_con_reloj_calibrado(monkeypatc
     segundo_scrapeado = {**primero, "time": "23:05"}
     assert odds_autofetch._match_scraped_game(primero, [segundo]) is None
     assert odds_autofetch._match_scraped_game(segundo_scrapeado, [segundo]) == segundo
+
+
+def test_calibra_con_dos_partidos_en_lecturas_separadas():
+    mets = _candidato(1, 18, "New York Mets", "Washington Nationals")
+    reds = _candidato(2, 21, "Cincinnati Reds", "Toronto Blue Jays")
+    sc_mets = {"away_team": mets.away_team_name, "home_team": mets.home_team_name, "time": "19:05"}
+    sc_reds = {"away_team": reds.away_team_name, "home_team": reds.home_team_name, "time": "22:05"}
+
+    assert odds_autofetch.aprender_desfase_del_sitio([sc_mets], [mets]) is None
+    assert odds_autofetch._match_scraped_game(sc_mets, [mets]) is None
+    assert odds_autofetch.aprender_desfase_del_sitio([sc_reds], [reds]) == 60
+    assert odds_autofetch._match_scraped_game(sc_mets, [mets]) == mets
+    assert odds_autofetch._match_scraped_game(sc_reds, [reds]) == reds
+
+
+def test_reintentos_del_mismo_partido_no_calibran():
+    mets = _candidato(1, 18, "New York Mets", "Washington Nationals")
+    sc = {"away_team": mets.away_team_name, "home_team": mets.home_team_name, "time": "19:05"}
+    for _ in range(10):
+        assert odds_autofetch.aprender_desfase_del_sitio([sc], [mets]) is None
+
+
+def test_pareja_con_horas_contradictorias_no_calibra():
+    mets = _candidato(1, 18, "New York Mets", "Washington Nationals")
+    reds = _candidato(2, 21, "Cincinnati Reds", "Toronto Blue Jays")
+    sc_mets = {"away_team": mets.away_team_name, "home_team": mets.home_team_name, "time": "19:05"}
+    sc_reds = {"away_team": reds.away_team_name, "home_team": reds.home_team_name, "time": "22:05"}
+    assert odds_autofetch.aprender_desfase_del_sitio([sc_mets], [mets]) is None
+    assert odds_autofetch.aprender_desfase_del_sitio([{**sc_mets, "time": "20:05"}], [mets]) is None
+    assert odds_autofetch.aprender_desfase_del_sitio([sc_reds], [reds]) is None
+
+
+def test_votos_antiguos_no_calibran(monkeypatch):
+    reloj = [1000.0]
+    monkeypatch.setattr(odds_autofetch.time, "monotonic", lambda: reloj[0])
+    mets = _candidato(1, 18, "New York Mets", "Washington Nationals")
+    reds = _candidato(2, 21, "Cincinnati Reds", "Toronto Blue Jays")
+    sc_mets = {"away_team": mets.away_team_name, "home_team": mets.home_team_name, "time": "19:05"}
+    sc_reds = {"away_team": reds.away_team_name, "home_team": reds.home_team_name, "time": "22:05"}
+    assert odds_autofetch.aprender_desfase_del_sitio([sc_mets], [mets]) is None
+    reloj[0] += odds_autofetch._VOTOS_DESFASE_TTL_S + 1
+    assert odds_autofetch.aprender_desfase_del_sitio([sc_reds], [reds]) is None

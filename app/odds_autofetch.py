@@ -243,8 +243,10 @@ async def _candidates_needing_odds(pool: asyncpg.Pool, sport_id: int) -> list[al
 #
 # Como funciona: para cada pareja (scrapeado, candidato) que casa por nombre se calcula
 # `delta = hora_mostrada - hora_UTC_del_partido` (mod 24h). Si el sitio es coherente, todas las
-# parejas correctas comparten el mismo delta. El delta mayoritario del lote es el desfase real, y
-# cualquier pareja que se salga de el es un partido distinto.
+# parejas correctas comparten el mismo delta. El delta mayoritario de parejas distintas recientes
+# es el desfase real, y cualquier pareja que se salga de el es un partido distinto. Acumular entre
+# lecturas es necesario: el sondeo de MLB suele procesar UN candidato por lectura, por lo que
+# exigir dos parejas en el mismo lote dejo el reloj sin calibrar tras el reinicio del 28-sep-2026.
 #
 # LO QUE ESTA GUARDA NO PUEDE ATRAPAR, y conviene saberlo: dos partidos de la misma serie a la
 # MISMA hora de reloj en dias distintos (p.ej. Rays @ Braves el 08 y el 09, ambos a las 23:15 UTC)
@@ -252,6 +254,8 @@ async def _candidates_needing_odds(pool: asyncpg.Pool, sport_id: int) -> list[al
 # la FECHA de la pagina, que hoy no coge.
 _DESFASE_SITIO_MIN: int | None = None          # aprendido, en minutos
 _TOLERANCIA_HORA_MIN = 15                      # margen: el sitio redondea a veces
+_VOTOS_DESFASE: dict[tuple[str, str], tuple[set[int], float]] = {}
+_VOTOS_DESFASE_TTL_S = 12 * 3600               # no mezclar jornadas ni cambios de zona horaria
 
 
 def _hhmm_a_minutos(txt) -> int | None:
@@ -272,20 +276,35 @@ def _delta_min(scraped: dict, c: "aliases.CandidateGame") -> int | None:
 
 
 def aprender_desfase_del_sitio(scrapeados: list[dict], candidatos: list["aliases.CandidateGame"]) -> int | None:
-    """Delta mayoritario del lote. Se guarda entre ejecuciones para poder comprobar tambien los
-    lotes de un solo partido, donde no hay con que votar."""
+    """Aprende el delta de dos enfrentamientos distintos, incluso en lecturas separadas.
+
+    Un mismo enfrentamiento no gana peso por ser reintentado muchas veces. Si presenta dos
+    horas diferentes, no sirve para calibrar: podria ser otro partido de la serie.
+    """
     global _DESFASE_SITIO_MIN
-    votos: dict[int, set[tuple[str, str]]] = {}
+    ahora = time.monotonic()
+    for pareja, (_, visto_en) in list(_VOTOS_DESFASE.items()):
+        if ahora - visto_en > _VOTOS_DESFASE_TTL_S:
+            del _VOTOS_DESFASE[pareja]
+
     for sc in scrapeados or []:
         compatibles = [c for c in candidatos or []
-                       if aliases.score_loose(sc.get("away_team"), c.away_team_name) +
+                       if c.sport_id == 1 and
+                       aliases.score_loose(sc.get("away_team"), c.away_team_name) +
                        aliases.score_loose(sc.get("home_team"), c.home_team_name) >= MIN_MATCH_SCORE]
         if len(compatibles) != 1:
             continue
         d = _delta_min(sc, compatibles[0])
         if d is not None:
             pareja = (aliases.norm(sc.get("away_team")), aliases.norm(sc.get("home_team")))
-            votos.setdefault(d, set()).add(pareja)
+            deltas, _ = _VOTOS_DESFASE.get(pareja, (set(), ahora))
+            deltas.add(d)
+            _VOTOS_DESFASE[pareja] = (deltas, ahora)
+
+    votos: dict[int, set[tuple[str, str]]] = {}
+    for pareja, (deltas, _) in _VOTOS_DESFASE.items():
+        if len(deltas) == 1:
+            votos.setdefault(next(iter(deltas)), set()).add(pareja)
     if not votos:
         return _DESFASE_SITIO_MIN
     mejor, parejas = max(votos.items(), key=lambda kv: len(kv[1]))
