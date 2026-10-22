@@ -15,6 +15,7 @@ import httpx
 from app.adapters import Mode
 from app.supabase_client import SupabaseClient
 from app.weather_client import fetch_fresh_weather
+from app.statcast import fetch_pitcher, apply_pitcher
 
 logger = logging.getLogger(__name__)
 
@@ -56,15 +57,8 @@ class MilbAdapter:
         )
         return rows[0] if rows else {}
 
-    async def _pitcher_statcast(self, player_id: Optional[int]) -> dict:
-        if not player_id:
-            return {}
-        rows = await self.supabase.select(
-            self.http_client, "player_statcast_pitchers",
-            {"player_id": f"eq.{player_id}", "order": "season.desc", "limit": "1",
-             "select": "season,xwoba,k_percent,bb_percent,hard_hit_pct,barrel_pct"},
-        )
-        return rows[0] if rows else {}
+    async def _pitcher_statcast(self, player_id: Optional[int], season: int) -> dict:
+        return await fetch_pitcher(self.supabase, self.http_client, player_id, 11, season)
 
     async def _team_batting(self, team_id: Optional[int], season: int) -> dict:
         if not team_id:
@@ -72,7 +66,7 @@ class MilbAdapter:
         rows = await self.supabase.select(
             self.http_client, "vw_team_batting",
             {"team_id": f"eq.{team_id}", "season": f"eq.{season}",
-             "select": "num_batters,xwoba,woba,hard_hit_pct,barrel_pct,avg_exit_velo"},
+             "select": "num_batters,xwoba,woba,hard_hit_pct,barrel_pct,avg_exit_velo,statcast_captured_at,statcast_requested_through"},
         )
         return rows[0] if rows else {}
 
@@ -82,7 +76,7 @@ class MilbAdapter:
         rows = await self.supabase.select(
             self.http_client, "vw_team_bullpen",
             {"team_id": f"eq.{team_id}", "season": f"eq.{season}",
-             "select": "num_pitchers,era,fip,k9,bb9,xwoba_allowed"},
+             "select": "num_pitchers,era,fip,k9,bb9,xwoba_allowed,statcast_captured_at,statcast_requested_through"},
         )
         return rows[0] if rows else {}
 
@@ -138,8 +132,8 @@ class MilbAdapter:
         ) = await asyncio.gather(
             self._pitcher_stats(resolved_away_pid),
             self._pitcher_stats(resolved_home_pid),
-            self._pitcher_statcast(resolved_away_pid),
-            self._pitcher_statcast(resolved_home_pid),
+            self._pitcher_statcast(resolved_away_pid, season),
+            self._pitcher_statcast(resolved_home_pid, season),
             self._team_batting(base.get("away_team_id"), season),
             self._team_batting(base.get("home_team_id"), season),
             self._team_bullpen(base.get("away_team_id"), season),
@@ -183,10 +177,10 @@ class MilbAdapter:
             "lineup_woba_home": lineup.get("lineup_woba_home"),
             "away_p_era_season": ap.get("era"), "away_p_fip_season": ap.get("fip"),
             "away_p_ip_season": ap.get("innings_pitched"), "away_p_k_9": ap.get("k_9"), "away_p_bb_9": ap.get("bb_9"),
-            "away_p_xwoba": ap.get("xwoba"),
+            "away_p_xwoba": apsc.get("xwoba"),
             "home_p_era_season": hp.get("era"), "home_p_fip_season": hp.get("fip"),
             "home_p_ip_season": hp.get("innings_pitched"), "home_p_k_9": hp.get("k_9"), "home_p_bb_9": hp.get("bb_9"),
-            "home_p_xwoba": hp.get("xwoba"),
+            "home_p_xwoba": hpsc.get("xwoba"),
             # 2026-07-25 (fix data_score): el motor (quant_engine.js) pondera las stats del abridor
             # por recencia de temporada via *_stats_season / *_statcast_season. Sin estos campos,
             # starterSampleScore=0 -> se anula el 54% del data_score (bajaba a ~0.45 en vez de ~0.93,
@@ -220,6 +214,14 @@ class MilbAdapter:
             "temperature_2m": fresh_weather.get("temperature_2m") or weather.get("temperature_2m") or base.get("temperature_2m"),
             "wind_speed_10m": fresh_weather.get("wind_speed_10m") or weather.get("wind_speed_10m") or base.get("wind_speed_10m"),
             "wind_tailwind": fresh_weather.get("wind_tailwind") or weather.get("wind_tailwind") or base.get("wind_tailwind"),
+        }
+
+        for side, sc in (("away", apsc), ("home", hpsc)):
+            apply_pitcher(game, side, sc, 11, season)
+        game["statcast_provenance"]["teams"] = {
+            label: {key: row.get(key) for key in ("statcast_captured_at", "statcast_requested_through")}
+            for label, row in (("away_batting", away_batt), ("home_batting", home_batt),
+                               ("away_bullpen", away_bull), ("home_bullpen", home_bull))
         }
 
         if any(game.get(f) is None for f in REQUIRED_FIELDS):

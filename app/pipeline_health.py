@@ -10,6 +10,37 @@ from app.pipelines import CANDIDATES_HISTORY_TABLE, CANDIDATES_LINEUP_TABLE, LEA
 logger = logging.getLogger(__name__)
 _last_notice = None
 _last_state = None
+_statcast_last_state = None
+_statcast_last_notice = None
+
+
+async def statcast_health_tick(ctx):
+    global _statcast_last_state, _statcast_last_notice
+    try:
+        rows = await ctx.supabase.select(ctx.http_client, "bb_statcast_health", {"select": "sport_id,player_type,season_type,state"})
+        if len(rows) != 8:
+            raise ValueError("Incomplete Statcast monitor")
+        bad = sorted((r["sport_id"], r["player_type"], r["season_type"], r["state"])
+                     for r in rows if r["state"] not in {"ok", "no_games"})
+    except (httpx.HTTPError, ValueError, KeyError):
+        logger.exception("Statcast monitor unavailable")
+        bad = [(0, "monitor", "", "unavailable")]
+    state = tuple(bad)
+    now = dt.datetime.now(dt.timezone.utc)
+    if state != _statcast_last_state and (state or _statcast_last_state is not None):
+        if _statcast_last_notice is None or now-_statcast_last_notice >= dt.timedelta(hours=1):
+            if state:
+                detail = "; ".join(f"{LEAGUE_LABEL.get(sport, 'Statcast')} {role} {phase}: {status}"
+                                   for sport, role, phase, status in state)
+                message = "⚠️ Captura Statcast: " + detail + ". Las métricas caducadas se excluyen del modelo."
+            else:
+                message = "✅ Captura Statcast recuperada: MLB y Triple-A actualizados por liga y fase."
+            await ctx.telegram.send_message(ctx.admin_chat_id, message)
+            _statcast_last_notice = now
+            _statcast_last_state = state
+    if _statcast_last_state is None and not state:
+        _statcast_last_state = state
+    return bad
 
 
 async def pipeline_health_tick(ctx):
@@ -65,4 +96,5 @@ async def pipeline_health_tick(ctx):
         _last_state = state
     if _last_state is None and not missing and not failed:
         _last_state = state
-    return {"missing": [dict(r) for r in missing], "pending_receipts": failed}
+    statcast = await statcast_health_tick(ctx)
+    return {"missing": [dict(r) for r in missing], "pending_receipts": failed, "statcast": statcast}

@@ -13,6 +13,8 @@ class FakeSupabase:
             return self.game
         if table == "lineup_watch":
             return self.lineup
+        if table == "bb_statcast_current":
+            return None
         raise AssertionError(f"consulta inesperada: {table}")
 
 

@@ -2,6 +2,7 @@
 pesados (stats de abridor, bullpen, ofensiva, park factors, clima, Statcast, SIERA) y ya
 nombra las columnas como away_p_*/home_p_* etc., igual que consume "Motor MLB" en n8n.
 """
+import asyncio
 import logging
 import math
 from typing import Optional
@@ -12,6 +13,7 @@ from app.adapters import Mode
 from app.mlb_stats_client import STATS_API, fetch_with_fallback
 from app.supabase_client import SupabaseClient
 from app.weather_client import fetch_fresh_weather
+from app.statcast import fetch_pitcher, apply_pitcher
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +109,13 @@ class MlbAdapter:
         if any(game.get(f) is None for f in REQUIRED_FIELDS):
             logger.info("game_pk=%s sin ERA de abridores todavia (ni con fallback), se omite", game_pk)
             return None
+
+        statcast_rows = await asyncio.gather(*(
+            fetch_pitcher(self.supabase, self.http_client, game.get(f"{side}_pitcher_id"), 1, season)
+            for side in ("away", "home")
+        ))
+        for side, statcast_row in zip(("away", "home"), statcast_rows):
+            apply_pitcher(game, side, statcast_row, 1, season)
 
         # El lineup_factor ya lo calcula y guarda el Lineup Watcher existente (n8n) en
         # lineup_watch -- solo lectura, no se recalcula aqui. En modo "pitchers_only" se

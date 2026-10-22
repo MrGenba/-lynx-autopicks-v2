@@ -2,6 +2,7 @@
   #1 el adaptador MiLB mapea los campos de temporada del abridor (*_stats_season / *_statcast_season)
      que el motor necesita para no anular el 54% del data_score.
   #2 build_candidates_history_rows guarda el data_score del RESULTADO (no c.get, que era None -> 0)."""
+import datetime as dt
 import pytest
 
 from app.adapters.milb import MilbAdapter
@@ -21,8 +22,13 @@ class FakeSupabase:
         if table == "player_stats":
             return [{"era": 3.5, "fip": 3.6, "innings_pitched": 80, "k_9": 9, "bb_9": 3,
                      "xwoba": 0.31, "whip": 1.1, "season": 2026}]
-        if table == "player_statcast_pitchers":
-            return [{"season": 2025, "xwoba": 0.30, "k_percent": 24, "bb_percent": 8,
+        if table == "bb_statcast_current":
+            assert params["sport_id"] == "eq.11" and params["season"] == "eq.2026"
+            now = dt.datetime.now(dt.timezone.utc)
+            return [{"player_id": int(params["player_id"].split(".")[1]), "sport_id": 11,
+                     "season": 2026, "player_type": "pitcher", "season_type": "R",
+                     "captured_at": now.isoformat(), "requested_through": now.date().isoformat(),
+                     "xwoba": 0.30, "k_percent": 24, "bb_percent": 8,
                      "hard_hit_pct": 35, "barrel_pct": 7}]
         if table == "vw_team_batting":
             return [{"num_batters": 20, "xwoba": 0.32, "woba": 0.33, "hard_hit_pct": 36,
@@ -46,11 +52,11 @@ async def test_milb_adapter_mapea_campos_de_temporada():
     # Fix #1: los campos de temporada que el motor necesita ahora están presentes.
     assert game["away_p_stats_season"] == 2026
     assert game["home_p_stats_season"] == 2026
-    assert game["away_p_statcast_season"] == 2025
-    assert game["home_p_statcast_season"] == 2025
+    assert game["away_p_statcast_season"] == 2026
+    assert game["home_p_statcast_season"] == 2026
     # Los valores del abridor siguen mapeados (no se rompió nada).
     assert game["away_p_era_season"] == 3.5
-    assert game["away_p_xwoba"] == 0.31
+    assert game["away_p_xwoba"] == 0.30
 
 
 def test_candidates_usan_data_score_del_resultado():

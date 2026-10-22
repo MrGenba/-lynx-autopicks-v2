@@ -1,0 +1,35 @@
+Statcast data contract (2026-10-22)
+
+Collector: collectors/statcast.js, embedded into SYNC_MLB_DAILY and SYNC_MILB_DAILY.
+Supabase migration: sql/supabase_statcast.sql (not the app's local PostgreSQL).
+
+Current datasets live in bb_statcast_seasons, keyed by player, season, league,
+player_type and season_type. MLB uses minors=false; Triple-A uses minors=true
+AND hfLevel=AAA. R and POST (F,D,L,W) are separate datasets. The production
+models retain their regular-season baseline; postseason data are available for
+evaluation, not automatically blended with a small sample.
+
+Each capture replaces every mapped metric, including nulls. Empty CSV values
+never become zero. Hard-hit remains a 0..100 percentage. xSLG, barrel counts,
+K%, BB%, exit speed, pitch speed, spin and raw export fields are preserved.
+BBE and sweet-spot stay null when absent from this export; no denominator or
+percentage is invented. The export is aggregate data, not all pitch-level tracking.
+
+The ingest RPC commits the entire dataset and receipt atomically. A sudden loss
+of more than half a previously substantial dataset is rejected. Read models use
+only the latest successful batch and exclude captures older than 48 hours.
+Source URL, league, season, phase, requested cutoff, capture time and batch ID
+are preserved in prediction inputs. Exact last observation time remains unknown
+when the export does not provide it. The receipt time is not that observation time.
+
+MLB and MiLB SQL views, both app adapters, the manual MiLB bot and the lineup
+watcher use these scoped datasets. The young-arms compatibility xwOBA column
+is refreshed only from AAA and has its own xwoba_captured_at timestamp.
+The app checks all eight source groups every 15 minutes, notifying the private
+admin on a failure/state change or recovery with a one-hour cooldown.
+
+Historical player_statcast* tables are retained as legacy data and are not the
+active Statcast input. player_statcast_catchers was a batting snapshot, not a
+defensive tracking feed. Catchers' batting is present among current batters;
+framing, blocking and pop time are not added by this change. LMB has no Statcast
+feed configured. This change does not add unvalidated model coefficients.
