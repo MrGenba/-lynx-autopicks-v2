@@ -12,6 +12,36 @@ _last_notice = None
 _last_state = None
 _statcast_last_state = None
 _statcast_last_notice = None
+_defense_last_state = None
+_defense_last_notice = None
+
+
+async def defense_health_tick(ctx):
+    global _defense_last_state, _defense_last_notice
+    try:
+        catchers = await ctx.supabase.select(ctx.http_client, "bb_catcher_defense_health", {"select": "metric_group,state"})
+        tracking = await ctx.supabase.select(ctx.http_client, "bb_tracking_coverage_health", {"select": "state"})
+        if len(catchers) != 3 or len(tracking) != 1:
+            raise ValueError("Incomplete catcher/tracking monitor")
+        bad = sorted(f"MLB {r['metric_group']}: {r['state']}" for r in catchers if r["state"] != "ok")
+        state_lmb = tracking[0]["state"]
+        if state_lmb not in {"not_available_in_sample", "no_games"}:
+            bad.append(f"LMB cobertura pública: {state_lmb}")
+    except (httpx.HTTPError, ValueError, KeyError):
+        logger.exception("Catcher/tracking monitor unavailable")
+        bad = ["Monitor de catchers/cobertura LMB no disponible"]
+    state = tuple(bad)
+    now = dt.datetime.now(dt.timezone.utc)
+    if state != _defense_last_state and (state or _defense_last_state is not None):
+        if _defense_last_notice is None or now-_defense_last_notice >= dt.timedelta(hours=1):
+            message = ("⚠️ Revisión de datos defensivos: " + "; ".join(state) +
+                       ". Los datos caducados se excluyen; el tracking detectado en LMB requiere validar cobertura."
+                       if state else "✅ Captura de catchers y comprobación de cobertura LMB recuperadas.")
+            await ctx.telegram.send_message(ctx.admin_chat_id, message)
+            _defense_last_state, _defense_last_notice = state, now
+    if _defense_last_state is None and not state:
+        _defense_last_state = state
+    return bad
 
 
 async def statcast_health_tick(ctx):
@@ -97,4 +127,5 @@ async def pipeline_health_tick(ctx):
     if _last_state is None and not missing and not failed:
         _last_state = state
     statcast = await statcast_health_tick(ctx)
-    return {"missing": [dict(r) for r in missing], "pending_receipts": failed, "statcast": statcast}
+    defense = await defense_health_tick(ctx)
+    return {"missing": [dict(r) for r in missing], "pending_receipts": failed, "statcast": statcast, "defense": defense}

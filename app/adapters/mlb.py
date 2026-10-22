@@ -14,6 +14,7 @@ from app.mlb_stats_client import STATS_API, fetch_with_fallback
 from app.supabase_client import SupabaseClient
 from app.weather_client import fetch_fresh_weather
 from app.statcast import fetch_pitcher, apply_pitcher
+from app.catcher_defense import attach_catcher_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,7 @@ class MlbAdapter:
         # ignora deliberadamente aunque ya exista, para que el pipeline 1 sea una lectura
         # limpia de "solo con abridores confirmados".
         if mode == "full_lineup":
+            await attach_catcher_evidence(game, self.supabase, self.http_client, season)
             lineup_row = await self.supabase.select_one(
                 self.http_client, "lineup_watch",
                 {"game_pk": f"eq.{game_pk}", "select": "lineup_factor_away,lineup_factor_home,lineup_woba_away,lineup_woba_home,lineup_away_detected_at,lineup_home_detected_at,reevaluado_at"},

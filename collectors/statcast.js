@@ -17,7 +17,7 @@ function statcastNumber(value) {
   if (value == null || String(value).trim() === "" || /^(null|n\/a|nan|--|-)$/i.test(String(value).trim())) return null;
   const n=Number(value); return Number.isFinite(n) ? n : null;
 }
-function statcastCsv(text) {
+function statcastCsv(text, required=['player_id','player_name','pitches','pa','xwoba','hardhit_percent','k_percent','bb_percent']) {
   if (typeof text!=="string" || /^\s*</.test(text)) throw Error("Statcast returned HTML, not CSV");
   const rows=[];let row=[],cell="",quoted=false;
   text=text.replace(/^\uFEFF/,"");
@@ -31,7 +31,7 @@ function statcastCsv(text) {
   if(quoted)throw Error("Truncated Statcast CSV");
   if(cell||row.length){row.push(cell);rows.push(row);}
   const headers=rows.shift()?.map(x=>x.trim())||[];
-  for(const key of ['player_id','player_name','pitches','pa','xwoba','hardhit_percent','k_percent','bb_percent']){
+  for(const key of required){
     if(!headers.includes(key))throw Error("Statcast schema missing "+key);
   }
   return {headers,rows:rows.map(r=>{

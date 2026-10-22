@@ -56,6 +56,7 @@ def build_snapshot(sport_id, game_id, pipeline, payload, result, prediction_at, 
     if any(line_missing(c) for c in result.get("candidates", [])):
         flags.append("missing_market_line")
     flags.extend(game.get("statcast_quality_flags") or [])
+    flags.extend(game.get("catcher_quality_flags") or [])
     # Retrieval time is known; historical source cutoff is not inferred from it.
     inputs = {"payload": payload, "stats_source_as_of": game.get("stats_source_as_of"),
               "retrieved_at": predicted.isoformat(), "bookmaker": game.get("bookmaker"),

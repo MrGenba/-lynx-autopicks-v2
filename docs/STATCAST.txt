@@ -35,6 +35,43 @@ K/9, BB/9 and FIP formulas and underlying gamelogs are preserved.
 
 Historical player_statcast* tables are retained as legacy data and are not the
 active Statcast input. player_statcast_catchers was a batting snapshot, not a
-defensive tracking feed. Catchers' batting is present among current batters;
-framing, blocking and pop time are not added by this change. LMB has no Statcast
-feed configured. This change does not add unvalidated model coefficients.
+defensive tracking feed. Catchers' batting is present among current batters.
+
+Catcher defense extension (2026-10-22)
+-----------------------------------
+collectors/catcher_defense.js and sql/supabase_catcher_defense.sql add three
+independently timestamped MLB sources, refreshed with the 13:00 Madrid MLB sync:
+  framing: Regular, all catchers (minPitches=0); runs, pitches, shadow strike %.
+  blocking: Regular, all catchers with >=1 opportunity (n=1), across team stints;
+    runs, opportunities, actual/expected PB+WP and blocks above average.
+  poptime: season export with min2b=min3b=0; arm strength MPH, exchange and pop
+    times in seconds, and attempts to second/third. Phase is SOURCE_DEFAULT
+    because this source exposes no game-type selector; never silently labeled R.
+
+Framing pct_tot is a fraction converted to 0..100; negative run values and true
+zeros are retained. Missing measurements remain null. Raw CSV fields are stored.
+bb_catcher_defense_current accepts only the latest complete batch per source
+within 48 hours. Source observation cutoff remains unknown, distinct from capture.
+Atomic ingest rejects duplicate players, invalid ranges and abrupt large losses.
+
+In full_lineup MLB evaluations, the actual starting catcher is identified from
+the official boxscore (position 2 in the confirmed nine, not roster position/DH).
+Fresh, correctly scoped defense metrics and opportunity counts enter the saved
+prediction evidence under catcher_defense, with missing groups explicit. They
+are for prospective evaluation; no unvalidated probability coefficients are added.
+The 15-minute health monitor alerts the private admin on failure or recovery.
+
+LMB tracking coverage
+--------------------
+The same daily job checks the most recent completed game at every LMB venue
+recorded in Supabase, via the official MLB StatsAPI feed. It counts actual pitch
+speed, spin, exit velocity and launch-angle measurements, not empty pitchData
+objects or scoring coordinates. bb_tracking_coverage retains the per-game URLs
+and counts; bb_tracking_coverage_health exposes sample size and freshness.
+The first sample: 21 venues, 6196 pitches, 1193 balls in play; zero measurements
+for those four tracking fields. This is sampled public coverage, not proof that
+clubs lack private Trackman data. No LMB Statcast values are synthesized or copied
+from MLB. LMB conventional statistics continue through the existing sync.
+Newly detected public tracking generates an admin alert for coverage validation;
+unchanged unavailability stays quiet. A licensed LMB/Trackman export is needed
+to populate those tracking metrics when the public feed omits them.
