@@ -1,0 +1,31 @@
+Prediction evidence — 2026-10-22
+
+The app writes immutable pregame inputs and model output to Tipster_DB:
+bb_prediction_snapshots. The service code fingerprint identifies each cohort.
+Actual Telegram acknowledgements are recorded in bb_prediction_publications;
+pipeline_runs retains receipts for reconciliation every 15 minutes.
+
+Supabase prerequisites (applied separately from the app PostgreSQL migrations):
+D:/Milb/maintenance/baseball_20261022/improvements/schema.sql
+D:/Milb/maintenance/baseball_20261022/improvements/experiment.sql
+D:/Milb/maintenance/baseball_20261022/improvements/snapshot_clock.sql
+Local migration 0006 adds per-market capture metadata and delivery references.
+
+ML, total and handicap prices are accepted in complete pairs. Each market keeps
+its own capture timestamp. An update to one market never refreshes another.
+The app refuses unknown/old prices, post-start predictions and pre-lineup prices
+for the lineup pipeline. Unknown bookmaker/provider remain explicitly unknown.
+
+MiLB fixed-line predictions run every 30 minutes, only before the start, once
+per game. Seven and nine innings are recorded separately. The market experiment
+uses pipeline 1, OVER, half-run lines, fresh paired odds and final official scores.
+Rules registered in bb_model_experiments before the first prospective observation.
+The daily n8n monitor requests review at >=200 games AND >=60 days per model hash.
+No automatic promotion or stake change. Seven innings remain exploratory.
+
+Daily calendar sync records the official status needed to settle the experiment.
+Historical pitcher recovery is marked known_pregame=false in bb_starter_backfills.
+Recovered starters must not be used as proof that the old pregame model knew them.
+
+Checks: python -m pytest -q. Real Supabase schema checks were executed inside a
+transaction and rolled back (six candidate tables; immutable snapshot contract).

@@ -70,13 +70,26 @@ def _swap_if_needed(values: dict, swapped: bool) -> dict:
 
 
 async def _store_odds(pool: asyncpg.Pool, sport_id: int, game_pk: int, values: dict, chat_id: int, message_id: int) -> None:
+    from app.market_evidence import complete_markets, GROUPS
+    import datetime as dt
+    complete = complete_markets(values)
+    if not complete:
+        raise ValueError("Las cuotas deben incluir ambos lados y su línea del mismo mercado")
+    values = dict(values)
+    for market, keys in GROUPS.items():
+        if market not in complete:
+            for key in keys:
+                values[key] = None
+    meta = {m: {"captured_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "source": "telegram_manual" if chat_id else "automatic_provider_unspecified",
+                "bookmaker": None} for m in complete}
     async with pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO game_odds (sport_id, game_pk, away_ml, home_ml, away_hc_val, away_hc_odds,
               home_hc_val, home_hc_odds, total_line, over_odds, under_odds, submitted_by_chat_id,
-              telegram_message_id, updated_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now())
+              telegram_message_id, updated_at, market_meta)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now(),$14::jsonb)
             ON CONFLICT (sport_id, game_pk) DO UPDATE SET
               away_ml = COALESCE(EXCLUDED.away_ml, game_odds.away_ml),
               home_ml = COALESCE(EXCLUDED.home_ml, game_odds.home_ml),
@@ -87,11 +100,12 @@ async def _store_odds(pool: asyncpg.Pool, sport_id: int, game_pk: int, values: d
               total_line = COALESCE(EXCLUDED.total_line, game_odds.total_line),
               over_odds = COALESCE(EXCLUDED.over_odds, game_odds.over_odds),
               under_odds = COALESCE(EXCLUDED.under_odds, game_odds.under_odds),
-              updated_at = now()
+              updated_at = now(),
+              market_meta = game_odds.market_meta || EXCLUDED.market_meta
             """,
             sport_id, game_pk, values["away_ml"], values["home_ml"], values["away_hc_val"], values["away_hc_odds"],
             values["home_hc_val"], values["home_hc_odds"], values["total_line"], values["over_odds"], values["under_odds"],
-            chat_id, message_id,
+            chat_id, message_id, json.dumps(meta),
         )
 
 

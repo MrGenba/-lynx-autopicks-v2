@@ -23,6 +23,8 @@ from app.adapters import Adapter, Mode
 from app.node_bridge import NodeBridgeError, run_quant
 from app.supabase_client import SupabaseClient
 from app.telegram import TelegramClient
+from app.prediction_audit import build_snapshot, save_snapshot, timestamp, valid_pregame, line_missing
+from app.market_evidence import fresh_payload, complete_markets
 
 logger = logging.getLogger(__name__)
 
@@ -188,12 +190,7 @@ def _norm_market_side(market: Optional[str], pick_side: Optional[str]) -> tuple[
 def _pick_missing_line(cand: dict) -> bool:
     """True si el pick es impublicable por falta de numero: un OU sin total_line o un HC sin
     hc_value. ML no necesita linea. Usado como guard antes de publicar (2026-07-25)."""
-    m = (cand.get("market") or "").upper()
-    if m in ("OU", "OVER", "UNDER"):
-        return cand.get("total_line") is None
-    if m in ("HC", "HC_AWAY", "HC_HOME"):
-        return cand.get("hc_value") is None
-    return False
+    return line_missing(cand)
 
 
 def build_picks_history_row(
@@ -321,7 +318,7 @@ def _num(v):
 
 
 def build_quant_payload(game: dict, odds: asyncpg.Record) -> dict:
-    return {
+    return fresh_payload({
         "game": game,
         "away_ml": _num(odds["away_ml"]),
         "home_ml": _num(odds["home_ml"]),
@@ -332,7 +329,7 @@ def build_quant_payload(game: dict, odds: asyncpg.Record) -> dict:
         "total_line": _num(odds["total_line"]),
         "over_odds": _num(odds["over_odds"]),
         "under_odds": _num(odds["under_odds"]),
-    }
+    }, odds)
 
 
 def _fmt_odds(v) -> str:
@@ -907,7 +904,7 @@ def _pick_team_for(pick_side: Optional[str], away_team: str, home_team: str) -> 
 
 def build_candidates_history_rows(
     sport_id: int, game_pk: int, game_date, away_team: str, home_team: str, result: dict, published_key,
-    odds_captured_at=None, pipeline: int = 1,
+    odds_captured_at=None, pipeline: int = 1, snapshot=None,
 ) -> tuple[str, list[dict]]:
     """Mapea los candidatos de un pipeline run al esquema real de *_candidates_history (Supabase),
     marcados con source='autopicks_v2' para distinguirlos de los de produccion (n8n). Solo se
@@ -917,7 +914,7 @@ def build_candidates_history_rows(
     # Pipeline 2 va a su gemela `*_candidates_lineup`, clonada con LIKE de la base, asi que la
     # allowlist de columnas es la MISMA (verificado: 33/39/29 columnas, identicas a su base).
     table = CANDIDATES_LINEUP_TABLE[sport_id] if pipeline == 2 else base_table
-    allowed = CANDIDATES_HISTORY_COLUMNS[base_table]
+    allowed = CANDIDATES_HISTORY_COLUMNS[base_table] | ({"prediction_snapshot_id", "prediction_at", "scheduled_innings", "model_version", "quality_flags"} if snapshot else set())
     league_label = LEAGUE_LABEL.get(sport_id, str(sport_id))
     # 2026-08-29: el motor vendorizado (quant_engine*.js) devuelve away_runs/home_runs, no
     # away_mu/home_mu -- esas claves nunca existieron, away_runs_predicted/home_runs_predicted
@@ -957,7 +954,7 @@ def build_candidates_history_rows(
             "published": (market, pick_side) == published_key,
             "result": "PENDING",
             "total_line": c.get("total_line"), "hc_value": c.get("hc_value"),
-            "diag_flags": [],
+            "diag_flags": [*(c.get("diag_flags") or []), *(["missing_market_line"] if line_missing(c) else [])],
             "away_runs_predicted": away_mu, "home_runs_predicted": home_mu,
             "league": league_label, "created_at": now_iso,
             "matchup_label": f"{away_team} @ {home_team}",
@@ -978,6 +975,10 @@ def build_candidates_history_rows(
             # 66.8% y entrega 57.4% en el bin 65-70%, n=162, t=-2.41), de ahi el interes.
             "raw_prob_estimated": c.get("raw_prob_estimated"),
         }
+        if snapshot:
+            full_row.update(prediction_snapshot_id=snapshot["snapshot_id"], prediction_at=snapshot["prediction_at"],
+                            scheduled_innings=snapshot["scheduled_innings"], model_version=snapshot["model_version"],
+                            quality_flags=snapshot["quality_flags"])
         rows.append({k: v for k, v in full_row.items() if k in allowed})
     return table, rows
 
@@ -1008,6 +1009,13 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
     gate_away_pid = gate_row["away_pitcher_id"] if gate_row else None
     gate_home_pid = gate_row["home_pitcher_id"] if gate_row else None
     gate_dt = gate_row["game_datetime_utc"] if gate_row else None
+
+    # All entry points, including late Telegram odds, share the same pregame/freshness gate.
+    now = dt.datetime.now(dt.timezone.utc)
+    odds_time = timestamp(odds.get("updated_at"))
+    if not valid_pregame(gate_dt, now) or not odds_time or not 0 <= (now - odds_time).total_seconds() <= 1200:
+        logger.warning("pipeline pendiente: inicio desconocido/pasado o cuota sin vigencia sport_id=%s game_pk=%s", sport_id, game_pk)
+        return
 
     # FIX #3 (2026-09-02): la cuota debe ser POSTERIOR a la noticia que el modelo ya conoce.
     # Aplica a las 3 ligas (esta funcion es agnostica de liga; el detector recorre sport_id 1/11/23)
@@ -1123,6 +1131,13 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
         logger.warning("pipeline 2 pendiente para game_pk=%s: lineup_watch aún sin ambos factores", game_pk)
         return
 
+    if pipeline == 2 and gate_row and gate_row.get("lineup_confirmed_at"):
+        game_obj["lineup_confirmed_at"] = gate_row["lineup_confirmed_at"].isoformat()
+    payload = build_quant_payload(game_obj, odds)
+    if not complete_markets(payload):
+        logger.warning("pipeline pendiente de pares de cuotas vigentes game_pk=%s", game_pk)
+        return
+
     # Punto de reclamo atomico -- a partir de aqui, cualquier llamada concurrente para el
     # mismo (sport_id, game_pk, pipeline) recibira claim=None y no hara nada.
     async with ctx.pool.acquire() as conn:
@@ -1135,7 +1150,7 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
         return
     run_id = claim["id"]
 
-    payload = build_quant_payload(game_obj, odds)
+    prediction_at = dt.datetime.now(dt.timezone.utc)
     try:
         result = await run_quant(ctx.node_bin, ctx.vendor_dir, LEAGUE_KEY[sport_id], payload)
     except NodeBridgeError as e:
@@ -1143,6 +1158,20 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
         async with ctx.pool.acquire() as conn:
             await conn.execute("UPDATE pipeline_runs SET error=$1 WHERE id=$2", str(e), run_id)
         await ctx.telegram.send_message(ctx.admin_chat_id, f"❌ Error calculando game_pk={game_pk}: {str(e)[:200]}")
+        return
+
+    try:
+        snapshot = build_snapshot(sport_id, game_pk, pipeline, payload, result, prediction_at, odds.get("updated_at"))
+        if not valid_pregame(gate_dt):
+            raise ValueError("Game started during calculation")
+        await save_snapshot(ctx, snapshot)
+        async with ctx.pool.acquire() as conn:
+            await conn.execute("UPDATE pipeline_runs SET prediction_snapshot_id=$1,quant_result=$2 WHERE id=$3",
+                               snapshot["snapshot_id"], json.dumps(result), run_id)
+    except Exception:
+        logger.exception("prediction audit failed game_pk=%s", game_pk)
+        async with ctx.pool.acquire() as conn:
+            await conn.execute("UPDATE pipeline_runs SET error=$1 WHERE id=$2", "prediction_audit_failed: no publication", run_id)
         return
 
     async with ctx.pool.acquire() as conn:
@@ -1227,8 +1256,8 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
     # CANDIDATES_LINEUP_TABLE). No critico: si falla, no bloquea el envio de mensajes.
     try:
         table, rows = build_candidates_history_rows(
-            sport_id, game_pk, game_obj.get("game_date"), away_team, home_team, result, published_key,
-            odds_captured_at=odds["updated_at"] if "updated_at" in odds else None, pipeline=pipeline,
+            sport_id, game_pk, game_obj.get("game_date"), away_team, home_team, result, None,
+            odds_captured_at=odds["updated_at"] if "updated_at" in odds else None, pipeline=pipeline, snapshot=snapshot,
         )
         if pipeline == 2:
             await ctx.supabase.upsert(ctx.http_client, table, rows, "game_id,market,pick_side")
@@ -1256,7 +1285,10 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
     venue_tz = await _venue_timezone(ctx, game_obj)
     full_text = format_full_analysis(league_label, pipeline, away_team, home_team, result,
                                      lineup_incomplete, game_obj=game_obj, venue_tz=venue_tz)
-    await ctx.telegram.send_message(ctx.admin_chat_id, full_text)
+    try:
+        await ctx.telegram.send_message(ctx.admin_chat_id, full_text)
+    except Exception:
+        logger.exception("admin analysis delivery failed game_pk=%s", game_pk)
 
     # Aviso destacado de banda de edge MLB (ver constantes EDGE_ALERT_* arriba). Solo informativo,
     # solo al admin -- nunca bloquea ni altera la publicacion normal.
@@ -1288,8 +1320,33 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
             logger.exception("fallo el aviso de banda de edge MLB para game_pk=%s", game_pk)
 
     if published:
+        if not valid_pregame(gate_dt):
+            logger.warning("publication cancelled: game started game_pk=%s", game_pk)
+            async with ctx.pool.acquire() as conn:
+                await conn.execute("UPDATE pipeline_runs SET quant_result=$1,error=$2 WHERE id=$3", json.dumps(result), "game_started_before_publication", run_id)
+            return
         text = format_pick_message(league_label, pipeline, away_team, home_team, game_obj, result, lineup_incomplete)
-        await ctx.picks_telegram.send_message(ctx.picks_channel_id, text)
+        telegram_message_id = await ctx.picks_telegram.send_message(ctx.picks_channel_id, text)
+        if not isinstance(telegram_message_id, int) or telegram_message_id <= 0:
+            raise RuntimeError("Telegram did not acknowledge publication")
+
+        # Record delivery locally before attempting the remote projections.
+        delivered_at = dt.datetime.now(dt.timezone.utc)
+        async with ctx.pool.acquire() as conn:
+            await conn.execute("UPDATE pipeline_runs SET published=true,published_at=$1,telegram_message_id=$2,quant_result=$3 WHERE id=$4",
+                               delivered_at, telegram_message_id, json.dumps(result), run_id)
+        try:
+            await ctx.supabase.insert(ctx.http_client, "bb_prediction_publications", [{
+                "snapshot_id": snapshot["snapshot_id"], "market": published_key[0], "pick_side": published_key[1],
+                "telegram_message_id": telegram_message_id, "published_at": delivered_at.isoformat()}])
+            await ctx.supabase.patch(ctx.http_client, table,
+                {"prediction_snapshot_id": "eq." + snapshot["snapshot_id"], "market": "eq." + published_key[0], "pick_side": "eq." + published_key[1]},
+                {"published": True, "published_at": delivered_at.isoformat(), "publication_message_id": telegram_message_id})
+            async with ctx.pool.acquire() as conn:
+                await conn.execute("UPDATE pipeline_runs SET receipt_synced_at=now() WHERE id=$1", run_id)
+        except Exception:
+            logger.exception("delivery receipt not projected to Supabase game_pk=%s", game_pk)
+            await ctx.telegram.send_message(ctx.admin_chat_id, f"⚠️ {league_label} {game_pk}: envío confirmado, pendiente guardar recibo en Supabase.")
 
         # Fix A (2026-07-25): ademas de publicar en el canal, PERSISTIR el pick en *_picks_history
         # para que aparezca en el dashboard y lo resuelva LYNX_RESOLVE_PICKS. Antes Auto-Picks v2
@@ -1309,7 +1366,8 @@ async def try_fire_pipeline(ctx: PipelineContext, sport_id: int, game_pk: int, p
             existing = await ctx.supabase.select(
                 ctx.http_client, picks_table,
                 {id_col: f"eq.{pick_row[id_col]}", "market": f"eq.{pick_row['market']}",
-                 side_col: f"eq.{pick_row[side_col]}", "select": "id", "limit": "1"},
+                 side_col: f"eq.{pick_row[side_col]}", "select": "id", "limit": "1",
+                 **({"liga": "eq.MiLB"} if picks_table == "picks_history" else {})},
             )
             if existing:
                 logger.info("pick ya presente en %s (game=%s %s %s), no se duplica",

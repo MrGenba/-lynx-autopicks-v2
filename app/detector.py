@@ -104,6 +104,7 @@ async def upsert_game(pool: asyncpg.Pool, sport_id: int, g: mlb_api.ScheduledGam
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
             ON CONFLICT (sport_id, game_pk) DO UPDATE SET
               status = EXCLUDED.status,
+              game_datetime_utc = EXCLUDED.game_datetime_utc,
               away_pitcher_id = CASE
                 WHEN games_gate_state.sport_id = 1 AND games_gate_state.lineup_confirmed_at IS NULL
                   THEN COALESCE(EXCLUDED.away_pitcher_id, games_gate_state.away_pitcher_id)

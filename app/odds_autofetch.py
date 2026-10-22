@@ -572,6 +572,10 @@ async def _apply_scraped_games(
                 len(entries), cand.game_pk, cand.away_team_name, cand.home_team_name,
             )
             values = fusion
+        from app.market_evidence import complete_markets
+        if not complete_markets(values):
+            logger.warning("autofetch: cuotas sin par y línea completos game_pk=%s", cand.game_pk)
+            continue
         await _store_odds(ctx.pool, cand.sport_id, cand.game_pk, values, chat_id=0, message_id=0)
         matched_count += 1
 

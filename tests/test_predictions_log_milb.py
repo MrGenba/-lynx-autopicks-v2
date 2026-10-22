@@ -43,6 +43,8 @@ class _SupaFake:
         pk = int(params["game_pk"].split(".")[1])
         return {"id": 1} if pk in self.ya else None
     async def insert(self, client, tabla, filas):
+        if tabla == "bb_prediction_snapshots":
+            return
         assert tabla == "predictions_log"
         self.insertados.extend(filas)
 
@@ -72,7 +74,9 @@ class _HttpFake:
 
 
 def _juego_api(pk, ap=None, hp=None):
-    return {"gamePk": pk, "teams": {
+    import datetime as dt
+    return {"gamePk": pk, "gameDate": (dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=2)).isoformat(),
+            "scheduledInnings": 9, "status": {"detailedState": "Scheduled"}, "teams": {
         "away": {"team": {"name": "A"}, "probablePitcher": {"id": ap} if ap else None},
         "home": {"team": {"name": "B"}, "probablePitcher": {"id": hp} if hp else None}}}
 
@@ -179,6 +183,10 @@ async def test_un_partido_sin_datos_no_tumba_el_resto(monkeypatch):
 
 class _JuegoProgramado:
     def __init__(self, pk, away, home, ap=None, hp=None):
+        import datetime as dt
+        self.game_datetime_utc = (dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=2)).isoformat()
+        self.status = "Scheduled"
+        self.scheduled_innings = 9
         self.game_pk = pk
         self.away_team_name = away
         self.home_team_name = home

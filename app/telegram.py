@@ -16,9 +16,10 @@ class TelegramClient:
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
         self.http_client = http_client
 
-    async def send_message(self, chat_id: int, text: str, parse_mode: Optional[str] = None) -> None:
+    async def send_message(self, chat_id: int, text: str, parse_mode: Optional[str] = None) -> int:
         # Telegram limita a 4096 caracteres -- trocear si hace falta (mismo margen de 3800
         # ya usado en otras integraciones de Telegram de este proyecto).
+        first_message_id = None
         for i in range(0, len(text), 3800):
             chunk = text[i:i + 3800]
             payload = {"chat_id": chat_id, "text": chunk}
@@ -28,7 +29,15 @@ class TelegramClient:
                 f"{self.base_url}/sendMessage", json=payload, timeout=10.0
             )
             if resp.status_code >= 400:
-                logger.warning("sendMessage fallo (%s): %s", resp.status_code, resp.text[:300])
+                raise RuntimeError(f"Telegram delivery failed: HTTP {resp.status_code}")
+            data = resp.json()
+            message_id = data.get("result", {}).get("message_id")
+            if data.get("ok") is not True or not isinstance(message_id, int) or message_id <= 0:
+                raise RuntimeError("Telegram delivery not acknowledged")
+            first_message_id = first_message_id or message_id
+        if first_message_id is None:
+            raise ValueError("Empty Telegram message")
+        return first_message_id
 
     async def get_updates(self, offset: Optional[int], timeout: int = 25) -> list[dict]:
         params = {"timeout": timeout}

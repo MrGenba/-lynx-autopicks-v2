@@ -28,6 +28,7 @@ from typing import Optional
 
 from app import mlb_stats_client
 from app.node_bridge import NodeBridgeError, run_quant
+from app.prediction_audit import build_snapshot, save_snapshot, valid_pregame
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +87,10 @@ async def _partidos_de_hoy(ctx) -> list[dict]:
             "home_team_name": g.home_team_name,
             "away_pitcher_id": g.away_pitcher_id,
             "home_pitcher_id": g.home_pitcher_id,
+            "game_datetime_utc": g.game_datetime_utc,
+            "scheduled_innings": g.scheduled_innings,
         }
-        for g in juegos
+        for g in juegos if g.status in {"Preview", "Pre-Game", "Warmup", "Scheduled"} and valid_pregame(g.game_datetime_utc)
     ]
 
 
@@ -126,11 +129,15 @@ async def capture_predictions_tick(ctx) -> None:
 
             game_obj = await adapter.build_game_object(
                 game_pk, "pitchers_only",
-                p.get("away_pitcher_id"), p.get("home_pitcher_id"), None,
+                p.get("away_pitcher_id"), p.get("home_pitcher_id"), p["game_datetime_utc"],
             )
             if game_obj is None:
                 sin_datos += 1
                 continue
+
+            game_obj["game_datetime_utc"] = p["game_datetime_utc"]
+            game_obj["scheduled_innings"] = p["scheduled_innings"]
+            prediction_at = dt.datetime.now(dt.timezone.utc)
 
             # Sin cuotas: solo se le pasa la linea estandar para que calcule p_over/p_under. El
             # motor no necesita precios para producir mu -- los candidatos saldran vacios y da igual.
@@ -142,6 +149,11 @@ async def capture_predictions_tick(ctx) -> None:
                 "total_line": STD_LINE, "over_odds": None, "under_odds": None,
             }
             resultado = await run_quant(ctx.node_bin, ctx.vendor_dir, LEAGUE_KEY, payload)
+            if not valid_pregame(p["game_datetime_utc"]):
+                continue
+            # Pipeline 0 is the fixed-line sports experiment, never a market price.
+            snapshot = build_snapshot(SPORT_ID, game_pk, 0, payload, resultado, prediction_at)
+            await save_snapshot(ctx, snapshot)
 
             fila = {
                 "game_pk": game_pk,

@@ -58,3 +58,10 @@ class SupabaseClient:
             json=rows, timeout=15.0,
         )
         resp.raise_for_status()
+
+    async def patch(self, client: httpx.AsyncClient, table: str, params: dict, values: dict) -> None:
+        if not params:
+            raise ValueError("A scoped filter is required")
+        resp = await client.patch(f"{self.base_url}/rest/v1/{table}", headers={**self.headers, "Prefer": "return=minimal"},
+                                  params=params, json=values, timeout=15.0)
+        resp.raise_for_status()

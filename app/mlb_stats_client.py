@@ -92,6 +92,7 @@ class ScheduledGame:
     home_pitcher_id: Optional[int] = None
     home_pitcher_name: Optional[str] = None
     game_number: Optional[int] = None
+    scheduled_innings: Optional[int] = None
 
 
 async def get_schedule(client: httpx.AsyncClient, sport_id: int, date_str: str, league_id: Optional[int] = None) -> list[ScheduledGame]:
@@ -117,6 +118,7 @@ async def get_schedule(client: httpx.AsyncClient, sport_id: int, date_str: str, 
                 home_pitcher_id=home_p.get("id") if home_p else None,
                 home_pitcher_name=home_p.get("fullName") if home_p else None,
                 game_number=g.get("gameNumber"),
+                scheduled_innings=g.get("scheduledInnings"),
             ))
     return games
 

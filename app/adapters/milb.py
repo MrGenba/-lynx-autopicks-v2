@@ -26,17 +26,19 @@ class MilbAdapter:
         self.supabase = supabase
         self.http_client = http_client
 
-    async def _team_rpg(self, team_id: int, season: int) -> tuple[Optional[float], Optional[int]]:
+    async def _team_rpg(self, team_id: int, season: int, cutoff: str) -> tuple[Optional[float], Optional[int]]:
         as_away, as_home = await asyncio.gather(
             self.supabase.select(
                 self.http_client, "daily_games",
                 {"away_team_id": f"eq.{team_id}", "game_date": f"gte.{season}-01-01",
-                 "away_score": "not.is.null", "select": "away_score"},
+                 "and": f"(game_date.lt.{cutoff},game_date.lt.{season+1}-01-01)",
+                 "scheduled_innings": "eq.9", "away_score": "not.is.null", "home_score": "not.is.null", "select": "away_score"},
             ),
             self.supabase.select(
                 self.http_client, "daily_games",
                 {"home_team_id": f"eq.{team_id}", "game_date": f"gte.{season}-01-01",
-                 "home_score": "not.is.null", "select": "home_score"},
+                 "and": f"(game_date.lt.{cutoff},game_date.lt.{season+1}-01-01)",
+                 "scheduled_innings": "eq.9", "away_score": "not.is.null", "home_score": "not.is.null", "select": "home_score"},
             ),
         )
         scores = [r["away_score"] for r in as_away] + [r["home_score"] for r in as_home]
@@ -125,10 +127,11 @@ class MilbAdapter:
         # Fallback: si la vista de Supabase aun no tiene el pitcher_id de un lado (sync de
         # produccion no ha llegado), usar el que el detector ya confirmo en vivo via
         # MLB Stats API (games_gate_state) para poder consultar sus stats igualmente.
-        resolved_away_pid = base.get("away_pitcher_id") or away_pitcher_id
-        resolved_home_pid = base.get("home_pitcher_id") or home_pitcher_id
+        resolved_away_pid = away_pitcher_id or base.get("away_pitcher_id")
+        resolved_home_pid = home_pitcher_id or base.get("home_pitcher_id")
 
-        season = dt.datetime.utcnow().year
+        season = int(str(base.get("game_date") or dt.datetime.now(dt.timezone.utc).date())[:4])
+        cutoff = str(base.get("game_date") or dt.datetime.now(dt.timezone.utc).isoformat())[:10]
         (
             ap, hp, apsc, hpsc, away_batt, home_batt, away_bull, home_bull,
             away_rpg, home_rpg, park, weather,
@@ -141,8 +144,8 @@ class MilbAdapter:
             self._team_batting(base.get("home_team_id"), season),
             self._team_bullpen(base.get("away_team_id"), season),
             self._team_bullpen(base.get("home_team_id"), season),
-            self._team_rpg(base.get("away_team_id"), season),
-            self._team_rpg(base.get("home_team_id"), season),
+            self._team_rpg(base.get("away_team_id"), season, cutoff),
+            self._team_rpg(base.get("home_team_id"), season, cutoff),
             self._park_factor(base.get("venue_id")),
             self._weather(game_pk),
         )
