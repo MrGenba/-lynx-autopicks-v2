@@ -96,6 +96,11 @@ CREATE OR REPLACE VIEW public.bb_statcast_pitchers_milb AS SELECT * FROM bb_stat
 CREATE OR REPLACE VIEW public.bb_statcast_batters_current AS SELECT * FROM bb_statcast_current WHERE player_type='batter' AND season_type='R';
 REVOKE ALL ON public.bb_statcast_current,public.bb_statcast_pitchers_mlb,public.bb_statcast_pitchers_milb,public.bb_statcast_batters_current FROM PUBLIC,anon,authenticated;
 GRANT SELECT ON public.bb_statcast_current,public.bb_statcast_pitchers_mlb,public.bb_statcast_pitchers_milb,public.bb_statcast_batters_current TO service_role;
+CREATE OR REPLACE VIEW public.bb_milb_player_stats_current AS SELECT
+ p.player_id,p.name,p.team_name,p.league,p.fip,p.k_bb_pct,sc.xwoba::double precision AS xwoba,p.updated_at,p.season,p.babip,p.innings_pitched,p.era,p.whip,p.k_9,p.bb_9,p.woba,p.pitch_hand,p.pitch_hand_code,p.pitch_hand_desc,p.bat_side_code,p.bat_side_desc,p.bat_side,p.team_id,p.primary_position_code,p.primary_position_name,p.primary_position_type,p.current_age,p.height,p.weight,p.birth_city,p.birth_state_province,p.birth_country,p.active,p.fip_diff,p.luck_factor,sc.captured_at AS xwoba_captured_at
+ FROM player_stats p LEFT JOIN bb_statcast_pitchers_milb sc ON sc.player_id=p.player_id AND sc.season=p.season;
+REVOKE ALL ON public.bb_milb_player_stats_current FROM PUBLIC,anon,authenticated;
+GRANT SELECT ON public.bb_milb_player_stats_current TO service_role;
 CREATE OR REPLACE VIEW public.bb_statcast_health AS
  SELECT sport.sport_id,extract(year from current_date)::bigint AS season,role.player_type,phase.season_type,
  b.captured_at,b.requested_through,b.rows_count,b.metric_coverage,
@@ -113,6 +118,35 @@ CREATE OR REPLACE VIEW public.bb_statcast_health AS
  ORDER BY z.captured_at DESC,z.id DESC LIMIT 1) b ON true;
 REVOKE ALL ON public.bb_statcast_health FROM PUBLIC,anon,authenticated;
 GRANT SELECT ON public.bb_statcast_health TO service_role;
+
+CREATE OR REPLACE VIEW public.bb_mlb_pitcher_starter_totals AS
+ SELECT player_id,
+    season,
+    sum(ip_real(innings_pitched)) AS ip,
+    round(sum(earned_runs)::numeric * 9.0 / NULLIF(sum(ip_real(innings_pitched)), 0::numeric), 2) AS era,
+    round(sum(strikeouts)::numeric * 9.0 / NULLIF(sum(ip_real(innings_pitched)), 0::numeric), 2) AS k_9,
+    round(sum(walks)::numeric * 9.0 / NULLIF(sum(ip_real(innings_pitched)), 0::numeric), 2) AS bb_9,
+    round(sum(hits)::numeric * 9.0 / NULLIF(sum(ip_real(innings_pitched)), 0::numeric), 2) AS h_9,
+    count(*) AS games_started,
+    round((13.0 * sum(home_runs)::numeric + 3.0 * sum(walks)::numeric - 2.0 * sum(strikeouts)::numeric) / NULLIF(sum(ip_real(innings_pitched)), 0::numeric) + 3.10, 2) AS fip
+   FROM mlb_pitcher_gamelogs
+  WHERE is_starter = true
+  GROUP BY player_id, season;
+REVOKE ALL ON public.bb_mlb_pitcher_starter_totals FROM PUBLIC,anon,authenticated; GRANT SELECT ON public.bb_mlb_pitcher_starter_totals TO service_role;
+
+CREATE OR REPLACE VIEW public.bb_mlb_pitcher_totals AS
+ SELECT player_id,
+    season,
+    sum(ip_real(innings_pitched)) AS ip,
+    round(sum(earned_runs)::numeric * 9.0 / NULLIF(sum(ip_real(innings_pitched)), 0::numeric), 2) AS era,
+    round(sum(strikeouts)::numeric * 9.0 / NULLIF(sum(ip_real(innings_pitched)), 0::numeric), 2) AS k_9,
+    round(sum(walks)::numeric * 9.0 / NULLIF(sum(ip_real(innings_pitched)), 0::numeric), 2) AS bb_9,
+    round(sum(hits)::numeric * 9.0 / NULLIF(sum(ip_real(innings_pitched)), 0::numeric), 2) AS h_9,
+    count(*) AS games_pitched,
+    round((13.0 * sum(home_runs)::numeric + 3.0 * sum(walks)::numeric - 2.0 * sum(strikeouts)::numeric) / NULLIF(sum(ip_real(innings_pitched)), 0::numeric) + 3.10, 2) AS fip
+   FROM mlb_pitcher_gamelogs
+  GROUP BY player_id, season;
+REVOKE ALL ON public.bb_mlb_pitcher_totals FROM PUBLIC,anon,authenticated; GRANT SELECT ON public.bb_mlb_pitcher_totals TO service_role;
 
 CREATE OR REPLACE VIEW public.v_pitchers_model AS
  SELECT ps.player_id,
@@ -545,11 +579,11 @@ CREATE OR REPLACE VIEW public.vw_mlb_matchups_ready AS
     hsc_.source_url AS home_p_statcast_source_url,
     hsc_.season AS home_p_statcast_season
    FROM mlb_games g
-     LEFT JOIN vw_mlb_pitcher_season asp ON asp.player_id = g.away_pitcher_id AND asp.season = g.season
-     LEFT JOIN vw_mlb_pitcher_season_all asp_all ON asp_all.player_id = g.away_pitcher_id AND asp_all.season = g.season
+     LEFT JOIN bb_mlb_pitcher_starter_totals asp ON asp.player_id = g.away_pitcher_id AND asp.season = g.season
+     LEFT JOIN bb_mlb_pitcher_totals asp_all ON asp_all.player_id = g.away_pitcher_id AND asp_all.season = g.season
      LEFT JOIN vw_mlb_pitcher_recent arsp ON arsp.player_id = g.away_pitcher_id AND arsp.season = g.season
-     LEFT JOIN vw_mlb_pitcher_season hsp ON hsp.player_id = g.home_pitcher_id AND hsp.season = g.season
-     LEFT JOIN vw_mlb_pitcher_season_all hsp_all ON hsp_all.player_id = g.home_pitcher_id AND hsp_all.season = g.season
+     LEFT JOIN bb_mlb_pitcher_starter_totals hsp ON hsp.player_id = g.home_pitcher_id AND hsp.season = g.season
+     LEFT JOIN bb_mlb_pitcher_totals hsp_all ON hsp_all.player_id = g.home_pitcher_id AND hsp_all.season = g.season
      LEFT JOIN vw_mlb_pitcher_recent hrsp ON hrsp.player_id = g.home_pitcher_id AND hrsp.season = g.season
      LEFT JOIN vw_mlb_team_bullpen abp ON abp.team_id = g.away_team_id AND abp.season = g.season
      LEFT JOIN vw_mlb_team_bullpen hbp ON hbp.team_id = g.home_team_id AND hbp.season = g.season

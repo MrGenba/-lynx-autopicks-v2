@@ -28,6 +28,11 @@ is refreshed only from AAA and has its own xwoba_captured_at timestamp.
 The app checks all eight source groups every 15 minutes, notifying the private
 admin on a failure/state change or recovery with a one-hour cooldown.
 
+The MLB matchup view now joins one pitcher-season aggregate across team stints.
+The former join by player/season against per-team rows produced 3882 rows for
+2255 games in 2026; it now returns exactly those 2255 games once each. The ERA,
+K/9, BB/9 and FIP formulas and underlying gamelogs are preserved.
+
 Historical player_statcast* tables are retained as legacy data and are not the
 active Statcast input. player_statcast_catchers was a batting snapshot, not a
 defensive tracking feed. Catchers' batting is present among current batters;
