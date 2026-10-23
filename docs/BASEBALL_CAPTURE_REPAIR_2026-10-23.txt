@@ -1,0 +1,93 @@
+BASEBALL CAPTURE REPAIR — 2026-10-23
+
+Scope: MiLB (Triple-A, sportId=11), CPBL and NPB2. Deployed to existing n8n
+workflows and Tipster_DB. Historical picks and settled results were not deleted.
+
+VERIFIED RESULTS
+MiLB: 2,229 official final games have postgame receipts; no pending recovery.
+Current daily run: 30 team and 30 bullpen summaries, 855 advanced pitchers,
+1,239 pitcher season summaries. Baseball Savant: 1,268 regular pitchers,
+54 postseason pitchers, 909 regular batters and 48 postseason batters.
+The postgame receipt validates pitcher appearances; it is not a claim that every
+batting or pitch-level field is present. Savant's supported metrics retain nulls.
+Health validates the API shape, write statuses and four Statcast scopes. An empty
+verified off-season calendar is healthy; an unavailable API now throws.
+MiLB remains Triple-A, not every level of the minor leagues.
+
+CPBL: official public https://stats.cpbl.com.tw/ provides JSON via the endpoint
+used by its own website: /api/proxy/v1/games/schedule and /games/{year-kind-sno}.
+368 finals: 360 regular, four championship and four playoff challenge games.
+Every team has 120 regular-season games. 3,192 pitcher appearances and 8,444
+batter rows reconcile team scores, hits, HR, strikeouts, walks, HBP and batters faced.
+181 pitching and 187 batting season/team/player summaries are based ONLY on
+regular-season logs. Last regular final: October 6; last captured final: October 21.
+
+104,740 pitch-history observations; 84,892 include measured speed and spin;
+26,744 include exit velocity. Retained fields also include release point,
+extension, plate location, trajectory coefficients, zone speed/time, pitch type,
+launch angle/direction, hit spin, distance, bearing, hang time and confidence.
+Units: speeds km/h, distances/coordinates metres, angles degrees, spin rpm.
+81 games have pitch-history counts that differ from the boxscore. These records
+are flagged PARTIAL and retained separately from the complete boxscore receipt.
+COMPLETE means the observed count matches each pitcher's boxscore pitch count;
+it does NOT mean all pitches have Trackman measurements. Null is unmeasured.
+Special-event 2 can be a real pitch with a stolen-base event; it must be retained.
+Administrative/pickoff/substitution events are excluded. RESERVED is suspended;
+00:00 placeholders do not become confirmed start times.
+
+The canonical calendar is cpbl_source_games. cpbl_games remains a compatibility
+mirror. Boxscore/log/receipt writes are atomic. An invalid receipt was tested and
+rolled back without changing the previously complete game. Access is restricted
+to service_role; tables use RLS. The old scraper and invented SIERA are retired.
+ERA=0 is valid, recent starter workload uses actual starts, and the model label
+is cpbl_quant_v1. Model coefficients were not retrained. Public Trackman data
+are stored for research; the production model does not yet use every field.
+
+NPB2: current snapshots from https://www.farm-stats.com/ cover 14 teams,
+513 pitchers and 600 batters. All source fields are preserved in raw_metrics.
+Three inconsistent batting rows are excluded and identified in health reports.
+Downloaded-at time is NOT a published statistics cutoff: source_as_of remains
+null because the publisher does not supply a verified cutoff in the parsed data.
+This is an independent publisher, not a full Statcast feed.
+
+Calendar fallback: https://baseball-data-store.com/season_schedule?year=2026&month=10
+Recovered 839 finals (836 regular plus three championship games), March–October.
+Scores were reconciled against official NPB results, including:
+https://npb.jp/farm/2026/schedule_03_detail.html
+https://npb.jp/farm/2026/schedule_09_detail.html
+https://npb.jp/farm/2026/schedule.html
+The fallback displays away/home team links but prints HOME-AWAY scores.
+Its educational spring/Phoenix competitions are excluded. Its JSON-LD default
+start time is not trusted. Existing verified times and game keys are preserved.
+47 matching legacy scheduled placeholders were marked superseded, not deleted.
+No historical final-score conflicts were found in the 839-game reconciliation.
+
+The NPB2 lookup paginates history beyond 500 rows, rejects stale/failed capture,
+requires unambiguous teams, future confirmed time and announced starters, and
+never fabricates wind direction relative to the field. Current source has no
+upcoming regular NPB2 games; its last championship final was October 4.
+CPBL's next game is October 24; the public feed has not supplied announced
+starters yet. The tested live lookup waits for them instead of producing a pick.
+
+AUTOMATION (UTC except MiLB)
+MiLB existing Europe/Madrid schedule: 08:00, 09:30, 13:00, 22:00.
+CPBL_DATA_DAILY: 15:00 and 23:45; CPBL_SCHEDULE_DAILY hourly 00:00–12:00.
+CPBL reviews the whole season on Sunday and recent corrections every 20 hours.
+NPB2_STATS_DAILY: 06:10 and 14:10; calendar hourly at :15 from 00:00–09:00.
+NPB2 checks the full season on Sunday 00:15 and the last two months otherwise.
+Existing Telegram operational alerts remain enabled. Scheduled agents now check
+MILB calendar/stats/postgame and CPBL calendar/stats health; capture older than
+48 hours or an error blocks those inputs. Research workflow remains active.
+Healthy capture does not guarantee an executable pick: starters, odds and model
+validation still need to be present.
+
+VERIFICATION
+Live authenticated VPS collector runs; stored counts/freshness; exact deployment
+node hashes; no unrelated bot-node changes; CPBL SQL rollback; source fixtures,
+score-order and duplicate handling; freshness guards; regression for NPB/KBO,
+postgame and Statcast; read-only agent snapshot for all nine configured leagues.
+Private receipts and backups: D:/Milb/maintenance/league_repair_20261023/.
+Generated workflow bodies include private settings and must NEVER be committed.
+Reproducible builders: collectors/cpbl*, collectors/npb2*, milb_workflow_patch.js.
+Agent source: vendor/baseball_capture_collector.js, mirrored to local
+D:/Milb/sindicato_beisbol/collector.js. No API keys are part of these sources.
