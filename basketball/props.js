@@ -4,12 +4,6 @@ const {all}=require('./capture');
 const {notify}=require('./notifications');
 const {lastStarted,canStart,freshCount,requestAnalysis}=require('./quote_dispatch');
 async function api(ctx,path){const r=await ctx.http(ctx.server.url+path,{headers:{Authorization:'Bearer '+ctx.server.token},timeout:20000});if(r.status===404&&path.includes('/status/'))return {status:'not_found'};if(r.status===502&&r.body?.status==='error')return r.body;if(r.status<200||r.status>=300)throw Error('PROPS_SERVER_HTTP_'+r.status);return r.body;}
-const labels={points:'puntos',rebounds:'rebotes',assists:'asistencias',threes:'triples',pra:'P+R+A',pr:'P+R',pa:'P+A',ra:'R+A'};
-function quoteMessage(game,quotes){
- const pairs=quotes.filter(q=>q.selection==='over'&&q.player_id).slice(0,6);if(!pairs.length)return null;
- return [game.league+' · cuotas de jugadores · Winamax.fr',game.away_team+' @ '+game.home_team,...pairs.map(q=>q.detail.player_name+' · '+labels[q.market]+' '+q.line+': más '+q.odds.toFixed(2)+' / menos '+q.opposite_odds.toFixed(2)),
- 'Lectura directa de la versión francesa. No se ha verificado equivalencia con Winamax España.','Precios observados; confirma disponibilidad. Son datos para seguimiento, sin ventaja demostrada.'].join('\n');
-}
 async function runProps(ctx){
  const {rest,now=new Date()}=ctx;const access=(await rest('bk_state?league=eq.ALL&component=eq.props_access&select=*'))[0];
  if(access?.status==='blocked')return {status:'ACCESS_BLOCKED_NO_AUTOMATIC_RETRY'};
@@ -26,7 +20,6 @@ async function runProps(ctx){
     r.coverage=(job.result.games||[]).map(e=>({event_id:e.source_event_id,markets:[...new Set((e.markets||[]).map(m=>m.market))],partial_markets:[...new Set((e.markets||[]).filter(m=>m.coverage==='visible_rows_only').map(m=>m.market))],notes:e.notes||[]}));
     r.quotes=normalized.quotes.length;r.fresh_quotes=freshCount(normalized.quotes,now);r.mapped_quotes=normalized.quotes.filter(q=>q.player_id).length;r.unmapped_quotes=r.quotes-r.mapped_quotes;
     for(let i=0;i<normalized.quotes.length;i+=150)await rest('bk_quotes?on_conflict=quote_id','POST',normalized.quotes.slice(i,i+150),{prefer:'resolution=merge-duplicates,return=minimal'});
-    for(const g of games){const qs=normalized.quotes.filter(q=>q.game_id===g.game_id),text=quoteMessage(g,qs);if(text&&Date.parse(g.starts_at)<=now.getTime()+6*3600000)await notify(ctx,'props:winamax.fr:'+league+':'+g.game_id,league,text,g.starts_at);}
     for(const e of job.result.games||[])if(!e.markets?.length){const match=games.find(g=>g.home_team===e.home_team&&g.away_team===e.away_team);if(match)checked[match.game_id]=new Date(now.getTime()+45*60000).toISOString();}
    }else r.error='PROPS_JOB_FAILED';
   }
@@ -38,4 +31,4 @@ async function runProps(ctx){
   await rest('bk_state?on_conflict=league,component','POST',{league,component:'props',checked_at:now.toISOString(),status:r.status,detail:r},{prefer:'resolution=merge-duplicates,return=minimal'});
  }return requestAnalysis(ctx,report);
 }
-module.exports={quoteMessage,runProps};
+module.exports={runProps};

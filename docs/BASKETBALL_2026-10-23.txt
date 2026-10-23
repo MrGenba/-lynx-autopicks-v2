@@ -225,6 +225,13 @@ edit sealed predictions or place bets. Research reuses two compact prior reviews
 from Supabase as memory, retaining preregistered statistical gates and provenance.
 Persistent failures (>20 minutes) and verified recovery notify Telegram once.
 All collectors, models, research and notifications run on the VPS with the PC off.
+Player market previews now come from the analysis workflow, once per game/book.
+Each includes sealed model projections, both sides' probabilities and EV, the
+model's directional forecast and the reason a selection does not qualify. Only
+verified paired prices observed within five minutes can be shown. Advanced inputs
+are preferred; baseline fallback is labelled and cannot become a value alert.
+The raw Winamax price-only message and its pending retries are superseded. Actual
+value alerts retain the >=10% EV gate and all other existing eligibility checks.
 This is an application supervisor plus the existing four OpenAI reviewers; it is
 not this desktop chat running remotely. No local heartbeat is required for operation.
 Capture, odds and forecasts run in independent server workflows. Shared scraper

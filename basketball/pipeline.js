@@ -4,6 +4,7 @@ const {all}=require('./capture');
 const {notify,retryNotifications}=require('./notifications');
 const {VERSION:ADVANCED_VERSION,buildAdvanced}=require('./advanced_model');
 const {notifyValues,canRetryValue,LIMITS}=require('./value');
+const {marketPreviews}=require('./market_preview');
 const versions=[...Object.values(MODELS).map(x=>x.version),ADVANCED_VERSION];
 const id=(...parts)=>parts.map(p=>String(p??'team').replace(/[^A-Za-z0-9_.:-]/g,'_')).join(':');
 const fixed=n=>Number(n).toFixed(1);
@@ -84,7 +85,9 @@ async function runAnalysis(ctx){
     for(let i=0;i<candidates.length;i+=200)r.candidates_sealed+=await rest('rpc/bk_seal_candidates','POST',{p_rows:candidates.slice(i,i+200)});
     const base=fs.filter(f=>f.model_version===MODELS.baseline.version),team=base.find(f=>f.kind==='team')?.result;
     if(team&&Date.parse(g.starts_at)<=now.getTime()+6*3600000&&await notify(ctx,id('preview',league,g.game_id),league,gameMessage(g,team,base.filter(f=>f.kind==='player').map(f=>f.result),qs),g.starts_at))r.notifications++;
-    if(Date.parse(g.starts_at)<=now.getTime()+6*3600000){const checked=await notifyValues(ctx,g,fs,quotes.filter(q=>q.game_id===g.game_id),validateQuote);r.value_alerts+=checked.sent;r.value_checks.push({game_id:g.game_id,...checked});}
+    if(Date.parse(g.starts_at)<=now.getTime()+6*3600000){const checked=await notifyValues(ctx,g,fs,quotes.filter(q=>q.game_id===g.game_id),validateQuote);r.value_alerts+=checked.sent;r.value_checks.push({game_id:g.game_id,...checked});
+     for(const preview of marketPreviews(g,fs,qs,now,validateQuote))if(await notify(ctx,id('props-analysis-v1',league,g.game_id,preview.key),league,preview.text,preview.expires_at,{kind:'basketball_market_preview'}))r.notifications++;
+    }
    }
   }
   const finals=await rest('bk_games?league=eq.'+league+'&box_complete=eq.true&status=eq.final&starts_at=gt.'+new Date(now.getTime()-2*86400000).toISOString()+'&select=*');

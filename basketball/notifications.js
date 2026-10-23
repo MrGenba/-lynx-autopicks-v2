@@ -9,6 +9,7 @@ async function notify({rest,send,owner},id,league,text,expiresAt=null,extra={}){
 async function retryNotifications(ctx,now=new Date()){
  const rows=await ctx.rest('bk_notifications?sent_at=is.null&attempts=lt.5&order=created_at.asc&limit=20');let sent=0;
  for(const r of rows){if(r.payload.expires_at&&Date.parse(r.payload.expires_at)<=now.getTime())continue;
+  if(r.notification_id.startsWith('props:winamax.fr:'))continue; // Superseded by model-and-market previews.
   if(r.payload.kind==='basketball_value'&&(!ctx.canRetryValue||!await ctx.canRetryValue(r.payload,now)))continue;
   if(await notify(ctx,r.notification_id,r.league,r.payload.text,r.payload.expires_at,r.payload))sent++;}return sent;
 }

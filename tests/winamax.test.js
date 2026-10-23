@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {eventIdentity,parsePairs,normalizeProps}=require('../basketball/winamax');
 const {validateQuote,candidate}=require('../basketball/pipeline');
-const {runProps,quoteMessage}=require('../basketball/props');
+const {runProps}=require('../basketball/props');
 const now=new Date('2026-10-23T13:00:00Z');
 const g={league:'NBA',game_id:'1',home_team:'Milwaukee Bucks',away_team:'Chicago Bulls',home_team_id:'15',away_team_id:'4',starts_at:'2026-10-23T20:00:00Z',status:'scheduled'};
 const e={...eventIdentity('Milwaukee Bucks - Chicago Bulls | NBA | Basketball | Parier sur Winamax','NBA\nMilwaukee Bucks\n20:15\nChicago Bulls','NBA',[g.home_team,g.away_team],now),source_event_url:'https://www.winamax.fr/paris-sportifs/match/73719360',source_event_id:'73719360',markets:[{player_name:'Josh Giddey',market:'points',line:15.5,odds1:1.8,odds2:1.9,outcome_ids:['100','101'],captured_at:now.toISOString()}]};
@@ -30,7 +30,7 @@ test('source identity, game time and player mapping fail closed while unmatched 
 test('access-denied state performs no further server requests',async()=>{
  let calls=0;const r=await runProps({now,rest:async()=>[{status:'blocked'}],http:async()=>{calls++;throw Error('Unexpected request')}});assert.equal(calls,0);assert.equal(r.status,'ACCESS_BLOCKED_NO_AUTOMATIC_RETRY');
 });
-test('FR identity and rules uncertainty remain in research candidates and Telegram text',()=>{
+test('FR identity and rules uncertainty remain in research candidates',()=>{
  const q=normalizeProps(raw,[g],[f],now).quotes[0],forecast={status:'OK',model_version:'test',availability:'UNVERIFIED',props:{points:{mean:16,variance:30}}};
- const c=candidate(q,g,forecast,now);assert.ok(c.reasons.includes('WINAMAX_FR_NOT_VERIFIED_EQUIVALENT_TO_ES'));assert.ok(c.reasons.includes('RULES_REFERENCE_2024_CURRENT_VERSION_UNCONFIRMED'));assert.match(quoteMessage(g,[q]),/Winamax.fr/);assert.equal(quoteMessage(g,[{...q,player_id:null}]),null);
+ const c=candidate(q,g,forecast,now);assert.ok(c.reasons.includes('WINAMAX_FR_NOT_VERIFIED_EQUIVALENT_TO_ES'));assert.ok(c.reasons.includes('RULES_REFERENCE_2024_CURRENT_VERSION_UNCONFIRMED'));
 });
