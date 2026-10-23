@@ -1,7 +1,7 @@
 'use strict';
 const {teamNorm,norm}=require('./winamax');
 const PROP_TYPES={'Total Points':['points','Points'],'Total Rebounds':['rebounds','Rebonds'],'Total Assists':['assists','Passes décisives'],'Total Threes Made':['threes','Threes Made'],'Total Pts & Rebs & Asts':['pra','Pts & Rebs & Asts'],
- 'Total des points':['points','Points'],'Total des rebonds':['rebounds','Rebonds'],'Total des passes décisives':['assists','Passes décisives'],'Nombre total de tirs à trois points réalisés':['threes','Threes Made'],'Total des points, des rebonds et des passes décisives':['pra','Pts & Rebs & Asts']};
+ 'Total des points':['points','Points'],'Total des rebonds':['rebounds','Rebonds'],'Total des passes décisives':['assists','Passes décisives'],'Nombre total de tirs à trois points réalisés':['threes','Threes Made'],'Total des tirs à trois points réalisés':['threes','Threes Made'],'Total des points, des rebonds et des passes décisives':['pra','Pts & Rebs & Asts']};
 // Anonymous PS3838 pages explicitly advertise delayed prices. Capture time is
 // observation time, never the bookmaker's update time or proof of an executable price.
 function parseGamePrices(event){

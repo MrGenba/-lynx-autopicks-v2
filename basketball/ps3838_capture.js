@@ -1,5 +1,5 @@
 'use strict';
-const {normalizePublicQuotes}=require('./ps3838');
+const {normalizePublicQuotes,parsePlayerPrices}=require('./ps3838');
 const {notify}=require('./notifications');
 const {all}=require('./capture');
 async function api(ctx,path){const r=await ctx.http(ctx.server.url+path,{headers:{Authorization:'Bearer '+ctx.server.token},timeout:20000});if(r.status===404&&path.includes('/status/'))return {status:'not_found'};if(r.status===502&&r.body?.status==='error')return r.body;if(r.status<200||r.status>=300)throw Error('PS3838_SERVER_HTTP_'+r.status);return r.body;}
@@ -16,7 +16,7 @@ async function runPublicOdds(ctx){
     if(job.result?.access_denied){await rest('bk_state?on_conflict=league,component','POST',{league:'ALL',component:'ps3838_access',checked_at:now.toISOString(),status:'blocked',detail:{reason:'SOURCE_ACCESS_DENIED'}},{prefer:'resolution=merge-duplicates,return=minimal'});await notify(ctx,'ps3838:access-blocked:'+now.toISOString().slice(0,10),'NBA','PS3838 ha denegado el acceso público. La captura se ha detenido y requiere revisión.');return {status:'ACCESS_BLOCKED'};}
     const forecasts=games.length?await all(rest,'bk_forecasts?league=eq.'+league+'&game_id=in.('+games.map(g=>g.game_id).join(',')+')&kind=eq.player&select=league,game_id,player_id,result'):[];
     const n=normalizePublicQuotes(job.result,games,now,forecasts);r.quotes=n.quotes.length;r.player_quotes=n.quotes.filter(q=>q.detail.player_name).length;r.mapped_player_quotes=n.quotes.filter(q=>q.player_id).length;r.rejected=[...new Set(n.rejected)];r.source_errors=job.result.errors||[];
-    r.coverage=(job.result.games||[]).map(e=>({event_id:e.source_event_id,player_markets:e.player_markets_status||'NOT_CAPTURED'}));
+    r.coverage=(job.result.games||[]).map(e=>({event_id:e.source_event_id,player_markets:e.player_markets_status||'NOT_CAPTURED',visible_player_rows:e.player_rows?.length||0,accepted_player_rows:parsePlayerPrices(e).length/2}));
     for(let i=0;i<n.quotes.length;i+=150)await rest('bk_quotes?on_conflict=quote_id','POST',n.quotes.slice(i,i+150),{prefer:'resolution=merge-duplicates,return=minimal'});
     for(const e of job.result.errors||[])if(e.code==='EVENT_NOT_LISTED'){const g=games.find(g=>e.teams?.[0]===g.home_team&&e.teams?.[1]===g.away_team);if(g)checked[g.game_id]=new Date(now.getTime()+25*60000).toISOString();}
    }else r.error='PS3838_JOB_FAILED';
