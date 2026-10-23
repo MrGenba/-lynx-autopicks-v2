@@ -32,7 +32,7 @@ async function runProps(ctx){
   const active=new Set(games.map(g=>g.game_id));for(const k of Object.keys(checked))if(!active.has(k))delete checked[k];
   const selected=games.filter(g=>!checked[g.game_id]||Date.parse(checked[g.game_id])<=now.getTime()-4*60000).sort((a,b)=>(checked[a.game_id]||'').localeCompare(checked[b.game_id]||'')).slice(0,3);
   if(selected.length){const names=selected.flatMap(g=>[g.home_team.replace(/^LA Clippers$/,'Los Angeles Clippers'),g.away_team.replace(/^LA Clippers$/,'Los Angeles Clippers')]);const started=await api(ctx,'/scrape-odds/start?league='+league+'&bookmaker=Winamax&teams='+encodeURIComponent(names.join(',')));if(!started.job_id)throw Error('PROPS_NOT_STARTED');jobId=started.job_id;for(const g of selected)checked[g.game_id]=now.toISOString();}
-  r.status=!games.length?'no_games':r.quotes?'capturing':r.source_errors?.length?'source_error':'awaiting_available_markets';
+  r.status=!games.length?'no_games':r.quotes?(r.source_errors?.length||r.coverage?.some(e=>e.partial_markets.length||e.notes.length)?'partial':'capturing'):r.source_errors?.length?'source_error':'awaiting_available_markets';
   await rest('bk_state?on_conflict=league,component','POST',{league,component:'props_job',checked_at:now.toISOString(),status:jobId?'running':r.status,detail:{job_id:jobId,checked}},{prefer:'resolution=merge-duplicates,return=minimal'});
   await rest('bk_state?on_conflict=league,component','POST',{league,component:'props',checked_at:now.toISOString(),status:r.status,detail:r},{prefer:'resolution=merge-duplicates,return=minimal'});
  }return report;

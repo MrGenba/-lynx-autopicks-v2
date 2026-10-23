@@ -34,7 +34,8 @@ async function run(league,input){
    // Team name in the match header, never an outcome button.
    const label=p.getByText(names[0],{exact:true}).first();if(await label.count()!==1)throw Error('EVENT_NOT_LISTED');
    if(await label.evaluate(e=>Boolean(e.closest('.odd-button-wrapper'))))throw Error('EVENT_HEADER_NOT_FOUND');
-   stage='match_navigation';await label.click({timeout:5000});await p.waitForTimeout(3500);await guard(p);
+   stage='match_navigation';if(!await label.isVisible())throw Error('EVENT_HEADER_NOT_VISIBLE');
+   await label.evaluate(e=>{if(e.closest('.odd-button-wrapper'))throw Error('NOT_NAVIGATION');e.click();});await p.waitForTimeout(3500);await guard(p);
    if(!/^https:\/\/www\.winamax\.fr\/paris-sportifs\/match\/\d+$/.test(p.url()))throw Error('MATCH_URL_UNVERIFIED');
    const event={...eventIdentity(await p.title(),await p.locator('body').innerText(),league,names),source_event_url:p.url(),source_event_id:p.url().split('/').at(-1),markets:[],notes:[]};
    const done=new Set();const capture=async()=>{for(const [market,header]of Object.entries(HEADERS)){if(done.has(market))continue;await guard(p);try{const rows=await groups(p,market,header);if(rows.length){event.markets.push(...rows);done.add(market);}}catch(_){event.notes.push(market+':UI_READ_FAILED');}}await guard(p);};
