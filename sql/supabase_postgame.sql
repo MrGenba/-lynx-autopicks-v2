@@ -91,4 +91,19 @@ BEGIN
 END $fn$;
 REVOKE ALL ON FUNCTION public.bb_refresh_milb_park_factors(integer) FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION public.bb_refresh_milb_park_factors(integer) TO service_role;
+-- This legacy view previously converted already-decimal innings a second time.
+-- ip_real supports historical .1/.2 notation as well as normalized outs/3 values.
+CREATE OR REPLACE VIEW public.vw_pitcher_splits AS
+WITH ip_calc AS (
+ SELECT player_id,is_home,game_date,pitches,earned_runs,strikeouts,base_on_balls,home_runs,
+ public.ip_real(innings_pitched) ip_dec
+ FROM public.pitcher_gamelogs WHERE innings_pitched>=0
+)
+SELECT player_id,is_home,count(*) games,
+ round(sum(earned_runs)::numeric/nullif(sum(ip_dec),0)*9,2) era,
+ round((sum(strikeouts)-sum(base_on_balls))::numeric/nullif(sum(ip_dec),0),2) k_minus_bb,
+ round(sum(home_runs)::numeric/nullif(sum(ip_dec),0)*9,2) hr9,
+ round(avg(pitches),0) avg_pitches
+FROM ip_calc WHERE is_home IS NOT NULL AND game_date>=current_date-interval '365 days'
+GROUP BY player_id,is_home;
 NOTIFY pgrst,'reload schema';

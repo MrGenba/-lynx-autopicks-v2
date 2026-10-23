@@ -4,6 +4,8 @@ CAPTURA DESPUÉS DEL PARTIDO
 - vendor/postgame_ingest.js valida el boxscore oficial completo antes de guardar.
 - innings_pitched se expresa como outs/3, no como notación beisbolera decimal.
 - Conserva apariciones de cero outs y el número de lanzamientos disponible.
+- La vista MiLB vw_pitcher_splits usa ip_real (compatible con ambos formatos) y
+  conserva las estadísticas de apariciones cortas; se retiró su doble conversión.
 - sql/supabase_postgame.sql instala la escritura atómica de partido, lanzadores y
   recibo. Un fallo no produce un recibo de captura completa. No crea datos prepartido.
 - vendor/postgame_recovery.js se integra en SYNC_MLB_DAILY, SYNC_MILB_DAILY y
@@ -11,6 +13,8 @@ CAPTURA DESPUÉS DEL PARTIDO
   y revisa el calendario de toda la temporada por la noche, incluida postemporada.
 - Actualiza de nuevo los partidos recientes después de 20 horas para recoger
   correcciones oficiales. Los errores permanecen pendientes y aparecen en el aviso.
+- Ante bloqueo HTTP 406 del VPS se usa el transporte alternativo conservando
+  el intervalo completo del calendario. Verificado para las tres ligas en vivo.
 - Park Factors MiLB: actualización de estadios existentes conservando su nombre;
   todos los finales de nueve entradas, mínimo 15 partidos por estadio.
 - LYNX_RESOLVE_PICKS conserva la liquidación de picks; se retiraron los resolutores
