@@ -2,10 +2,10 @@
 // Build on the trusted deployment host. Secrets are supplied by the private env file,
 // never committed or returned from a workflow execution.
 const fs=require('fs'),path=require('path');
-const MODULES=['espn','capture','model','notifications','pipeline','agents','research','odds','winamax','props'];
+const MODULES=['espn','capture','model','notifications','pipeline','agents','research','odds','winamax','props','ps3838','ps3838_capture'];
 function bundle(){return 'const __modules={'+MODULES.map(name=>JSON.stringify(name)+':function(module,exports,require){\n'+fs.readFileSync(path.join(__dirname,name+'.js'),'utf8')+'\n}').join(',')+'};const __cache={};function __require(name){if(name.startsWith("./"))name=name.slice(2);if(!__cache[name]){const m={exports:{}};__cache[name]=m;__modules[name](m,m.exports,__require);}return __cache[name].exports;}\n';}
 function code(task,config){
- const method={capture:'__require("odds").runSnapshot',odds:'__require("odds").runOdds',props:'__require("props").runProps',analysis:'__require("pipeline").runAnalysis',research:'__require("research").runResearch'}[task];if(!method)throw Error('UNKNOWN_TASK');
+ const method={capture:'__require("odds").runSnapshot',odds:'__require("odds").runOdds',props:'__require("props").runProps',ps3838:'__require("ps3838_capture").runPublicOdds',analysis:'__require("pipeline").runAnalysis',research:'__require("research").runResearch'}[task];if(!method)throw Error('UNKNOWN_TASK');
  return bundle()+`const CONFIG=${JSON.stringify(config)};
  const raw=async(url,options={})=>{let r;try{r=await helpers.httpRequest({url,method:options.method||'GET',headers:options.headers||{},...(options.body===undefined?{}:{body:typeof options.body==='string'?JSON.parse(options.body):options.body}),json:true,timeout:options.timeout||30000,returnFullResponse:true,ignoreHttpStatusErrors:true});}catch(_){throw Error('NETWORK_REQUEST_FAILED');}return {status:r.statusCode,headers:r.headers,body:r.body,json:async()=>r.body};};
  const rest=async(p,method='GET',body,extra={})=>{const r=await raw(CONFIG.supabaseUrl+'/rest/v1/'+p,{method,headers:{apikey:CONFIG.supabaseKey,Authorization:'Bearer '+CONFIG.supabaseKey,'Content-Type':'application/json',...extra},body});if(r.status<200||r.status>=300)throw Error('DATABASE_HTTP_'+r.status);return r.body;};
@@ -15,7 +15,7 @@ function code(task,config){
  try{return [{json:await ${method}(ctx)}];}catch(e){const error=/^[A-Z][A-Z_0-9]+$/.test(e.message||'')?e.message:'BASKETBALL_JOB_FAILED';for(const league of ['NBA','WNBA']){await rest('bk_state?on_conflict=league,component','POST',{league,component:${JSON.stringify(task)},checked_at:new Date().toISOString(),status:'error',detail:{error}},{prefer:'resolution=merge-duplicates,return=minimal'}).catch(()=>{});await __require('notifications').notify(ctx,league+':${task}:error:'+now.toISOString().slice(0,10),league,league+' · incidencia en ${task}: '+error+'. Se reintentará automáticamente.').catch(()=>{});}return [{json:{status:'ERROR',error}}];}finally{await rest('rpc/bk_lock','POST',{p_name:${JSON.stringify(task)},p_owner:owner,p_release:true});}`;
 }
 function workflow(task,config,{webhookPath,webhookToken}){
- const cron={capture:'1 * * * *',odds:'*/5 * * * *',props:'2-57/5 * * * *',analysis:'3-58/5 * * * *',research:'0 9 * * *'}[task];
+ const cron={capture:'1 * * * *',odds:'*/5 * * * *',props:'2-57/5 * * * *',ps3838:'4-59/5 * * * *',analysis:'3-58/5 * * * *',research:'0 9 * * *'}[task];
  const nodes=[{id:'schedule',name:'Schedule',type:'n8n-nodes-base.scheduleTrigger',typeVersion:1.2,position:[0,0],parameters:{rule:{interval:[{field:'cronExpression',expression:cron}]}}},
  {id:'manual',name:'Private maintenance',type:'n8n-nodes-base.webhook',typeVersion:2,webhookId:webhookPath,position:[0,250],parameters:{path:webhookPath,httpMethod:'POST',responseMode:'onReceived',options:{}}},
  {id:'auth',name:'Authenticate maintenance',type:'n8n-nodes-base.code',typeVersion:2,position:[200,250],parameters:{jsCode:'if($input.first().json.headers?.["x-maintenance-key"]!=='+JSON.stringify(webhookToken)+')throw Error("Unauthorized");return [{json:{authorized:true}}];'}},

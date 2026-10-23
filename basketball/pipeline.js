@@ -8,6 +8,7 @@ const fixed=n=>Number(n).toFixed(1);
 function validateQuote(q,g,now){
  const reasons=[];
  if(q.league!==g.league||q.game_id!==g.game_id)reasons.push('EVENT_MISMATCH');
+ if(q.detail?.delayed===true||q.detail?.reference_only===true||q.source==='ps3838_public_delayed')reasons.push('DELAYED_REFERENCE_PRICE');
  if(q.period!=='full_game'||q.includes_overtime!==true)reasons.push('RULES_UNVERIFIED');
  if(!(q.odds>1&&q.odds<=1000)||!q.bookmaker||!q.source_url)reasons.push('PRICE_INVALID');
  if(!Number.isFinite(Date.parse(q.captured_at))||Date.parse(q.captured_at)>now.getTime()+60000||Date.parse(q.captured_at)<now.getTime()-15*60000||Date.parse(q.expires_at)<=now.getTime())reasons.push('STALE_QUOTE');

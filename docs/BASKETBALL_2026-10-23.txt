@@ -74,11 +74,33 @@ the last 6 hours, with an explicit Winamax.fr source and no claim of proven edge
 WNBA is read when upcoming games enter the 12-hour window; no individual markets
 were visible during the initial manual probe. Check state/quotes for live coverage.
 
+PS3838 public reference prices
+-----------------------------
+Anonymous Chrome on the VPS reads PS3838's public basketball page and opens each
+selected game's additional markets. No login or API credentials are required.
+Supported: visible full-game moneyline, spread, total, player points, rebounds,
+assists, threes and PRA. English/French player market headings are recognized.
+The site explicitly labels anonymous prices as delayed; the delay duration and
+bookmaker update timestamp are unknown. All stored observations retain delayed=true,
+reference_only=true and source=ps3838_public_delayed. They are excluded from EV,
+paper candidates, market benchmarks and executable-odds Telegram summaries, even
+when their capture timestamp is fresh. Overtime rules remain unverified.
+Exact teams, league and date are required (20-minute calendar tolerance, recorded).
+Unmatched player names retain a null player_id. Only a unique player in the same
+game's sealed forecasts is mapped. No probabilities or decisions are overwritten.
+WNBA shares this reader when games enter the 12-hour window; offered markets still
+depend on the public site. A source access denial permanently opens its separate
+circuit until operator review. Missing listings receive a 30-minute backoff.
+The October 23 anonymous NBA probe returned game and player prices for three games.
+Oddschecker was also tested directly from the VPS: Cloudflare HTTP 403 before
+login or prices. No credentials were used and no automatic reader was enabled.
+
 Operations
 ----------
 Lynx Basketball - capture: hourly at minute 1, POST /basketball-stats/start.
 Lynx Basketball - odds: every 5 minutes, existing authenticated scrape start/status.
 Lynx Basketball - props: every 5 minutes offset 2, separate Winamax.fr jobs/state.
+Lynx Basketball - ps3838: every 5 minutes offset 4, delayed references only.
 Lynx Basketball - analysis: every 5 minutes offset 3, calculations once per game.
 Lynx Basketball - research: daily 09:00 UTC; weekly progress and proven improvement.
 Capture, odds and forecasts run in independent server workflows. Shared scraper
@@ -89,4 +111,4 @@ Failed sends retry up to 5 attempts; pregame messages expire at tip-off.
 Secrets are supplied by private deployment configuration; no env files are committed.
 Service-role-only RLS/grants. SQL install: sql/supabase_basketball.sql.
 Builder: basketball/build_workflows.js. Local test:
-node --test --test-isolation=none tests/basketball.test.js tests/winamax.test.js
+node --test --test-isolation=none tests/basketball.test.js tests/winamax.test.js tests/ps3838.test.js

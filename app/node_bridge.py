@@ -84,7 +84,7 @@ async def run_odds_scraper(
     filtra que partidos se "perforan" (Totales/Handicap, lo caro) -- sin esto el scraper perfora
     TODOS los partidos de la liga, no solo los que hacen falta. El proxy (si se pasa) va por
     variables de entorno del subproceso, nunca como argv (no queda en logs de proceso)."""
-    basketball_script = "run_winamax.js" if bookmaker.lower() == "winamax" else "run_odds.js"
+    basketball_script = {"winamax": "run_winamax.js", "ps3838": "run_ps3838.js"}.get(bookmaker.lower(), "run_odds.js")
     script = str(Path(vendor_dir).parent / "basketball" / basketball_script) if league in ("NBA", "WNBA") else str(Path(vendor_dir) / "run_odds_scraper.js")
     env = dict(os.environ)
     if proxy_server:

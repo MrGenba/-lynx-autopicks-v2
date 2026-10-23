@@ -94,8 +94,8 @@ async def _run_scrape_job(job_id: str, cfg: Config, league: str, bookmaker: str 
         # proxy_kind="full" fuerza la salida por el Tor de catalogo completo (ExitNodes en paises
         # cuyo Bet365 no esta recortado). Se expone SOLO aqui, en el endpoint manual, para poder
         # verificar la hipotesis sin cambiar todavia el comportamiento automatico.
-        if league in ("NBA", "WNBA") and bookmaker.lower() == "winamax":
-            proxy = None  # Public Winamax.fr props reader uses the native VPS connection.
+        if league in ("NBA", "WNBA") and bookmaker.lower() in ("winamax", "ps3838"):
+            proxy = None  # Public readers use the native VPS connection.
         elif proxy_kind == "full" and cfg.proxy_server_full:
             proxy = cfg.proxy_server_full
         elif league == "LMB" and cfg.proxy_server_lmb:
@@ -172,8 +172,10 @@ async def scrape_odds_start(request: web.Request) -> web.Response:
     # aqui (ej. "Winamax") buscaria una casa que nunca aparece en cuotasahora.com y devolveria
     # partidos vacios sin ningun aviso claro de por que.
     bookmaker = request.query.get("bookmaker", "Bet365")
-    if bookmaker.lower() not in ("bet365", "winamax"):
-        return web.json_response({"error": "parametro 'bookmaker' debe ser Bet365 o Winamax"}, status=400)
+    if bookmaker.lower() not in ("bet365", "winamax", "ps3838"):
+        return web.json_response({"error": "parametro 'bookmaker' debe ser Bet365, Winamax o PS3838"}, status=400)
+    if bookmaker.lower() == "ps3838" and league not in ("NBA", "WNBA"):
+        return web.json_response({"error": "PS3838 solo disponible para NBA y WNBA"}, status=400)
 
     # 2026-07-30: 'teams' opcional (lista de nombres de equipo separados por coma). Si se pasa, el
     # scraper solo visita/perfora las URLs que matchean esos equipos (candidate_names -> matchesUrlSlug),
