@@ -11,6 +11,11 @@ from basketball.import_history import convert
 
 ROOT=Path(tempfile.gettempdir())/'lynx_basketball_snapshots'
 REGISTRIES=Path(__file__).parent/'registries'
+def snapshot_url(league,season,kind):
+    repo='hoopR-nba-data' if league=='NBA' else 'wehoop-wnba-data'
+    prefix=league.lower();folder='schedules' if kind=='schedule' else kind
+    filename=f'{prefix}_schedule_{season}' if kind=='schedule' else f'{kind}_{season}'
+    return f'https://raw.githubusercontent.com/sportsdataverse/{repo}/main/{prefix}/{folder}/parquet/{filename}.parquet'
 
 async def run():
     ROOT.mkdir(exist_ok=True)
@@ -26,11 +31,9 @@ async def run():
       for league,season in [('NBA',now.year+(now.month>=9)),('WNBA',now.year)]:
        state={'source':'sportsdataverse_public_parquet','season':season,'live_source':'ESPN_ACCESS_DENIED','player_props_odds':'NO_PROVIDER'}
        try:
-        repo='hoopR-nba-data' if league=='NBA' else 'wehoop-wnba-data'
         urls={}
         for kind in ['schedule','team_box','player_box']:
-          prefix='nba' if league=='NBA' else 'wnba';folder='schedules' if kind=='schedule' else kind
-          url=f'https://raw.githubusercontent.com/sportsdataverse/{repo}/main/{prefix}/{folder}/parquet/{prefix}_{kind}_{season}.parquet'
+          url=snapshot_url(league,season,kind)
           response=await client.get(url)
           if response.status_code!=200:raise RuntimeError('SNAPSHOT_HTTP_'+str(response.status_code))
           (ROOT/f'{league}_{kind}_{season}.parquet').write_bytes(response.content);urls[kind]=url

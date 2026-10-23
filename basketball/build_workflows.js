@@ -3,7 +3,7 @@
 // never committed or returned from a workflow execution.
 const fs=require('fs'),path=require('path');
 const MODULES=['espn','capture','model','notifications','pipeline','agents','research','odds'];
-function bundle(){return 'const __modules={'+MODULES.map(name=>JSON.stringify(name)+':function(module,exports,require){\n'+fs.readFileSync(path.join(__dirname,name+'.js'),'utf8')+'\n}').join(',')+'};const __cache={};function __require(name){name=name.replace(/^\.\\//,"");if(!__cache[name]){const m={exports:{}};__cache[name]=m;__modules[name](m,m.exports,__require);}return __cache[name].exports;}\n';}
+function bundle(){return 'const __modules={'+MODULES.map(name=>JSON.stringify(name)+':function(module,exports,require){\n'+fs.readFileSync(path.join(__dirname,name+'.js'),'utf8')+'\n}').join(',')+'};const __cache={};function __require(name){if(name.startsWith("./"))name=name.slice(2);if(!__cache[name]){const m={exports:{}};__cache[name]=m;__modules[name](m,m.exports,__require);}return __cache[name].exports;}\n';}
 function code(task,config){
  const method={capture:'__require("odds").runSnapshot',odds:'__require("odds").runOdds',analysis:'__require("pipeline").runAnalysis',research:'__require("research").runResearch'}[task];if(!method)throw Error('UNKNOWN_TASK');
  return bundle()+`const CONFIG=${JSON.stringify(config)};
