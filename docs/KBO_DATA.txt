@@ -1,0 +1,93 @@
+KBO: captura oficial diaria — 23 octubre 2026
+
+ESTADO VERIFICADO
+724 partidos finalizados con boxscore completo: 720 de temporada regular,
+3 de la primera serie de postemporada y 1 de la siguiente. Último final: 20 octubre.
+7.151 apariciones de lanzadores y 18.910 registros de bateadores. Cero pendientes.
+247 apariciones de cero outs conservadas; dos abridores por partido.
+368 resúmenes de bateadores y 294 de lanzadores verificados en diez equipos.
+Los resúmenes regulares llegan al 12 octubre; los logs incluyen postemporada.
+118 lanzadores con 468 combinaciones de tipo de lanzamiento y velocidad.
+Estos recuentos son por equipo y nombre, no un censo garantizado de personas únicas.
+
+FUENTES Y ALCANCE
+Calendario: POST Main.asmx/GetKboGameList en https://www.koreabaseball.com/ws/.
+Boxscore: Schedule.asmx/GetBoxScoreScroll, usado por el GameCenter oficial.
+Perfiles: Schedule.asmx/GetPitKindAnalysis, usado por la previa de abridores.
+Referencias públicas:
+https://www.koreabaseball.com/Schedule/GameCenter/Main.aspx
+https://www.koreabaseball.com/Schedule/GameCenter/ReviewNew.aspx
+https://www.koreabaseball.com/Schedule/GameCenter/Preview/StartPitcher.aspx
+
+El perfil ofrece hasta cuatro tipos de lanzamiento, porcentaje de uso y velocidad
+media en km/h. No es Statcast completo: no se ha verificado una fuente descargable
+de cada lanzamiento con spin, velocidad de salida y ángulo de bateo. Los perfiles
+se guardan para investigación; no se les asignan pesos nuevos sin validación.
+captured_at indica cuándo se descargaron; source_as_of queda null cuando la fuente
+no declara su corte. No confundir fecha de descarga con fecha del dato deportivo.
+
+CAPTURA AUTOMÁTICA
+KBO_DATA_DAILY (nFZHBXV6dSlQarql): 14:30 y 23:30 UTC, es decir, 23:30 KST y
+08:30 KST del día siguiente. Sustituye al antiguo KBO_STATS_WEEKLY.
+Revisa 14 días anteriores y 7 futuros; los domingos revisa desde el 1 de marzo.
+Recupera todos los finales sin recibo, reintenta fallos y recaptura finales recientes
+tras 20 horas. Solo refresca estadísticas si la captura está completa y sin errores.
+KBO_SCHEDULE_DAILY (asfeTbxcTQQYpwGO): 00:00 y 07:00 UTC. Incluye previsión
+meteorológica a la hora anunciada, sin inventar la hora del partido.
+KBO_PITCH_PROFILES_DAILY (bcfeRRKWSDdlhrKt): 07:15 UTC. Sustituye al antiguo
+KBO_FG_ADVANCED_WEEKLY. Consulta los IDs oficiales de los abridores de la temporada.
+Los fallos activan avisos operativos por Telegram. Las verificaciones de mantenimiento
+suprimen mensajes y no publican picks. No requieren llamadas de pago a un LLM.
+
+INTEGRIDAD Y LIMITACIONES
+- Identidad por game_id oficial; dobles jornadas con IDs distintos.
+- Guardado atómico de partido, jugadores y recibo. Validación de totales entre ambos
+  equipos antes de insertar; una excepción revierte todo el partido.
+- Innings guardados como outs/3; 5.2 en notación beisbolera son 17 outs, no 5,2 IP.
+- La fuente agrupa BB+HBP en 4사구. BB/9, BB%, WHIP y SIERA no se inventan.
+  FIP se calcula con HR, BB+HBP, K, IP y constante derivada de la liga.
+- wOBA usa pesos fijos declarados: es una aproximación, no wOBA oficial ajustado KBO.
+- Las carreras limpias del equipo pueden diferir de la suma individual por errores
+  y corredores heredados; se conservan ambos valores oficiales.
+- 박준영 de HH aparece con dos IDs oficiales. Sus logs se conservan, pero se excluye
+  esa agregación individual ambigua. No se inventan IDs de relevistas sin identificar.
+- Se conservan los resúmenes antiguos como legacy_unverified; los consumidores usan
+  las vistas actuales o source=kbo_gamecenter. No borrar el historial de apuestas.
+
+CONSUMO EN EL MODELO Y LOS AGENTES
+Buscar Matchup KBO utiliza calendario oficial, abridores anunciados y vistas completas
+paginadas. Exige captura correcta de menos de 48 horas y cero finales pendientes.
+Bloquea partidos empezados, horas inválidas, identidades ambiguas y abridores sin datos.
+Corrige la orientación local/visitante si las cuotas llegan en el orden contrario.
+Usa ERA/FIP/K9 verificados, últimas cinco aperturas reales y bullpen ponderado por outs.
+La carga de relevistas de tres días queda disponible como dato; no se introdujo un
+coeficiente de fatiga sin validar. Estadísticas regulares y postemporada diferenciadas.
+El motor admite ERA=0 con muestra real y divide el IP reciente entre aperturas reales.
+El viento a favor queda null hasta verificar la orientación de los estadios.
+BB_SINDICATO_AUTO consulta kbo_official_games y estadísticas con source=kbo_gamecenter.
+No se afirma una mejora frente al mercado: requiere evaluación prospectiva.
+
+FUENTES DE CÓDIGO Y REPRODUCCIÓN
+collectors/kbo.js: parser puro de fuentes oficiales.
+collectors/kbo_runner.js: transporte, reintentos, persistencia y actualización.
+collectors/kbo_workflows.js: builders collector(mode,settings) y lookup(settings)
+para nodos Code de n8n. settings recibe url,key,bot,chat del entorno privado.
+Nunca guardar la salida generada en Git: contiene credenciales inyectadas.
+vendor/kbo_lookup.js y vendor/quant_engine_kbo.js: enriquecimiento y cálculo.
+Aplicar sql/supabase_kbo_official.sql y después sql/supabase_kbo_refresh.sql en una
+transacción administrativa. RLS activado; escritura limitada a RPC de service_role.
+El entorno actual ya tiene las migraciones y workflows activos, verificados desde VPS.
+El despliegue local utiliza maintenance/kbo_20261023/deploy_daily.js; sus respaldos
+privados permanecen fuera del repositorio. collector.js del sindicato está sincronizado.
+
+VERIFICACIÓN
+node tests/kbo.test.js: ocho pruebas del parser, integridad, identidades, lookup,
+muestras recientes y transporte generado. Además se validaron los 724 boxscores.
+Prueba SQL real: recibo discordante rechazado; hash de filas originales conservado,
+con ROLLBACK exterior de seguridad. Recibo local atomicity_verification.json.
+Prueba VPS completa: lectura de estadísticas reales y calendario simulado en memoria,
+porque el 23 octubre no hay partido oficial. Sin escribir partidos de prueba ni publicar.
+KIA/LG: últimos cinco starts, 22 1/3 y 21 2/3 IP; salida numérica válida, data_score 0,88.
+Este resultado comprueba funcionamiento, no precisión predictiva.
+Recibos privados locales: maintenance/kbo_20261023/final_verification.json,
+backfill_receipt.json y lookup_verification.json.
