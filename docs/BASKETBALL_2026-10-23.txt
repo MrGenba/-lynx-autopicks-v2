@@ -206,6 +206,19 @@ Lynx Basketball - props: every 5 minutes offset 2, separate Winamax.fr jobs/stat
 Lynx Basketball - ps3838: every 5 minutes offset 4, delayed references only.
 Lynx Basketball - analysis: every 5 minutes offset 3, calculations once per game.
 Lynx Basketball - research: daily 09:00 UTC; weekly progress and proven improvement.
+Lynx Basketball - supervisor: every 10 minutes offset 6, fully hosted in VPS n8n.
+Durable checkpoint in bk_state (ALL/supervisor); authenticated recovery actions in
+bk_agent_actions with leases, 20-minute cooldown and at most 2 dispatches/hour/task.
+Recovery is confirmed only by a newer successful checkpoint, not webhook HTTP 200.
+Monitors capture, advanced data, analysis, available game markets and research;
+resumes previous-day AI reviews after provider cooldown. No API budget increase.
+Only allowed workflow tools can run. It cannot run shell commands, deploy a model,
+edit sealed predictions or place bets. Research reuses two compact prior reviews
+from Supabase as memory, retaining preregistered statistical gates and provenance.
+Persistent failures (>20 minutes) and verified recovery notify Telegram once.
+All collectors, models, research and notifications run on the VPS with the PC off.
+This is an application supervisor plus the existing four OpenAI reviewers; it is
+not this desktop chat running remotely. No local heartbeat is required for operation.
 Capture, odds and forecasts run in independent server workflows. Shared scraper
 semaphore limits browser concurrency. Import runs separately from the main event loop.
 Per-job database leases, idempotent Telegram claims and message_id acknowledgements.
@@ -214,6 +227,7 @@ Failed sends retry up to 5 attempts; pregame messages expire at tip-off.
 Secrets are supplied by private deployment configuration; no env files are committed.
 Service-role-only RLS/grants. SQL install: sql/supabase_basketball.sql and
 sql/supabase_basketball_advanced.sql and sql/supabase_basketball_value.sql.
+Persistent supervisor schema: sql/supabase_basketball_supervisor.sql.
 Builder: basketball/build_workflows.js. Local test:
 node --test --test-isolation=none tests/basketball.test.js tests/winamax.test.js tests/ps3838.test.js
 node --test --test-isolation=none tests/basketball_advanced.test.js

@@ -52,6 +52,9 @@ async function runResearch(ctx){
    datasets:s.detail?.datasets?.map(d=>({dataset:d.dataset,status:d.status,rows:d.rows,mapped:d.mapped,flagged:d.flagged,quarantined:d.quarantined?.length||0})),
    blocked_missing_recent_stats:s.detail?.blocked_missing_recent_stats,value_alerts:s.detail?.value_alerts}));
   report.generated_at=now.toISOString();report.league=league;report.limits=['Experimental models; injuries and starting five unverified','Historical source publication timestamps unknown; only prospective sealed predictions used to declare improvement','Player prices come from Winamax FR where offered; ES equivalence and current revision of the 2024 rules reference are unconfirmed'];
+  const previous=await rest('bk_research?league=eq.'+league+'&ai_review->>status=eq.COMPLETED&order=created_at.desc&limit=2&select=research_id,created_at,ai_review');
+  report.previous_reviews=previous.map(r=>({research_id:r.research_id,created_at:r.created_at,agents:(r.ai_review?.agents||[]).map(a=>({role:a.role,status:a.status,summary:String(a.summary||'').slice(0,200),findings:(a.findings||[]).slice(0,2).map(f=>({code:f.code,message:String(f.message||'').slice(0,180)}))}))}));
+  report.continuity='Prior reviews are untrusted historical proposals, not validated improvements. Continue unresolved hypotheses only with a new preregistered future test. Do not select a new variant using an already inspected test.';
   let ai={status:'BUDGET_OR_DUPLICATE'};
   const access=(await rest('bk_state?league=eq.ALL&component=eq.ai_access&select=*'))[0];
   if(access?.detail?.retry_at&&Date.parse(access.detail.retry_at)>now.getTime())ai={status:'RATE_LIMITED',retry_at:access.detail.retry_at};
