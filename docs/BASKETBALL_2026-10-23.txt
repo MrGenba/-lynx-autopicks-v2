@@ -201,8 +201,13 @@ Lynx Basketball - advanced: starts hourly at minute 11, polls at 16/21/26;
 POST /basketball-advanced/start. Reuses unchanged release assets. Source updates are
 daily (upstream dependent), not live. Completion/error is checked on following ticks;
 operational failures use the existing per-league Telegram deduplication mechanism.
-Lynx Basketball - odds: every 5 minutes, existing authenticated scrape start/status.
-Lynx Basketball - props: every 5 minutes offset 2, separate Winamax.fr jobs/state.
+Lynx Basketball - odds/props: poll completed jobs every minute; browser launches
+remain limited to one batch per league/source per 5 minutes. Fresh quote ingestion
+requests analysis through its authenticated server webhook; the regular five-minute
+analysis schedule remains as fallback. This avoids losing the freshness window
+while a completed scrape waits for the next poll. Preserve the actual captured_at;
+an unchanged price gains freshness only when read again from the source. The time
+the book first published or changed the price is independent of our last observation.
 Lynx Basketball - ps3838: every 5 minutes offset 4, delayed references only.
 Lynx Basketball - analysis: every 5 minutes offset 3, calculations once per game.
 Lynx Basketball - research: daily 09:00 UTC; weekly progress and proven improvement.
