@@ -1,0 +1,51 @@
+Avisos de alineaciones asiáticas — 23 de octubre de 2026
+
+Desplegado en Lynx - Lineup Watcher (24oaDn6q2bxEN8Am):
+Polling Asia -> Lineups Asia + Notificar, cada 10 minutos.
+Usa el mismo bot y chat privado que los avisos existentes de alineaciones.
+Ventana: desde 5 horas antes hasta 30 minutos después del inicio publicado.
+Revalida fecha, equipos, estado y hora en la fuente al consultar cada partido.
+Un aviso por equipo y partido con los nueve titulares, posiciones, abridor cuando
+está disponible, hora de Madrid y fuente. Los nombres conservan su idioma original.
+
+Cobertura
+- KBO: GameCenter oficial, GetKboGameList y GetLineUpAnalysis.
+  Exige LINEUP_CK=true. Con false, KBO puede devolver los nueve del partido anterior.
+  Comprueba G_ID, SEASON_ID, SR_ID y T_ID. No inventa IDs de jugadores si faltan.
+- NPB: SPAIA, games_info_by_date + game_over_view + starting_members_for_flash.
+  El calendario previo puede traer metadatos nulos: se resuelven mediante overview.
+  Selecciona startBatNo 1–9 y excluye el banco (11). Verifica gameId y equipos.
+- CPBL: API pública del portal oficial stats.cpbl.com.tw.
+  Nueve órdenes únicos y posiciones iniciales; excluye sustituciones entre paréntesis.
+  Espera a que el portal publique los jugadores; no garantiza una antelación fija.
+- NPB2: avisos de lineup NO activados. No se ha verificado una fuente de alineaciones
+  confirmadas antes del partido. Su calendario y captura estadística siguen activos.
+  bb_lineup_health lo identifica expresamente como unsupported/enabled=false.
+
+Persistencia
+sql/supabase_asian_lineups.sql crea bb_asian_lineup_notifications y bb_lineup_health.
+Cada aviso conserva jugadores, fuente y fecha de observación. Clave league/game_pk/side.
+Una reserva atómica de 5 minutos evita que dos ejecuciones envíen simultáneamente.
+Solo se marca enviado después de Telegram ok=true y message_id. Los errores permiten
+reintentar mientras el partido siga dentro de la ventana y la fuente confirme el lineup.
+Si Telegram entrega pero se pierde su respuesta, puede haber un duplicado al reintentar:
+la API de Telegram no ofrece una clave de idempotencia para sendMessage.
+Las tablas y RPC son privadas para service_role. No se borraron datos existentes.
+Errores de captura se guardan por liga; el workflow avisa por Telegram al cambiar el
+error o persistir 6 horas. NPB2 unsupported no genera avisos repetidos.
+
+Verificación
+- 12 pruebas con fixtures reales: KBO no confirmado, banca NPB, sustitutos CPBL,
+  identidad, ventana, cancelación, calendario NPB incompleto, errores y deduplicación.
+- Transacción SQL con rollback: reserva, segundo propietario bloqueado, liberación
+  tras fallo, reintento, confirmación, no reenvío y permisos de acceso.
+- Ejecuciones temporales autenticadas desde el VPS: sin errores; fuentes de próximos
+  partidos accesibles (KBO 25/10, NPB y CPBL 24/10), todavía sin lineups publicados.
+- Telegram getChat confirma acceso al destino existente; no se envió un lineup ficticio.
+- Primer ciclo programado: ejecución 261063, 23/10/2026 11:00 UTC (13:00 Madrid),
+  las tres ligas sin errores. Cero partidos dentro de la ventana de aviso en ese momento.
+- Los nueve nodos anteriores del watcher mantienen su contenido exacto.
+
+Esta ampliación cubre avisos. No añade ajustes de probabilidad por lineup a los modelos
+asiáticos. Los avisos y la reevaluación existentes de MLB/MiLB/LMB siguen en sus nodos.
+Código generado con secretos: solo servidor y backups privados, nunca Git.
