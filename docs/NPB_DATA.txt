@@ -1,0 +1,105 @@
+NPB: captura diaria de primera división — 23 octubre 2026
+
+ESTADO VERIFICADO
+870 partidos finalizados con boxscore: 858 regulares y 12 de postemporada.
+Los doce equipos tienen sus 143 partidos de temporada regular. Último final: 17 octubre.
+7.286 apariciones de lanzadores y 24.023 registros de bateadores; cero finales pendientes.
+Se conservan 56 apariciones de cero outs y 1.740 abridores (dos por encuentro).
+Resúmenes regulares actuales: 385 registros de lanzadores y 648 de bateadores.
+Estos recuentos incluyen registros por equipo/ID y apariciones sin PA; no representan
+necesariamente personas únicas ni jugadores con muestra suficiente para modelar.
+
+252.708 observaciones de lanzamientos, con 229.842 velocidades medidas (54–163 km/h).
+Los ceros de velocidad de la fuente significan dato ausente y se almacenan como null.
+384 lanzadores tienen 2.001 combinaciones de lanzador/tipo. Los tipos son códigos
+del proveedor; no se han inventado nombres ni equivalencias con Baseball Savant.
+57 partidos tienen detalle de lanzamientos parcial: los conteos no concuerdan por
+lanzador con el boxscore. El total declarado es 253.149 frente a 252.708 observaciones.
+Esto no demuestra que cada diferencia sea un lanzamiento físico faltante.
+
+FUENTES Y ALCANCE
+Fuente utilizada: API pública de SPAIA, accesible sin credenciales:
+https://spaia.jp/baseball/npb/api/
+games_info_by_date?gameDate=YYYYMMDD
+game_over_view?gameId=ID
+current_score?game_id=ID
+both_pitcher_game_stats?gameId=ID
+both_batter_game_stats?gameId=ID&matchday=YYYYMMDD
+flash_atbat_history?gameId=ID
+Ejemplo público: https://spaia.jp/baseball/npb/game/2021039492
+
+SPAIA es un proveedor público, no la web oficial de NPB. Las peticiones directas
+a npb.jp agotaban el tiempo; Yahoo devuelve una restricción geográfica explícita.
+La nueva captura usa SPAIA directamente. No utiliza Tor ni un proxy para Yahoo.
+Se conserva ID del partido, jugador, equipo, fuente y recibo de captura.
+Posición del lanzamiento y del batazo: coordenadas gráficas del proveedor, no metros.
+No se ha integrado un feed completo de Hawk-Eye/Statcast: faltan spin, velocidad
+de salida y ángulo de bateo. La existencia de esas métricas en NPB+ no acredita
+una API pública reutilizable: https://www.japan-baseball.jp/npb-plus/
+
+CAPTURA AUTOMÁTICA
+NPB_DATA_DAILY (Zn2LQX9WDXcq9KKU), antes NPB_STATS_WEEKLY:
+14:30 y 23:30 UTC diariamente (23:30 JST y 08:30 JST del día siguiente).
+Revisa 14 días anteriores y siete futuros; los domingos desde el 1 de marzo.
+Recupera todos los finales sin recibo. Recaptura finales recientes después de 20 horas.
+NPB_SCHEDULE_DAILY (y9pW1vGD0saRRCf0): cada hora de 00:00 a 10:00 UTC,
+es decir, 09:00–19:00 JST, para actualizar horarios y abridores anunciados.
+Reintentos limitados; denegaciones de acceso no se eluden. Los fallos quedan en
+npb_capture_state y bb_capture_health. Se emiten avisos operativos por Telegram.
+Los avisos de incidencias repetidas se deduplican por su contenido cuando la captura
+devuelve un informe; una excepción total genera un aviso de fallo del workflow.
+
+INTEGRIDAD
+Guardado atómico de partido, pitchers, bateadores y recibo mediante RPC.
+IP = outs/3, nunca notación decimal beisbolera. Identificación por ID del proveedor.
+Se validan identidad, carreras y totales cruzados de H/HR/K/BB/HBP/BF/PA.
+Dos partidos tienen discrepancia entre hits del marcador y los totales de jugadores:
+2021038750 y 2021039058. Pitchers y bateadores coinciden entre sí; la discrepancia
+se conserva en quality_flags. No se altera silenciosamente el marcador ni el jugador.
+La cobertura de tracking parcial no se etiqueta como boxscore incompleto.
+Historial de apuestas y datos antiguos conservados; fuente antigua legacy_unverified.
+RLS habilitado. Tablas/vistas sin lectura pública; escritura mediante RPC service_role,
+salvo el estado operativo que admite actualización del servicio.
+El detalle de lanzamientos se guarda como JSONB por encuentro, no una fila por pitch.
+La auditoría posterior a la carga midió unos 132 MiB en toda la base de datos.
+
+MODELO Y AGENTES
+Buscar Matchup NPB utiliza npb_source_games, vistas actuales completas y logs paginados.
+Exige captura correcta de menos de 48 horas y cero finales pendientes; bloquea
+horas desconocidas, partidos iniciados, identidades ambiguas o abridores sin muestra.
+Corrige orientación local/visitante si la entrada de cuotas llega invertida.
+No sustituye al abridor por el pitcher con más IP de la plantilla.
+Utiliza ERA/FIP/K9/BB9, últimas cinco aperturas reales (incluida postemporada),
+ERA de relevistas ponderada por outs y carreras del equipo en temporada regular.
+Carga del bullpen de tres días disponible como dato; no añade un peso sin validar.
+FIP usa HR, BB, HBP, K, IP y constante derivada de la liga; wOBA y SIERA quedan null.
+Temperatura/viento quedan sin aplicar hasta disponer de previsión y orientación fiables.
+El motor conserva sus coeficientes: admite ERA=0 con muestra real, divide IP reciente
+por el número real de aperturas y se identifica como npb_quant_v1, no kbo_quant_v1.
+Estos arreglos no demuestran mayor precisión que las casas de apuestas.
+
+BB_SINDICATO_AUTO utiliza calendario canónico, source=spaia.jp y salud de captura NPB.
+La fecha de comprobación determina frescura; la última aparición regular del pitcher
+puede ser anterior durante la postemporada. No se confunden ambas fechas.
+El equipo sigue su horario existente cada 15 minutos; la investigación de modelos
+mantiene su validación, presupuesto y avisos existentes. Esta reparación no invoca LLM.
+
+REPRODUCCIÓN Y VERIFICACIÓN
+collectors/npb.js: parser; npb_runner.js: captura; npb_workflows.js: builders de n8n.
+vendor/npb_lookup.js y vendor/quant_engine_npb.js: enriquecimiento y motor.
+Aplicar sql/supabase_npb_capture.sql en transacción administrativa.
+Los builders reciben url/key/bot/chat del entorno privado. Nunca versionar su salida.
+Despliegue local: maintenance/npb_20261023/deploy_daily.js y verify_final.js.
+Los respaldos privados permanecen fuera del repositorio. Collector del sindicato
+y quant_engine_npb.js de la raíz están sincronizados con los cambios desplegados.
+
+34 pruebas JavaScript pasadas, incluidas ocho de NPB, más fixtures del collector.
+Los 870 boxscores pasaron la conciliación. Prueba SQL real: recibo inválido rechazado
+y hash de filas originales conservado, con ROLLBACK exterior de seguridad.
+Prueba VPS: próximo partido FS@DB, datos reales e IDs anunciados 1100099/2112182;
+solo reloj/cuotas de prueba. Últimas cinco aperturas: 31 y 29 IP; cálculo finito,
+data_score 0,88. No se escribieron partidos ficticios ni se publicaron picks de prueba.
+Los agentes reconocen temporada, procedencia y salud correctas; no había candidato
+con cuota nueva en esa comprobación. Funcionamiento verificado no implica rentabilidad.
+Recibos locales: final_verification.json, database_audit.json, backfill_receipt.json
+y atomicity_verification.json dentro de maintenance/npb_20261023/.
