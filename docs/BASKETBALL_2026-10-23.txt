@@ -54,13 +54,31 @@ Supported: moneyline, total, spread. Event date, home/away order, league and mar
 scope checked. Aggregated best-book prices are never treated as Bet365 prices.
 Each market has its own observed timestamp and 15-minute expiry. The bookmaker's
 own update timestamp is unavailable and explicitly recorded as unknown.
-No player-prop quote feed: user has no provider. No invented lines or substituted
-books. Props projections can be shown, but automated prop bets are not published.
+CuotasAhora does not supply player props. A separate anonymous, direct VPS reader
+uses the public Winamax.fr NBA/WNBA match pages for paired over/under player lines:
+points, rebounds, assists, threes, PRA, PR, PA, RA. The source is explicitly FR;
+equivalence to Winamax Spain is not verified. No proxy, login or alternate-domain
+retry. An explicit access denial stops the collector until operator review.
+
+Exact league, participants, future visible UTC time and player name are checked.
+Calendar tolerance is 20 minutes (the observed source difference was 15 minutes),
+stored explicitly; expiry uses the earlier start. Only a unique player in that
+game's sealed forecast can become a paper candidate. Unmatched quotes are retained
+with a null player_id, not silently assigned. List expansion failures mean partial
+coverage; unavailable markets and missing projections never become invented odds.
+
+The official rules reference is dated 2024-08-06 and includes overtime for these
+markets. The current rules revision is unconfirmed and remains a candidate caveat.
+No automated bets are placed. A once-per-game Telegram price summary is sent in
+the last 6 hours, with an explicit Winamax.fr source and no claim of proven edge.
+WNBA is read when upcoming games enter the 12-hour window; no individual markets
+were visible during the initial manual probe. Check state/quotes for live coverage.
 
 Operations
 ----------
 Lynx Basketball - capture: hourly at minute 1, POST /basketball-stats/start.
 Lynx Basketball - odds: every 5 minutes, existing authenticated scrape start/status.
+Lynx Basketball - props: every 5 minutes offset 2, separate Winamax.fr jobs/state.
 Lynx Basketball - analysis: every 5 minutes offset 3, calculations once per game.
 Lynx Basketball - research: daily 09:00 UTC; weekly progress and proven improvement.
 Capture, odds and forecasts run in independent server workflows. Shared scraper
@@ -71,4 +89,4 @@ Failed sends retry up to 5 attempts; pregame messages expire at tip-off.
 Secrets are supplied by private deployment configuration; no env files are committed.
 Service-role-only RLS/grants. SQL install: sql/supabase_basketball.sql.
 Builder: basketball/build_workflows.js. Local test:
-node --test --test-isolation=none tests/basketball.test.js
+node --test --test-isolation=none tests/basketball.test.js tests/winamax.test.js

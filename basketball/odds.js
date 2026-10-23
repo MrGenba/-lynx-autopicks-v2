@@ -33,7 +33,7 @@ async function runOdds(ctx){
  const {rest,now=new Date()}=ctx,report={leagues:{}};
  for(const league of ['NBA','WNBA']){
   const games=await rest('bk_games?league=eq.'+league+'&status=eq.scheduled&starts_at=gt.'+now.toISOString()+'&starts_at=lt.'+new Date(now.getTime()+12*3600000).toISOString()+'&order=starts_at.asc&select=*');
-  const old=(await rest('bk_state?league=eq.'+league+'&component=eq.odds_job&select=*'))[0],checked=old?.detail?.checked||{},r={games:games.length,quotes:0,rejected:[],player_props:'NO_PROVIDER'};report.leagues[league]=r;let jobId=null;
+  const old=(await rest('bk_state?league=eq.'+league+'&component=eq.odds_job&select=*'))[0],checked=old?.detail?.checked||{},r={games:games.length,quotes:0,rejected:[],player_props:'SEPARATE_WINAMAX_FR_COLLECTOR'};report.leagues[league]=r;let jobId=null;
   if(old?.detail?.job_id){const job=await server(ctx,'/scrape-odds/status/'+old.detail.job_id);
    if(job?.status==='running'){r.status='RUNNING';continue;}
    if(job?.status==='done'){const normalized=normalizeQuotes(job.result,games,now);r.rejected=normalized.rejected;r.source_errors=job.result.errors||[];

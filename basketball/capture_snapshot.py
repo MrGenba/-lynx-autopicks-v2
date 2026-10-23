@@ -29,7 +29,7 @@ async def run():
         return response.json() if response.content else None
       reports=[]
       for league,season in [('NBA',now.year+(now.month>=9)),('WNBA',now.year)]:
-       state={'source':'sportsdataverse_public_parquet','season':season,'live_source':'ESPN_ACCESS_DENIED','player_props_odds':'NO_PROVIDER'}
+       state={'source':'sportsdataverse_public_parquet','season':season,'live_source':'ESPN_ACCESS_DENIED','player_props_odds':'SEPARATE_WINAMAX_FR_COLLECTOR'}
        try:
         urls={}
         for kind in ['schedule','team_box','player_box']:

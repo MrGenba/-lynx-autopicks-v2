@@ -20,6 +20,7 @@ function candidate(q,g,f,now){
  const invalid=validateQuote(q,g,now);if(invalid.length||f?.status!=='OK')return null;
  const p=probability(q,f),ev=p.p_win*(q.odds-1)-p.p_loss,reasons=['MODEL_EXPERIMENTAL'];
  if(!q.price_updated_at)reasons.push('BOOKMAKER_UPDATE_TIME_UNKNOWN');
+ if(q.source==='winamax_fr_direct'){reasons.push('WINAMAX_FR_NOT_VERIFIED_EQUIVALENT_TO_ES');if(q.detail?.schedule_offset_seconds)reasons.push('BOOKMAKER_START_DIFFERS_FROM_CALENDAR');if(!q.detail?.rules_current_version_verified)reasons.push('RULES_REFERENCE_2024_CURRENT_VERSION_UNCONFIRMED');}
  if(q.player_id&&f.availability!=='CONFIRMED')reasons.push('PLAYER_AVAILABILITY_UNVERIFIED');
  if(ev<=0)reasons.push('NO_EDGE');
  return {candidate_id:id(g.league,g.game_id,q.bookmaker,q.player_id,q.market,q.line,q.selection,f.model_version),league:g.league,game_id:g.game_id,player_id:q.player_id||null,model_version:f.model_version,quote_id:q.quote_id,

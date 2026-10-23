@@ -40,7 +40,7 @@ async function runResearch(ctx){
   for(let i=0;i<ids.length;i+=150){const list=ids.slice(i,i+150).join(',');games.push(...await all(rest,'bk_games?league=eq.'+league+'&game_id=in.('+list+')&select=*'));players.push(...await all(rest,'bk_player_box?league=eq.'+league+'&game_id=in.('+list+')&select=game_id,player_id,stats,minutes,did_not_play'));}
   const cs=await all(rest,'bk_candidates?league=eq.'+league+'&select=model_version,verdict,result,settled_at,p_win,p_push');
   const states=await rest('bk_state?league=eq.'+league+'&select=component,status,checked_at,detail');
-  const report=evaluate(games,forecasts,players,cs);report.health=states;report.generated_at=now.toISOString();report.league=league;report.limits=['Experimental models; injuries and starting five unverified','Historical source publication timestamps unknown; only prospective sealed predictions used to declare improvement','No validated player-prop odds feed'];
+  const report=evaluate(games,forecasts,players,cs);report.health=states;report.generated_at=now.toISOString();report.league=league;report.limits=['Experimental models; injuries and starting five unverified','Historical source publication timestamps unknown; only prospective sealed predictions used to declare improvement','Player prices come from Winamax FR where offered; ES equivalence and current revision of the 2024 rules reference are unconfirmed'];
   let ai={status:'BUDGET_OR_DUPLICATE'};
   const access=(await rest('bk_state?league=eq.ALL&component=eq.ai_access&select=*'))[0];
   if(access?.detail?.retry_at&&Date.parse(access.detail.retry_at)>now.getTime())ai={status:'RATE_LIMITED',retry_at:access.detail.retry_at};

@@ -29,7 +29,7 @@ async function drill(p,market){
 async function run(league,input){
  if(!['NBA','WNBA'].includes(league)||input.bookmaker?.toLowerCase()!=='bet365'||!Array.isArray(input.candidateNames)||!input.candidateNames.length)throw Error('BASKETBALL_INPUT_INVALID');
  const browser=await chromium.launch({headless:true,channel:'chrome',proxy:process.env.PROXY_SERVER?{server:process.env.PROXY_SERVER}:undefined,args:['--disable-dev-shm-usage','--no-sandbox']});
- const result={league,bookmaker:'bet365',games:[],errors:[],player_props_status:'NO_VERIFIED_FEED'};
+ const result={league,bookmaker:'bet365',games:[],errors:[],player_props_status:'NOT_PROVIDED_BY_CUOTASAHORA'};
  try{const context=await browser.newContext({locale:'en-US',timezoneId:'UTC'});await context.route('**/*',r=>['image','font','media'].includes(r.request().resourceType())?r.abort():r.continue());const page=await context.newPage();
   const response=await page.goto('https://www.cuotasahora.com/basketball/usa/'+league.toLowerCase()+'/',{waitUntil:'domcontentloaded',timeout:45000});if([401,403,429].includes(response?.status()))throw Error('SOURCE_ACCESS_DENIED');
   await page.locator('a[href*="/basketball/h2h/"]').first().waitFor({timeout:15000});
