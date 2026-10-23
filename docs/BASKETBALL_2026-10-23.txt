@@ -120,10 +120,13 @@ and 89 of 90 mapped WNBA playoff contexts. WNBA regular-season discrepancies are
 not mixed into playoff inputs. Unmapped players remain excluded. These counts are
 a data-validation result, not predictive accuracy or full league availability.
 
-Value policy bk-value-estimate-1 requires a real paired market, observation <=5 min,
-decimal odds 1.5-3.5, overround 1.00-1.12, estimated EV >=5%, probability edge >=4
+Value policy bk-value-estimate-2 requires a real paired market, observation <=5 min,
+decimal odds 1.5-3.5, overround 1.00-1.12, estimated EV >=10%, probability edge >=4
 percentage points over the proportional no-vig market, positive baseline EV and
 stress EV >=1%. Stress: adverse +/-5% player mean or 2 team points, variance +15%.
+The user raised minimum EV from 5% to 10% on 2026-10-23. Pending notification
+retries also enforce the current threshold. Historical sealed decisions and the
+preregistered model evaluation cohort remain immutable.
 Conditional win probability must be 45-80%; player forecasts require >=15 games,
 >=20 projected minutes, minutes SD <=8 and participation within the past 7 days.
 Unconfirmed injuries/availability remain explicit conditions in every player alert.

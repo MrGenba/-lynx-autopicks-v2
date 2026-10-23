@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {validatePlayer,priors,enrichPlayer,VERSION}=require('../basketball/advanced_model');
 const {validateQuote}=require('../basketball/pipeline');
-const {assess,message}=require('../basketball/value');
+const {assess,message,canRetryValue}=require('../basketball/value');
 const {retryNotifications}=require('../basketball/notifications');
 const {compareAdvanced}=require('../basketball/prospective');
 const {pairedCI}=require('../basketball/research');
@@ -34,6 +34,14 @@ test('bounded season adjustment retains uncertainty and combination covariance',
 function market(){const q={quote_id:'q',league:'NBA',game_id:'g',player_id:null,market:'moneyline',line:null,selection:'home',odds:1.9,opposite_odds:1.9,bookmaker:'bet365',source:'cuotasahora',source_url:'https://example.test',period:'full_game',includes_overtime:true,captured_at:now.toISOString(),expires_at:'2026-10-23T15:15:00Z'};return [q,{...q,quote_id:'p',selection:'away'}];}
 const forecast={status:'OK',model_version:VERSION,advanced:{status:'APPLIED'},margin:6,margin_variance:100,p_home:.73,p_away:.27};
 test('estimated value uses a paired margin-free market and an adverse scenario',()=>{const qs=market(),r=assess(qs[0],game,forecast,forecast,qs,now,validateQuote);assert.equal(r.qualifies,true);assert.equal(r.market_probability,.5);assert.ok(r.stress_ev<r.ev);assert.ok(message(game,qs[0],forecast,r).includes('rentabilidad no demostrada'));});
+test('NBA and WNBA value alerts require at least 10 percent estimated EV',()=>{
+ for(const league of ['NBA','WNBA'])for(const [p,qualifies]of [[.549,false],[.55,true],[.56,true]]){
+  const qs=market().map(q=>({...q,league,odds:2,opposite_odds:2})),f={...forecast,p_home:p,p_away:1-p};
+  const r=assess(qs[0],{...game,league},f,f,qs,now,validateQuote);
+  assert.equal(r.qualifies,qualifies,league+' probability '+p);
+  assert.equal(r.reasons.includes('EV_BELOW_THRESHOLD'),!qualifies);
+ }
+});
 test('delayed prices, missing pairs, fallback models and stale quotes cannot alert',()=>{
  for(const change of [qs=>qs[0].detail={delayed:true},qs=>qs.pop(),qs=>qs[0].opposite_odds=2,qs=>qs[0].captured_at='2026-10-23T14:54:00Z']){const qs=market();change(qs);assert.equal(assess(qs[0],game,forecast,forecast,qs,now,validateQuote).qualifies,false);}
  const qs=market();assert.equal(assess(qs[0],game,{...forecast,advanced:{status:'BASELINE_FALLBACK'}},forecast,qs,now,validateQuote).qualifies,false);
@@ -43,6 +51,13 @@ test('value notification retries require fresh revalidation',async()=>{
  let sends=0;const pending={notification_id:'n',league:'NBA',payload:{kind:'basketball_value',alert_id:'a',text:'test',expires_at:'2026-10-23T15:05:00Z'}};
  const ctx={rest:async()=>[pending],send:async()=>{sends++;return {ok:true,result:{message_id:1}}}};
  assert.equal(await retryNotifications(ctx,now),0);assert.equal(sends,0);ctx.canRetryValue=async()=>false;assert.equal(await retryNotifications(ctx,now),0);assert.equal(sends,0);
+});
+test('pending alerts from the old policy must meet the current EV threshold',async()=>{
+ for(const [ev,allowed]of [[.09,false],[.10,true],[.12,true],[null,false],[undefined,false]]){
+  const q=market()[0],a={league:'NBA',game_id:'g',policy:'bk-value-estimate-1',expires_at:'2026-10-23T15:05:00Z',quote_snapshot:q,decision:{ev}};
+  const ctx={rest:async path=>path.startsWith('bk_value_alerts?')?[a]:path.startsWith('bk_quotes?')?[q]:[game]};
+  assert.equal(await canRetryValue(ctx,{alert_id:'old'},now),allowed,'EV '+ev);
+ }
 });
 test('advanced performance claim needs a preregistered 200-game future cohort and both benchmarks',()=>{
  const games=[],fs=[],cs=[],protocol={registered_at:'2026-10-23T15:00:00Z'};

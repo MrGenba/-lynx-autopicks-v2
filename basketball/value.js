@@ -2,8 +2,8 @@
 const {probability}=require('./model');
 const {VERSION}=require('./advanced_model');
 const {notify}=require('./notifications');
-const POLICY='bk-value-estimate-1';
-const LIMITS={minEV:.05,minEdge:.04,minStressEV:.01,maxAgeMinutes:5,minOdds:1.5,maxOdds:3.5,minOverround:1,maxOverround:1.12,maxPerGame:3};
+const POLICY='bk-value-estimate-2';
+const LIMITS={minEV:.10,minEdge:.04,minStressEV:.01,maxAgeMinutes:5,minOdds:1.5,maxOdds:3.5,minOverround:1,maxOverround:1.12,maxPerGame:3};
 const opposite=q=>q.selection==='over'?'under':q.selection==='under'?'over':q.selection==='home'?'away':'home';
 function pairFor(q,quotes){return quotes.find(p=>p.quote_id!==q.quote_id&&p.game_id===q.game_id&&p.league===q.league&&p.bookmaker===q.bookmaker&&p.source===q.source&&(p.player_id||null)===(q.player_id||null)&&p.market===q.market&&p.selection===opposite(q)&&p.period===q.period&&p.includes_overtime===q.includes_overtime&&
  (q.market==='moneyline'||Math.abs(Number(p.line)-(q.market==='spread'?-Number(q.line):Number(q.line)))<1e-8)&&Math.abs(Date.parse(p.captured_at)-Date.parse(q.captured_at))<=1000);}
@@ -72,6 +72,7 @@ async function notifyValues(ctx,g,forecasts,quotes,validateQuote){
 }
 async function canRetryValue(ctx,payload,now){
  const rows=await ctx.rest('bk_value_alerts?alert_id=eq.'+encodeURIComponent(payload.alert_id)+'&select=*'),a=rows[0];if(!a||Date.parse(a.expires_at)<=now.getTime())return false;
+ if(!Number.isFinite(a.decision?.ev)||a.decision.ev<LIMITS.minEV)return false;
  const q=(await ctx.rest('bk_quotes?quote_id=eq.'+encodeURIComponent(a.quote_snapshot.quote_id)+'&select=*'))[0];
  const g=(await ctx.rest('bk_games?league=eq.'+a.league+'&game_id=eq.'+a.game_id+'&select=status,starts_at'))[0];
  return !!q&&g?.status==='scheduled'&&Date.parse(g.starts_at)>now.getTime()&&q.detail?.delayed!==true&&q.detail?.reference_only!==true&&q.odds===a.quote_snapshot.odds&&q.opposite_odds===a.quote_snapshot.opposite_odds&&Date.parse(q.expires_at)>now.getTime()&&Date.parse(q.captured_at)>now.getTime()-LIMITS.maxAgeMinutes*60000;

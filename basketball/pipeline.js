@@ -3,7 +3,7 @@ const {MODELS,PROPS,prepareHistory,teamForecast,playerForecast,probability}=requ
 const {all}=require('./capture');
 const {notify,retryNotifications}=require('./notifications');
 const {VERSION:ADVANCED_VERSION,buildAdvanced}=require('./advanced_model');
-const {notifyValues,canRetryValue}=require('./value');
+const {notifyValues,canRetryValue,LIMITS}=require('./value');
 const versions=[...Object.values(MODELS).map(x=>x.version),ADVANCED_VERSION];
 const id=(...parts)=>parts.map(p=>String(p??'team').replace(/[^A-Za-z0-9_.:-]/g,'_')).join(':');
 const fixed=n=>Number(n).toFixed(1);
@@ -91,7 +91,7 @@ async function runAnalysis(ctx){
   for(const g of finals){const f=await rest('bk_forecasts?league=eq.'+league+'&game_id=eq.'+g.game_id+'&kind=eq.team&model_version=eq.'+MODELS.baseline.version+'&select=result&limit=1');if(!f.length)continue;
    if(await notify(ctx,id('result',league,g.game_id),league,league+' · resultado\n'+g.away_team+' '+g.away_score+' — '+g.home_team+' '+g.home_score+'\nBox score de equipos y jugadores validado. La predicción previa y los descartes pasan a evaluación.'))r.notifications++;}
   await rest('bk_state?on_conflict=league,component','POST',{league,component:'analysis',checked_at:now.toISOString(),status:r.insufficient_history||r.blocked_missing_recent_stats?'partial':'healthy',detail:r},{prefer:'resolution=merge-duplicates,return=minimal'});
-  if(await notify(ctx,id('value-enabled',league,ADVANCED_VERSION),league,league+' · avisos de valor estimado activados\nEl análisis corre en el VPS cada 5 minutos y utiliza estadísticas avanzadas validadas.\nFiltro: cuota observada hace menos de 5 minutos, EV estimado ≥5%, ventaja ≥4 puntos porcentuales frente al mercado sin margen y escenario adverso positivo.\nLas alertas indicarán las condiciones de participación y la fuente de la cuota. Modelo experimental: rentabilidad aún no demostrada.'))r.notifications++;
+  if(await notify(ctx,id('value-enabled',league,ADVANCED_VERSION),league,league+' · avisos de valor estimado activados\nEl análisis corre en el VPS cada 5 minutos y utiliza estadísticas avanzadas validadas.\nFiltro: cuota observada hace menos de 5 minutos, EV estimado ≥'+(100*LIMITS.minEV)+'%, ventaja ≥4 puntos porcentuales frente al mercado sin margen y escenario adverso positivo.\nLas alertas indicarán las condiciones de participación y la fuente de la cuota. Modelo experimental: rentabilidad aún no demostrada.'))r.notifications++;
  }return report;
 }
 module.exports={id,validateQuote,candidate,gameMessage,runAnalysis};
