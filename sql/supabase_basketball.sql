@@ -181,6 +181,9 @@ DO $$ DECLARE t text;BEGIN
  EXECUTE format('REVOKE ALL ON public.%I FROM PUBLIC,anon,authenticated',t);
  EXECUTE format('GRANT ALL ON public.%I TO service_role',t);
  END LOOP;END $$;
+-- Forecasts and pregame decisions can only be appended through the sealing RPCs.
+-- Settlement may update outcome fields through its SECURITY DEFINER function.
+REVOKE INSERT,UPDATE,DELETE,TRUNCATE ON public.bk_forecasts,public.bk_candidates FROM service_role;
 REVOKE ALL ON FUNCTION public.bk_store_game(jsonb),public.bk_import_batch(jsonb),public.bk_reserve_ai(text),public.bk_claim_notification(text,text,jsonb,text),public.bk_finish_notification(text,text,bigint) FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION public.bk_store_game(jsonb),public.bk_import_batch(jsonb),public.bk_reserve_ai(text),public.bk_claim_notification(text,text,jsonb,text),public.bk_finish_notification(text,text,bigint) TO service_role;
 REVOKE ALL ON FUNCTION public.bk_seal_forecasts(jsonb),public.bk_seal_candidates(jsonb),public.bk_settle_candidates() FROM PUBLIC,anon,authenticated;
