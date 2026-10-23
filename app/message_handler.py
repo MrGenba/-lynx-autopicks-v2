@@ -69,7 +69,7 @@ def _swap_if_needed(values: dict, swapped: bool) -> dict:
     }
 
 
-async def _store_odds(pool: asyncpg.Pool, sport_id: int, game_pk: int, values: dict, chat_id: int, message_id: int) -> None:
+async def _store_odds(pool: asyncpg.Pool, sport_id: int, game_pk: int, values: dict, chat_id: int, message_id: int, provenance: dict | None = None) -> None:
     from app.market_evidence import complete_markets, GROUPS
     import datetime as dt
     complete = complete_markets(values)
@@ -80,9 +80,12 @@ async def _store_odds(pool: asyncpg.Pool, sport_id: int, game_pk: int, values: d
         if market not in complete:
             for key in keys:
                 values[key] = None
-    meta = {m: {"captured_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-                "source": "telegram_manual" if chat_id else "automatic_provider_unspecified",
-                "bookmaker": None} for m in complete}
+    provenance = provenance or {}
+    meta = {m: {"captured_at": provenance.get("captured_at") or dt.datetime.now(dt.timezone.utc).isoformat(),
+                "source": provenance.get("source") or ("telegram_manual" if chat_id else "automatic_provider_unspecified"),
+                "bookmaker": provenance.get("bookmaker"),
+                "source_event_url": provenance.get("source_event_url"),
+                "start_time_utc": provenance.get("start_time_utc")} for m in complete}
     async with pool.acquire() as conn:
         await conn.execute(
             """

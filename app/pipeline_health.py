@@ -14,6 +14,36 @@ _statcast_last_state = None
 _statcast_last_notice = None
 _defense_last_state = None
 _defense_last_notice = None
+_odds_last_state = None
+_odds_last_notice = None
+
+
+async def odds_health_tick(ctx):
+    """Alert on missing usable prices near first pitch, including total capture failure."""
+    global _odds_last_state, _odds_last_notice
+    async with ctx.pool.acquire() as conn:
+        rows = await conn.fetch("""SELECT g.sport_id,g.game_pk,g.away_team_name,g.home_team_name,
+            (SELECT status FROM tor_activity a WHERE a.sport_id=g.sport_id AND a.kind='scrape'
+             AND a.created_at>now()-interval '24 hours' ORDER BY a.created_at DESC LIMIT 1) last_source_status
+            FROM games_gate_state g LEFT JOIN game_odds o USING(sport_id,game_pk)
+            WHERE g.pitchers_confirmed_at IS NOT NULL
+            AND g.game_datetime_utc BETWEEN now() AND now()+interval '2 hours'
+            AND NOT EXISTS(SELECT 1 FROM jsonb_each(coalesce(o.market_meta,'{}'::jsonb)) m
+                WHERE (m.value->>'captured_at')::timestamptz BETWEEN now()-interval '20 minutes' AND now()
+                AND (g.lineup_confirmed_at IS NULL OR (m.value->>'captured_at')::timestamptz>=g.lineup_confirmed_at))
+            ORDER BY g.game_datetime_utc LIMIT 20""")
+    state = tuple((r['sport_id'], r['game_pk'], r['last_source_status']) for r in rows)
+    now = dt.datetime.now(dt.timezone.utc)
+    if state != _odds_last_state and (state or _odds_last_state is not None):
+        if _odds_last_notice is None or now-_odds_last_notice >= dt.timedelta(hours=1):
+            message = "⚠️ Sin cuotas frescas a menos de 2 horas del inicio: " + "; ".join(
+                f"{LEAGUE_LABEL.get(r['sport_id'])} {r['away_team_name']} @ {r['home_team_name']} "
+                f"({r['last_source_status'] or 'sin captura reciente'})" for r in rows)
+            await ctx.telegram.send_message(ctx.admin_chat_id, message if state else "✅ Cuotas: resueltos los huecos próximos al inicio.")
+            _odds_last_notice, _odds_last_state = now, state
+    if _odds_last_state is None and not state:
+        _odds_last_state = state
+    return [dict(r) for r in rows]
 
 
 async def defense_health_tick(ctx):
@@ -128,4 +158,5 @@ async def pipeline_health_tick(ctx):
         _last_state = state
     statcast = await statcast_health_tick(ctx)
     defense = await defense_health_tick(ctx)
-    return {"missing": [dict(r) for r in missing], "pending_receipts": failed, "statcast": statcast, "defense": defense}
+    odds = await odds_health_tick(ctx)
+    return {"missing": [dict(r) for r in missing], "pending_receipts": failed, "statcast": statcast, "defense": defense, "odds": odds}

@@ -6,7 +6,7 @@
 // que hace falta salir por Tor (SOCKS local) para que el scraping funcione. Sin proxy
 // configurado, se comporta exactamente igual que el original (mismo bloqueo esperado).
 const { chromium } = require("patchright");
-const { parseBookmakerRows, pickBookmaker, parseAggregateLines, pickMainLine, parseMatchHeader } = require("./parser_cuotasahora");
+const { parseBookmakerRows, pickBookmaker, parseAggregateLines, pickMainLine, parseMatchHeader, parseEventIdentity, marketHashFragment } = require("./parser_cuotasahora");
 
 // 2026-07-18: se soporta pedir una casa distinta de bet365 (ej. Winamax) via el parametro
 // "bookmaker" de fetchLeagueOdds() -- comandos separados en Telegram ("cuotas mlb bet365" vs
@@ -59,7 +59,7 @@ async function ensureBrowser() {
       "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
     ],
   });
-  context = await browser.newContext({ userAgent: UA, viewport: { width: 1400, height: 1000 }, locale: "en-US" });
+  context = await browser.newContext({ userAgent: UA, viewport: { width: 1400, height: 1000 }, locale: "en-US", timezoneId: "UTC" });
 
   // El proxy es residencial y se paga por GB -- imagenes/fuentes/video son la parte mas pesada
   // de una pagina llena de anuncios como esta y no aportan nada (solo hace falta el texto y
@@ -154,17 +154,28 @@ async function drillIntoMarket(page, tabLabels, opts, bookmaker) {
   if (!encontrada) return drillFail("pestaña_no_visible", etiquetas.join(" / "));
   const tabLabel = encontrada.label;
   await encontrada.el.click({ force: true, timeout: 8000 });
-  await sleep(2500);
+  // CuotasAhora does not decode accented hashes: Más/Menos falls back to ML.
+  // Its public bt_hash supports stable ASCII routes (over-under / ah).
+  const marketHash = marketHashFragment(new URL(page.url()).hash, opts.market);
+  if (!marketHash) return drillFail("ambito_no_verificado", page.url());
+  await page.evaluate(hash => { window.location.hash = hash; }, marketHash);
+  const ready = await page.waitForFunction(market => {
+    const text = document.body.innerText;
+    return market === 'OU' ? /Over\s+Under\s+Payout/.test(text) : /Handicap\s+1\s+2\s+Payout/.test(text);
+  }, opts.market, {timeout:15000}).then(()=>true).catch(()=>false);
+  if (!ready) return drillFail("tabla_mercado_no_cargada", opts.market);
   await dismissOverlays(page);
 
   let lines = await getLines(page);
   const tabIdx = lines.findIndex((l) => l === tabLabel);
   if (tabIdx === -1) return drillFail("etiqueta_no_en_texto", tabLabel);
 
-  const agg = parseAggregateLines(lines, tabLabel, tabIdx, lines.length);
+  let expectedLine = null;
+  const agg = parseAggregateLines(lines, tabLabel, tabIdx, lines.length).filter(l => !opts.validateLine || opts.validateLine(l.line));
   if (agg.length) {
     const main = pickMainLine(agg, opts);
     if (!main) return drillFail("sin_linea_principal", agg.length + " lineas ofrecidas");
+    expectedLine = main.line;
     const lineText = tabLabel + " " + (main.line > 0 ? "+" : "") + main.line;
     const lineEl = page.locator("text=" + lineText).first();
     if (!(await lineEl.isVisible({ timeout: 2000 }).catch(() => false))) return drillFail("linea_no_clicable", lineText);
@@ -176,7 +187,7 @@ async function drillIntoMarket(page, tabLabels, opts, bookmaker) {
 
   const drillIdx = lines.findIndex((l) => CABECERA_CASAS.includes(l));
   if (drillIdx === -1) return drillFail("sin_bloque_casas", "ni " + CABECERA_CASAS.join(" ni "));
-  const rows = parseBookmakerRows(lines, drillIdx, Math.min(lines.length, drillIdx + 60));
+  const rows = parseBookmakerRows(lines, drillIdx, lines.length);
   const picked = pickBookmaker(rows, bookmaker);
   if (!picked) {
     // El dato decisivo: si Bet365 no esta pero SI hay otras casas, el scraper funciona y es
@@ -185,6 +196,7 @@ async function drillIntoMarket(page, tabLabels, opts, bookmaker) {
       rows.map((r) => r.bookmaker).slice(0, 8).join("/"));
   }
   if (picked.line == null) return drillFail("casa_sin_linea", picked.bookmaker);
+  if (expectedLine != null && picked.line !== expectedLine) return drillFail("linea_no_corresponde", picked.line);
   // 2026-08-29: incidente real -- un LMB con solo UNA linea ofrecida (camino rapido de arriba,
   // que se salta pickMainLine/preferAbs por completo) devolvio hc_value=0 (pick'em, no el run
   // line +-1.5 esperado) y total_line=1.5 (absurdo para beisbol) sin que nada lo marcara como
@@ -258,8 +270,13 @@ async function scrapeMatch(league, url, shouldDrill, bookmaker) {
     if (!header) return { __skipped: "no_header", url, linesSample: lines.slice(0, 12) };
     if (header.isLive) return { __skipped: "is_live", url, home: header.home_team, away: header.away_team };
 
-    const mlRows = parseBookmakerRows(lines, header.tabIdx, Math.min(lines.length, header.tabIdx + 80));
+    const identity = parseEventIdentity(await page.locator('script[type="application/ld+json"]').allTextContents(), header);
+    if (!identity) return { __skipped: "missing_event_datetime", url, home: header.home_team, away: header.away_team };
+    if (identity.event_status && !identity.event_status.endsWith('/EventScheduled')) return { __skipped: "event_not_scheduled", url };
+    if (Date.parse(identity.start_time_utc) <= Date.now()) return { __skipped: "is_live", url };
+    const mlRows = parseBookmakerRows(lines, header.tabIdx, lines.length);
     const ml = pickBookmaker(mlRows, bookmaker);
+    let missingMoneyline = null;
     if (!ml) {
       const casas = mlRows.map((r) => r.bookmaker);
       // 2026-08-16: distinguir "catalogo del pais equivocado" de "no hay casas". cuotasahora
@@ -269,17 +286,18 @@ async function scrapeMatch(league, url, shouldDrill, bookmaker) {
       // hasta caer en un pais de catalogo internacional. Se marca aparte para que Python pueda
       // tratarlo asi en vez de confundirlo con un partido sin cuotas.
       const variante = casas.find((c) => c.toLowerCase().startsWith(bookmaker.toLowerCase() + "."));
-      const base = { url, home: header.home_team, away: header.away_team,
-                     mlRowsFound: mlRows.length, bookmakersFound: casas.slice(0, 8) };
+      const base = { url, home: header.home_team, away: header.away_team, ...identity,
+                     mlRowsFound: mlRows.length, bookmakersFound: casas };
       if (variante) return { __skipped: "wrong_catalog", variant: variante, ...base };
-      return { __skipped: "no_bookmaker_rows", ...base };
+      missingMoneyline = { __skipped: mlRows.length ? "bookmaker_unavailable" : "no_bookmaker_rows", ...base };
     }
 
     const game = {
       league, status: "scheduled", time: header.time,
       away_team: header.away_team, home_team: header.home_team,
-      moneyline: { home: ml.odds1, away: ml.odds2 },
-      bookmaker: ml.bookmaker,
+      moneyline: ml ? { home: ml.odds1, away: ml.odds2 } : null,
+      bookmaker: ml?.bookmaker || bookmaker,
+      ...identity, source: "cuotasahora", source_event_url: page.url(),
     };
 
     if (shouldDrill(header.away_team, header.home_team)) {
@@ -287,16 +305,16 @@ async function scrapeMatch(league, url, shouldDrill, bookmaker) {
       // drillIntoMarket(). Total: 3.5-15.5 carreras. Hándicap: siempre acaba en .5 (run line,
       // nunca empate), abs entre 0.5 y 3.5 -- rechaza el "+0" (pick'em) que causó el incidente.
       const total = await drillIntoMarket(page, ["Over/Under", "Más/Menos de"],
-        { validateLine: (l) => l >= 3.5 && l <= 15.5 }, bookmaker);
+        { market: "OU", validateLine: (l) => l >= 3.5 && l <= 15.5 }, bookmaker);
       const hc = await drillIntoMarket(page, ["Asian Handicap", "Hándicap asiático"],
-        { preferAbs: 1.5, validateLine: (l) => Math.abs(l) >= 0.5 && Math.abs(l) <= 3.5 && Math.abs(l % 1) === 0.5 },
+        { market: "HC", preferAbs: 1.5, validateLine: (l) => Math.abs(l) >= 0.5 && Math.abs(l) <= 3.5 && Math.abs(l % 1) === 0.5 },
         bookmaker);
       // drill_notes viaja con el partido para que "tiene ML pero no total" deje de ser un
       // agujero mudo: ahora dice cual de los siete motivos fue.
       const notes = [];
-      if (total && !total.__failed) game.total = { line: Math.abs(total.line), over_odds: total.odds1, under_odds: total.odds2 };
+      if (total && !total.__failed) game.total = { line: Math.abs(total.line), over_odds: total.odds1, under_odds: total.odds2, bookmaker: total.bookmaker };
       else notes.push("total: " + ((total && total.__failed) || "sin_resultado"));
-      if (hc && !hc.__failed) game.run_line = { home: { line: hc.line, odds: hc.odds1 }, away: { line: -hc.line, odds: hc.odds2 } };
+      if (hc && !hc.__failed) game.run_line = { home: { line: hc.line, odds: hc.odds1 }, away: { line: -hc.line, odds: hc.odds2 }, bookmaker: hc.bookmaker };
       else notes.push("handicap: " + ((hc && hc.__failed) || "sin_resultado"));
       if (notes.length) game.drill_notes = notes;
 
@@ -320,6 +338,8 @@ async function scrapeMatch(league, url, shouldDrill, bookmaker) {
       // hasta ahora era indistinguible de un fallo de perforacion.
       game.drill_notes = ["no perforado (shouldDrill=false para " + header.away_team + " @ " + header.home_team + ")"];
     }
+    if (!game.moneyline && !game.total && !game.run_line) return {...missingMoneyline, drill_notes:game.drill_notes};
+    game.captured_at = new Date().toISOString();
     return game;
   } catch (e) {
     return { league, error: String(e && e.message || e), url };
@@ -380,6 +400,7 @@ async function fetchLeagueOdds(league, candidateNames, bookmaker) {
 
   const games = [];
   const errors = [];
+  const unavailableEvents = [];
   // Variantes de la casa pedida encontradas bajo nombre de otro pais (ej. "Bet365.de"). Se
   // acumula a nivel de LIGA porque `results` es local a cada path (MiLB tiene dos).
   const wrongCatalogVariants = new Set();
@@ -445,6 +466,9 @@ async function fetchLeagueOdds(league, candidateNames, bookmaker) {
       if (result.error) { errors.push(result.error); continue; }
       if (result.__skipped) {
         if (result.__skipped === "wrong_catalog" && result.variant) wrongCatalogVariants.add(result.variant);
+        if (result.__skipped === "bookmaker_unavailable") unavailableEvents.push({
+          away_team:result.away,home_team:result.home,start_time_utc:result.start_time_utc,
+          source_event_url:result.url,bookmakers:result.bookmakersFound,requested_bookmaker:bookmaker,drill_notes:result.drill_notes});
         const who = result.away && result.home ? ` ${result.away} @ ${result.home}` : "";
         errors.push(`descartado (${result.__skipped})${who} url=${result.url}`
           + (result.mlRowsFound != null ? ` mlRowsFound=${result.mlRowsFound}` : "")
@@ -459,7 +483,7 @@ async function fetchLeagueOdds(league, candidateNames, bookmaker) {
   // Señal estructurada (no parsear cadenas de error desde Python): al menos un partido tenia la
   // casa pedida pero bajo el nombre de otro pais -> el circuito actual cae en un catalogo que no
   // sirve, y rotar tiene sentido.
-  return { league, bookmaker, games, errors, wrong_catalog: wrongCatalogVariants.size > 0,
+  return { league, bookmaker, games, errors, bookmaker_unavailable:unavailableEvents, wrong_catalog: wrongCatalogVariants.size > 0,
     wrong_catalog_variants: [...wrongCatalogVariants],
     fetched_at: new Date().toISOString(), exit_geo: exitGeo, browser_timezone: browserTz, debug_counts: debugCounts };
 }

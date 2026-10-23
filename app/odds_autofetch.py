@@ -34,6 +34,7 @@ from app.tor_control import record_activity, rotate_tor_circuit
 from app.node_bridge import NodeBridgeError, run_odds_scraper
 from app import oddspapi_client
 from app.overround import check_overround
+from app.prediction_audit import timestamp
 from app.pipelines import LEAGUE_KEY, LEAGUE_LABEL, PipelineContext
 
 logger = logging.getLogger(__name__)
@@ -317,7 +318,15 @@ def aprender_desfase_del_sitio(scrapeados: list[dict], candidatos: list["aliases
 
 
 def _hora_compatible(scraped: dict, c: "aliases.CandidateGame") -> bool:
-    """MLB exige hora contrastable; las otras ligas conservan el criterio permisivo previo."""
+    """Prefer the source's dated event, so a one-series slate needs no clock training."""
+    if "start_time_utc" in scraped:
+        start = timestamp(scraped.get("start_time_utc"))
+        expected = timestamp(c.game_datetime_utc)
+        return bool(start and expected and abs((start-expected).total_seconds()) <= _TOLERANCIA_HORA_MIN*60)
+    # A dated provider must never fall back to HH:MM if its event metadata is missing.
+    if scraped.get("source") == "cuotasahora":
+        return False
+    # Legacy callers retain the conservative learned-clock check.
     if _DESFASE_SITIO_MIN is None:
         return c.sport_id != 1
     d = _delta_min(scraped, c)
@@ -344,7 +353,7 @@ def _match_scraped_game(scraped: dict, candidates: list[aliases.CandidateGame]) 
         if not _hora_compatible(scraped, c):
             logger.info(
                 "autofetch: descartado %s @ %s por hora incompatible (sitio %s, partido %s UTC) -- "
-                "probablemente otro partido de la misma serie",
+                "evento de otra fecha/hora o identidad temporal no verificable",
                 scraped.get("away_team"), scraped.get("home_team"), scraped.get("time"),
                 c.game_datetime_utc.isoformat() if c.game_datetime_utc else "?",
             )
@@ -489,7 +498,7 @@ def _fusionar_duplicados(entries: list[tuple[dict, dict]]) -> dict | None:
     seguridad; NO se re-valida con check_overround para no descartar por ser conservadores (cada
     entrada ya paso su propia comprobacion dentro de _values_from_scraped).
     """
-    horas = {str(sc.get("time") or "") for sc, _ in entries}
+    horas = {str(sc.get("start_time_utc") or sc.get("time") or "") for sc, _ in entries}
     if len(horas) > 1:
         return None
     for campo in _CAMPOS_LINEA:
@@ -576,7 +585,13 @@ async def _apply_scraped_games(
         if not complete_markets(values):
             logger.warning("autofetch: cuotas sin par y línea completos game_pk=%s", cand.game_pk)
             continue
-        await _store_odds(ctx.pool, cand.sport_id, cand.game_pk, values, chat_id=0, message_id=0)
+        provenance = {k: scraped.get(k) for k in ("source", "bookmaker", "captured_at", "source_event_url", "start_time_utc")}
+        if scraped.get("source") == "cuotasahora":
+            captured = timestamp(scraped.get("captured_at"))
+            if not captured or not 0 <= (now-captured).total_seconds() <= 1200:
+                logger.warning("autofetch: stale or unknown source capture game_pk=%s", cand.game_pk)
+                continue
+        await _store_odds(ctx.pool, cand.sport_id, cand.game_pk, values, chat_id=0, message_id=0, provenance=provenance)
         matched_count += 1
 
         # Foto "gate_a" de la linea, coste CERO en scrapes: son las cuotas que acabamos de
@@ -751,6 +766,17 @@ async def _scrape_and_apply(ctx: PipelineContext, sport_id: int, candidates: lis
         return 0, "scraper_failed"
 
     games = result.get("games") or []
+    unavailable = [e for e in result.get("bookmaker_unavailable", []) if _match_scraped_game(e, candidates)]
+    if not games and unavailable:
+        detail = "; ".join(f"{e.get('away_team')} @ {e.get('home_team')}: Bet365 no disponible en CuotasAhora" for e in unavailable)
+        await _notify_status_change(ctx, sport_id, False, detail)
+        # Distinguish a valid page without the requested bookmaker from a failed
+        # scrape. The next scheduled tick retries with the current Tor circuit.
+        await _anotar_breaker(ctx, sport_id, league_key, ok=True)
+        await record_activity(ctx.pool, "scrape", ok=False, sport_id=sport_id, league=league_key,
+            status="bookmaker_unavailable", n_candidates=len(candidates), n_scraped=0, n_matched=0,
+            duration_ms=_elapsed_ms(), detail=detail, source="autofetch")
+        return 0, "bookmaker_unavailable"
     if not games and result.get("wrong_catalog"):
         # cuotasahora sirvio la pagina REAL, con la casa pedida presente pero bajo el nombre de
         # otro pais ("Bet365.de"): la cuota existe, solo que en un catalogo que ademas ofrece menos

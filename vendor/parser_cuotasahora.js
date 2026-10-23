@@ -12,10 +12,13 @@ const RE_TIME = /^\d{1,2}:\d{2}$/;
 
 function parseBookmakerRows(lines, startIdx, endIdx) {
   const rows = [];
+  const end = lines.findIndex((l, i) => i > startIdx && /^(Mi cupón|My coupon|Pronósticos de usuarios|User predictions|Partidos anteriores:|Previous matches:)/i.test(l));
+  if (end !== -1) endIdx = Math.min(endIdx, end);
   for (let i = startIdx; i < endIdx - 3; i++) {
-    if (lines[i + 1] !== "OBTENER BONO") continue;
     const name = lines[i];
-    let j = i + 2;
+    if (!name || /^(OBTENER BONO|GET BONUS|CLAIM BONUS)$/.test(name) || RE_ODDS.test(name) || RE_SIGNED_LINE.test(name) || RE_PAYOUT.test(name)) continue;
+    let j = i + 1;
+    if (/^(OBTENER BONO|GET BONUS|CLAIM BONUS)$/.test(lines[j])) j++;
     let line = null;
     if (RE_SIGNED_LINE.test(lines[j])) { line = parseFloat(lines[j]); j++; }
     if (RE_ODDS.test(lines[j]) && RE_ODDS.test(lines[j + 1]) && RE_PAYOUT.test(lines[j + 2])) {
@@ -67,7 +70,9 @@ function pickMainLine(aggLines, { preferAbs } = {}) {
     const exact = aggLines.find((l) => Math.abs(l.line) === preferAbs);
     if (exact) return exact;
   }
-  return aggLines.reduce((best, cur) => (cur.count > best.count ? cur : best), aggLines[0]);
+  return aggLines.reduce((best, cur) => (
+    cur.count > best.count || (cur.count === best.count && Math.abs(cur.odds1-cur.odds2) < Math.abs(best.odds1-best.odds2)) ? cur : best
+  ), aggLines[0]);
 }
 
 // Cabecera de la ficha de partido: "Equipo Local - Equipo Visitante" (confirmado: el orden de
@@ -88,4 +93,33 @@ function parseMatchHeader(lines) {
   return { home_team, away_team, time, isLive, tabIdx };
 }
 
-module.exports = { parseBookmakerRows, pickBookmaker, parseAggregateLines, pickMainLine, parseMatchHeader, RE_ODDS, RE_PAYOUT };
+// The page provides the full SportsEvent date with an explicit UTC offset.
+// Bind it to the displayed teams; unrelated events or ambiguous dates fail closed.
+function parseEventIdentity(jsonTexts, header) {
+  const norm = s => String(s || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const found=[];
+  function visit(value) {
+    if (Array.isArray(value)) return value.forEach(visit);
+    if (!value || typeof value !== 'object') return;
+    if (value['@graph']) visit(value['@graph']);
+    const types=[value['@type']].flat();
+    if (!types.includes('SportsEvent')) return;
+    if (norm(value.homeTeam?.name)!==norm(header.home_team) || norm(value.awayTeam?.name)!==norm(header.away_team)) return;
+    const raw=value.startDate;
+    if (typeof raw!=='string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}.*(?:Z|[+-]\d{2}:\d{2})$/.test(raw)) return;
+    const ms=Date.parse(raw);if(!Number.isFinite(ms))return;
+    found.push({start_time_utc:new Date(ms).toISOString(),event_status:typeof value.eventStatus==='string'?value.eventStatus:value.eventStatus?.['@id'],
+      start_time_source:'sports_event_jsonld'});
+  }
+  for (const text of jsonTexts) {try {visit(JSON.parse(text));} catch (_) {}}
+  if (!found.length || new Set(found.map(e=>e.start_time_utc)).size!==1) return null;
+  return found[0];
+}
+
+function marketHashFragment(hash, market) {
+  const match = /^#([^:;]+):[^;]+;1$/.exec(hash);
+  const route = {OU:'over-under', HC:'ah'}[market];
+  return match && route ? `#${match[1]}:${route};1` : null;
+}
+
+module.exports = { parseBookmakerRows, pickBookmaker, parseAggregateLines, pickMainLine, parseMatchHeader, parseEventIdentity, marketHashFragment, RE_ODDS, RE_PAYOUT };
