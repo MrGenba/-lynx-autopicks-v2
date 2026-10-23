@@ -13,6 +13,7 @@ function contextReasons(f,current,now){
  if(Object.values(current.body.sources||{}).some(s=>s!=='OK')||Object.keys(current.body.sources||{}).length!==3)reasons.push('CONTEXT_SOURCE_UNAVAILABLE');
  if(!current.body.report_published_at||Date.parse(current.body.report_published_at)<now.getTime()-6*3600000||Date.parse(current.body.report_published_at)>now.getTime())reasons.push('INJURY_REPORT_STALE');
  reasons.push(...(f?.context?.blockers||[]));
+ if((current.body.unmapped||[]).some(p=>p.source==='injury'&&p.status!=='AVAILABLE'&&(!f?.player_id||p.team_id===f.team_id)))reasons.push('INJURY_IDENTITY_UNRESOLVED');
  if(f?.player_id){
   const p=current.body.players?.[f.player_id];
   if(!p||!['AVAILABLE','NOT_LISTED','PROBABLE'].includes(p.availability))reasons.push('PARTICIPATION_UNCONFIRMED');

@@ -55,7 +55,7 @@ def context_for(g,known,aliases,report,lu,headlines,sources):
             # health/role news is a blocker, never a numeric sentiment adjustment.
             if item['availability_risk'] and (not submitted or players[pid]['availability']=='NOT_LISTED'):
                 players[pid]['news_unresolved']=True
-    model_inputs={'teams':teams,'players':{pid:{k:v for k,v in p.items() if k!='injury_source'} for pid,p in players.items()},'sources':sources}
+    model_inputs={'teams':teams,'players':{pid:{k:v for k,v in p.items() if k!='injury_source'} for pid,p in players.items()},'sources':sources,'unmapped':unmapped}
     return {'policy':'bk-context-1','model_revision':digest(model_inputs),'league':g['league'],'game_id':g['game_id'],'teams':teams,'players':players,'unmapped':unmapped,'sources':sources,'report_published_at':report.get('published_at'),'report_url':report.get('source_url')}
 
 async def run():

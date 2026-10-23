@@ -33,6 +33,7 @@ BEGIN
  ELSE
   IF EXISTS(SELECT 1 FROM jsonb_each(c.body->'teams') t WHERE t.value->>'lineup' IS DISTINCT FROM 'CONFIRMED' OR t.value->>'injury_report_submitted' IS DISTINCT FROM 'true') THEN RAISE EXCEPTION 'VALUE_LINEUPS_UNCONFIRMED';END IF;
  END IF;
+ IF EXISTS(SELECT 1 FROM jsonb_array_elements(coalesce(c.body->'unmapped','[]'::jsonb)) u WHERE u->>'source'='injury' AND u->>'status' IS DISTINCT FROM 'AVAILABLE' AND (f.player_id IS NULL OR u->>'team_id'=f.result->>'team_id')) THEN RAISE EXCEPTION 'VALUE_INJURY_IDENTITY_UNRESOLVED';END IF;
  IF (f.result->'context'->>'observed_at')::timestamptz IS NULL OR q.captured_at<(f.result->'context'->>'observed_at')::timestamptz THEN RAISE EXCEPTION 'VALUE_PRICE_BEFORE_CONTEXT';END IF;
  IF f.result IS DISTINCT FROM r.decision->'forecast' OR q.league<>g.league OR q.game_id<>g.game_id OR coalesce(q.player_id,'game')<>r.subject OR q.odds IS DISTINCT FROM (r.quote_snapshot->>'odds')::numeric OR q.opposite_odds IS DISTINCT FROM (r.quote_snapshot->>'opposite_odds')::numeric OR q.period<>'full_game' OR NOT q.includes_overtime THEN RAISE EXCEPTION 'VALUE_SNAPSHOT_CHANGED';END IF;
  IF q.market IS DISTINCT FROM r.quote_snapshot->>'market' OR q.selection IS DISTINCT FROM r.quote_snapshot->>'selection' OR q.line IS DISTINCT FROM (r.quote_snapshot->>'line')::numeric OR q.source IS DISTINCT FROM r.quote_snapshot->>'source' THEN RAISE EXCEPTION 'VALUE_MARKET_CHANGED';END IF;

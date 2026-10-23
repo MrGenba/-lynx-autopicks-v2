@@ -34,6 +34,14 @@ test('small role samples and missing source data fail closed',()=>{
  assert.equal(f.result.projected_minutes,20);assert.ok(contextReasons(f.result,x.current,now).includes('ROLE_SAMPLE_INSUFFICIENT'));
  x.current.body.sources.news='SOURCE_FAILED';assert.ok(contextReasons(f.result,x.current,now).includes('CONTEXT_SOURCE_UNAVAILABLE'));
 });
+test('unmapped injury identities block the affected team rather than silently dropping a reported absence',()=>{
+ const x=fixture(),[f]=derive(x.game,x.forecasts,x.current,x.history,now);
+ x.current.body.unmapped=[{source:'injury',status:'OUT',team_id:'h',name:'Unmatched Player'}];
+ assert.ok(contextReasons(f.result,x.current,now).includes('INJURY_IDENTITY_UNRESOLVED'));
+ x.current.body.unmapped[0].team_id='a';assert.ok(!contextReasons(f.result,x.current,now).includes('INJURY_IDENTITY_UNRESOLVED'));
+ assert.ok(contextReasons({...f.result,player_id:null},x.current,now).includes('INJURY_IDENTITY_UNRESOLVED'));
+ x.current.body.unmapped[0].status='AVAILABLE';assert.ok(!contextReasons(f.result,x.current,now).includes('INJURY_IDENTITY_UNRESOLVED'));
+});
 test('prices observed before new lineup evidence cannot generate a value alert',()=>{
  const x=fixture(),[f]=derive(x.game,x.forecasts,x.current,x.history,now);
  const q={quote_id:'q',league:'NBA',game_id:'g',player_id:'p',market:'points',line:12.5,selection:'over',odds:1.9,opposite_odds:1.9,bookmaker:'test',source:'test',source_url:'https://example.test',period:'full_game',includes_overtime:true,captured_at:'2026-10-23T16:58:00Z',expires_at:'2026-10-23T17:10:00Z'},pair={...q,quote_id:'u',selection:'under'};
