@@ -5,6 +5,8 @@ const model=require('../basketball/model');
 const {validateQuote,candidate}=require('../basketball/pipeline');
 const {evaluate}=require('../basketball/research');
 const {notify}=require('../basketball/notifications');
+const {normalizeQuotes}=require('../basketball/odds');
+const {reviewWithAgents}=require('../basketball/agents');
 const nba=require('./fixtures/basketball/nba_final.json'),wnba=require('./fixtures/basketball/wnba_final.json');
 test('NBA and WNBA captured fixtures reconcile team and player points and minutes',()=>{
  for(const f of [nba,wnba]){assert.equal(f.receipt.complete,true);assert.equal(f.teams.length,2);assert.equal(new Set(f.players.map(p=>p.player_id)).size,f.players.length);
@@ -27,6 +29,15 @@ test('spread sign follows selected team',()=>{const f={status:'OK',margin:8,marg
 const now=new Date('2026-10-23T10:00:00Z'),g={...nba.game,status:'scheduled',starts_at:'2026-10-23T14:00:00Z'},q={quote_id:'q1',league:g.league,game_id:g.game_id,market:'total',player_id:null,line:220.5,selection:'over',odds:1.9,bookmaker:'bet365',source_url:'https://www.cuotasahora.com/test',period:'full_game',includes_overtime:true,captured_at:now.toISOString(),expires_at:'2026-10-23T10:15:00Z'};
 test('quote identity, freshness, period and line are hard gates',()=>{assert.deepEqual(validateQuote(q,g,now),[]);for(const change of [{game_id:'other'},{includes_overtime:false},{period:'first_half'},{expires_at:now.toISOString()},{line:null},{line:220.25},{selection:'home'}])assert.ok(validateQuote({...q,...change},g,now).length);});
 test('discarded quotes are retained and unverified prices remain labelled',()=>{const c=candidate(q,g,{status:'OK',model_version:model.MODELS.baseline.version,total:180,total_variance:100},now);assert.equal(c.verdict,'NO_EDGE');assert.ok(c.reasons.includes('BOOKMAKER_UPDATE_TIME_UNKNOWN'));assert.ok(c.ev<0);});
+test('odds bind exact home/away date and preserve spread signs without regional substitutes',()=>{
+ const event={home_team:g.home_team,away_team:g.away_team,start_time_utc:g.starts_at,bookmaker:'bet365',period:'full_game',includes_overtime:true,source_event_url:'https://www.cuotasahora.com/basketball/h2h/a/b/#123',markets:[{market:'spread',line:-3.5,odds1:1.9,odds2:1.9,captured_at:now.toISOString()}]};
+ const r=normalizeQuotes({league:'NBA',games:[event]},[g],now);assert.equal(r.quotes.length,2);assert.equal(r.quotes[1].line,3.5);assert.equal(r.quotes[1].opposite_odds,1.9);
+ for(const change of [{bookmaker:'Bet365.de'},{home_team:g.away_team,away_team:g.home_team},{start_time_utc:'2026-10-24T14:00:00Z'},{includes_overtime:false}])assert.equal(normalizeQuotes({league:'NBA',games:[{...event,...change}]},[g],now).quotes.length,0);
+});
+test('AI rate limit stops further reviewers and honors reset time without exposing errors',async()=>{
+ let calls=0;const r=await reviewWithAgents({packet:{sample:0},decision:{mode:'paper',verdict:'WAITING_DATA'},config:{provider:'openai',model:'gpt-6-luna',apiKey:'test_key'},http:async()=>{calls++;return {status:429,headers:{'x-ratelimit-reset-tokens':'20h'},json:async()=>({error:{code:'rate_limit_exceeded',message:'private internal error'}})};}});
+ assert.equal(calls,1);assert.equal(r.error_code,'RATE_LIMITED');assert.ok(Date.parse(r.retry_at)>Date.now()+19*3600000);assert.ok(!JSON.stringify(r).includes('private internal error'));
+});
 test('notification is not acknowledged on Telegram false success',async()=>{const calls=[],ctx={owner:'1',rest:async(p,m,b)=>{calls.push({p,b});return true;},send:async()=>({ok:true,suppressed:true})};assert.equal(await notify(ctx,'test','NBA','x'),false);assert.equal(calls.at(-1).b.p_message_id,null);ctx.send=async()=>({ok:true,result:{message_id:5}});assert.equal(await notify(ctx,'test2','NBA','x'),true);assert.equal(calls.at(-1).b.p_message_id,5);});
 test('research does not announce improvement before fixed 200-game prospective test',()=>{
  const gs=[],fs=[];for(let i=0;i<199;i++){const game={game_id:String(i),status:'final',box_complete:true,starts_at:new Date(now.getTime()+i*86400000).toISOString(),home_score:100,away_score:90};gs.push(game);for(const [name,cfg]of Object.entries(model.MODELS))fs.push({game_id:game.game_id,kind:'team',model_version:cfg.version,as_of:'2026-01-01',created_at:'2026-01-01',result:{margin:name==='baseline'?0:10,total:190}});}

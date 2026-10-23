@@ -11,7 +11,7 @@ const TIMEOUT_MS = 30_000;
 const MAX_INPUT_BYTES = 24 * 1024;
 const REVIEWER_VERSION = 'structured-evidence-1.1';
 const SAFE_ERRORS = new Set(['TIMEOUT', 'HTTP_ERROR', 'INVALID_TRANSPORT_RESPONSE', 'INCOMPLETE_RESPONSE',
-  'MALFORMED_RESPONSE', 'UNEXPECTED_OUTPUT_ITEM', 'MODEL_REFUSAL', 'OUTPUT_TOO_LARGE', 'MALFORMED_MODEL_OUTPUT']);
+  'MALFORMED_RESPONSE', 'UNEXPECTED_OUTPUT_ITEM', 'MODEL_REFUSAL', 'OUTPUT_TOO_LARGE', 'MALFORMED_MODEL_OUTPUT','RATE_LIMITED','QUOTA_EXHAUSTED','AUTH_FAILED','MODEL_ACCESS']);
 const ROLES = Object.freeze({
   datos: 'Comprueba identidad y fecha del partido, temporada, procedencia y frescura de datos, minutos, lesiones y quintetos. No adivines datos ausentes.',
   modelo: 'Comprueba reproducibilidad, versión, probabilidades explícitas de victoria/push/derrota, sumas y EV. No entrenes, recalibres ni cambies las probabilidades.',
@@ -100,7 +100,17 @@ async function request(http, options) {
   // The timeout includes reading the response body, not only receiving headers.
   const operation = Promise.resolve().then(async () => {
     const response = await http(ENDPOINT, {...options, timeout: TIMEOUT_MS, ...(controller ? {signal: controller.signal} : {})});
-    if (!response || !Number.isInteger(response.status) || response.status < 200 || response.status >= 300) throw cleanError('HTTP_ERROR');
+    if (!response || !Number.isInteger(response.status)) throw cleanError('HTTP_ERROR');
+    if(response.status<200||response.status>=300){
+      let detail;try{detail=await response.json();}catch(_){}
+      const code=detail?.error?.code,e=cleanError(code==='rate_limit_exceeded'?'RATE_LIMITED':code==='insufficient_quota'?'QUOTA_EXHAUSTED':response.status===401?'AUTH_FAILED':response.status===403||code==='model_not_found'?'MODEL_ACCESS':'HTTP_ERROR');
+      if(e.safeCode==='RATE_LIMITED'){
+        const h=response.headers||{},reset=h['x-ratelimit-reset-tokens']||h['x-ratelimit-reset-requests']||'';
+        let delay=0;for(const m of String(reset).matchAll(/(\d+(?:\.\d+)?)(ms|s|m|h|d)/g))delay+=Number(m[1])*({ms:1,s:1000,m:60000,h:3600000,d:86400000}[m[2]]);
+        const retry=Number(h['retry-after']);if(Number.isFinite(retry)&&retry>0)delay=Math.max(delay,retry*1000);
+        e.retryAt=new Date(Date.now()+Math.max(60000,delay||20*3600000)).toISOString();
+      }throw e;
+    }
     if (typeof response.json !== 'function') throw cleanError('INVALID_TRANSPORT_RESPONSE');
     return response.json();
   });
@@ -175,7 +185,7 @@ async function reviewWithAgents({packet, decision, config, http} = {}) {
     } catch (error) {
       const code = SAFE_ERRORS.has(error?.safeCode) ? error.safeCode : (['AbortError', 'TimeoutError'].includes(error?.name) ? 'TIMEOUT' : 'REQUEST_FAILED');
       base.agents.push({role, status: 'ERROR', error_code: code, model: safeString(model, key)});
-      return {...fail(code), usage: {...totalUsage, complete: false}};
+      return {...fail(code),...(error.retryAt?{retry_at:error.retryAt}:{}),usage: {...totalUsage, complete: false}};
     }
   }
   const analysisStatus = base.agents.some(x => x.status === 'BLOCK') ? 'BLOCK'

@@ -18,6 +18,8 @@ function normalizeQuotes(raw,games,now=new Date()){
 }
 async function server(ctx,path,method='GET'){
  const r=await ctx.http(ctx.server.url+path,{method,headers:{Authorization:'Bearer '+ctx.server.token},timeout:20000});
+ if(r.status===404&&path.includes('/status/'))return {status:'not_found'};
+ if(r.status===502&&r.body?.status==='error')return r.body;
  if(r.status<200||r.status>=300)throw Error('SERVER_HTTP_'+r.status);return r.body;
 }
 async function runSnapshot(ctx){
@@ -32,8 +34,8 @@ async function runOdds(ctx){
  for(const league of ['NBA','WNBA']){
   const games=await rest('bk_games?league=eq.'+league+'&status=eq.scheduled&starts_at=gt.'+now.toISOString()+'&starts_at=lt.'+new Date(now.getTime()+12*3600000).toISOString()+'&order=starts_at.asc&select=*');
   const old=(await rest('bk_state?league=eq.'+league+'&component=eq.odds_job&select=*'))[0],checked=old?.detail?.checked||{},r={games:games.length,quotes:0,rejected:[],player_props:'NO_PROVIDER'};report.leagues[league]=r;let jobId=null;
-  if(old?.detail?.job_id){const job=await server(ctx,'/scrape-odds/status/'+old.detail.job_id).catch(()=>null);
-   if(job?.status==='running'&&Date.parse(old.checked_at)>now.getTime()-15*60000){r.status='RUNNING';continue;}
+  if(old?.detail?.job_id){const job=await server(ctx,'/scrape-odds/status/'+old.detail.job_id);
+   if(job?.status==='running'){r.status='RUNNING';continue;}
    if(job?.status==='done'){const normalized=normalizeQuotes(job.result,games,now);r.rejected=normalized.rejected;r.source_errors=job.result.errors||[];
     if(normalized.quotes.length){await rest('bk_quotes?on_conflict=quote_id','POST',normalized.quotes,{prefer:'resolution=merge-duplicates,return=minimal'});r.quotes=normalized.quotes.length;}
    }else r.error='ODDS_JOB_FAILED';

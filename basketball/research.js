@@ -32,7 +32,9 @@ async function runResearch(ctx){
  const {rest,now=new Date(),aiConfig,http}=ctx,reports=[];
  for(const league of ['NBA','WNBA']){
   const day=now.toISOString().slice(0,10),rid=league+':'+day;
-  const old=await rest('bk_research?research_id=eq.'+rid+'&select=research_id');if(old.length){reports.push({league,status:'ALREADY_REVIEWED'});continue;}
+  const old=await rest('bk_research?research_id=eq.'+rid+'&select=research_id,ai_review,report');if(old.length){const a=old[0].ai_review;
+   await rest('bk_state?on_conflict=league,component','POST',{league,component:'research',checked_at:now.toISOString(),status:a?.status==='COMPLETED'?'healthy':'attention',detail:{review:a?.status||'UNKNOWN',error_code:a?.error_code||null,retry_at:a?.retry_at||null,agents:a?.agents?.length||0,calls:a?.calls||0,comparison:old[0].report.comparison}},{prefer:'resolution=merge-duplicates,return=minimal'});
+   reports.push({league,status:'ALREADY_REVIEWED'});continue;}
   const forecasts=await all(rest,'bk_forecasts?league=eq.'+league+'&select=*'),ids=[...new Set(forecasts.map(f=>f.game_id))];
   const games=[],players=[];
   for(let i=0;i<ids.length;i+=150){const list=ids.slice(i,i+150).join(',');games.push(...await all(rest,'bk_games?league=eq.'+league+'&game_id=in.('+list+')&select=*'));players.push(...await all(rest,'bk_player_box?league=eq.'+league+'&game_id=in.('+list+')&select=game_id,player_id,stats,minutes,did_not_play'));}
@@ -40,11 +42,14 @@ async function runResearch(ctx){
   const states=await rest('bk_state?league=eq.'+league+'&select=component,status,checked_at,detail');
   const report=evaluate(games,forecasts,players,cs);report.health=states;report.generated_at=now.toISOString();report.league=league;report.limits=['Experimental models; injuries and starting five unverified','Historical source publication timestamps unknown; only prospective sealed predictions used to declare improvement','No validated player-prop odds feed'];
   let ai={status:'BUDGET_OR_DUPLICATE'};
-  if(await rest('rpc/bk_reserve_ai','POST',{p_input_hash:rid})){ai=await reviewWithAgents({packet:report,decision:{mode:'paper',verdict:'WAITING_DATA',can_publish:false,can_place_bet:false},config:aiConfig,http});}
+  const access=(await rest('bk_state?league=eq.ALL&component=eq.ai_access&select=*'))[0];
+  if(access?.detail?.retry_at&&Date.parse(access.detail.retry_at)>now.getTime())ai={status:'RATE_LIMITED',retry_at:access.detail.retry_at};
+  else if(await rest('rpc/bk_reserve_ai','POST',{p_input_hash:rid})){ai=await reviewWithAgents({packet:report,decision:{mode:'paper',verdict:'WAITING_DATA',can_publish:false,can_place_bet:false},config:aiConfig,http});}
+  if(ai.retry_at)await rest('bk_state?on_conflict=league,component','POST',{league:'ALL',component:'ai_access',status:'rate_limited',checked_at:now.toISOString(),detail:{retry_at:ai.retry_at}},{prefer:'resolution=merge-duplicates,return=minimal'});
   await rest('bk_research?on_conflict=research_id','POST',{research_id:rid,league,report,ai_review:ai},{prefer:'resolution=ignore-duplicates,return=minimal'});
   if(report.comparison.improvement)await notify(ctx,league+':improvement:'+MODELS.challenger.version,league,league+' · mejora detectada\n'+MODELS.challenger.version+' reduce el error de margen frente al modelo actual en la prueba prefijada de 200 partidos futuros. IC 95% de la diferencia de error cuadrático: '+report.comparison.ci95.map(x=>x.toFixed(2)).join(' a ')+'.\nIncluye todas las predicciones, aunque no se publicaran. No demuestra rentabilidad; queda pendiente validación de los demás mercados.');
   if(now.getUTCDay()===1||ai.status!=='COMPLETED')await notify(ctx,rid+':research_status',league,league+' · investigación\nPrueba futura: '+report.comparison.n+'/200 partidos. '+(ai.status==='COMPLETED'?'Los cuatro agentes han revisado datos, modelo, mercado y riesgo.':'Revisión IA pendiente: '+ai.status+'.')+'\nSe incluyen descartes. Todavía sin ventaja demostrada.');
-  await rest('bk_state?on_conflict=league,component','POST',{league,component:'research',checked_at:now.toISOString(),status:ai.status==='COMPLETED'?'healthy':'attention',detail:{review:ai.status,agents:ai.agents?.length||0,calls:ai.calls||0,comparison:report.comparison}},{prefer:'resolution=merge-duplicates,return=minimal'});
+  await rest('bk_state?on_conflict=league,component','POST',{league,component:'research',checked_at:now.toISOString(),status:ai.status==='COMPLETED'?'healthy':'attention',detail:{review:ai.status,error_code:ai.error_code||null,retry_at:ai.retry_at||null,agents:ai.agents?.length||0,calls:ai.calls||0,comparison:report.comparison}},{prefer:'resolution=merge-duplicates,return=minimal'});
   reports.push({league,review:ai.status,agents:ai.agents?.length||0,comparison:report.comparison});
  }return {reports};
 }
