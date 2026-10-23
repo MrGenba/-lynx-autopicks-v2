@@ -43,13 +43,47 @@ CANDIDATOS DESCARTADOS Y MODELOS
   Una observación canónica por partido, mercado, pipeline y versión de código.
 - vendor/model_evaluation.js compara mercado, modelo actual, modelo bruto,
   mezcla ajustada y regresión logística regularizada con el mercado como referencia.
-- Protocolo registrado all-candidates-v1: primeros aproximadamente 400 partidos
-  para ajuste, siguientes 150 para selección, siguientes 200 para prueba, separando
-  días completos y exigiendo al menos 60 días antes de revisión. No promoción automática.
-- BB_MILB_VALIDATION_DAILY ejecuta ahora también esta evaluación de las tres ligas
-  diariamente a las 10:35 UTC, guarda bb_model_evaluation_runs y avisa al alcanzar
-  la muestra prevista. LYNX_RECHEQUEO_RECALIBRACION consulta ese informe; se retiró
-  el criterio antiguo de declarar suficiente una muestra de 30 picks seleccionados.
+- Protocolo registrado all-candidates-v2: al menos 400 partidos para ajuste, los
+  siguientes 150 para selección y los siguientes 200 para prueba. Se incluyen días
+  completos en cada partición y se exigen 60 días de intervalo y siete días desde
+  el último partido de prueba. No se muestran métricas del test antes de cumplirlo.
+- Cada grupo (liga, mercado, pipeline y versión) tiene una única decisión final
+  inmutable, incluso si el resultado es negativo. Cambiar una hipótesis requiere
+  un protocolo nuevo y datos futuros nuevos; no se busca significación repitiendo
+  evaluaciones del mismo test. El histórico y el protocolo v1 permanecen guardados.
+- BB_MODEL_RESEARCH_DAILY, workflow 19SWbw7nss9fLzEf (antes BB_MILB_VALIDATION_DAILY),
+  se ejecuta a las 12:35 Europe/Madrid. Guarda bb_model_evaluation_runs y compara
+  las tres ligas. LYNX_RECHEQUEO_RECALIBRACION consulta ese informe; se retiró el
+  criterio antiguo de declarar suficiente una muestra de 30 picks seleccionados.
+
+AGENTES Y AVISOS AUTOMÁTICOS
+- vendor/model_research_runner.js coordina evaluación, registro, cuatro revisores
+  OpenAI y aviso de mejora. vendor/research_agents.js conserva Responses API,
+  modelo y conexión existentes, salida JSON validada y roles datos/modelo/mercado/
+  riesgo. Los agentes proponen hipótesis y auditan evidencia; los cálculos numéricos
+  se realizan en el evaluador. Una propuesta verbal no acredita mayor precisión.
+- Se reutilizan revisiones terminadas del mismo expediente. Los fallos temporales
+  se conservan durante 12 horas; no se repiten llamadas pagadas en cada ejecución.
+- sql/supabase_research_budget.sql conserva el máximo conjunto de 80 llamadas por
+  día UTC: hasta 76 para revisión de partidos y cuatro para investigación. La API
+  antigua de reserva con un argumento sigue funcionando. El 23 de octubre ya había
+  80 llamadas reservadas antes de instalar este reparto; no se amplió ese límite.
+- vendor/model_improvement.js autoriza el aviso solo si una alternativa elegida
+  en validación reduce Brier al menos un 2% frente al modelo actual, ambos intervalos
+  bootstrap pareados del 95% muestran mejora frente al actual y al mercado sin
+  margen, y log-loss no empeora frente a ninguno. Es evidencia por grupo, no una
+  garantía global frente a todas las comparaciones futuras ni de rentabilidad.
+- sql/supabase_model_research.sql guarda contexto histórico, revisiones y decisiones.
+  Se reclama cada aviso de forma atómica y se registra el identificador de Telegram.
+  Una entrega ambigua queda pendiente de revisión y no se reenvía automáticamente.
+  Los fallos operativos se notifican por separado, como máximo una vez al día por
+  estado; alcanzar la muestra por sí solo no genera un aviso de mejora.
+- El mensaje indica muestras, candidatos sin publicación, métricas y comparaciones.
+  Los agentes no sustituyen el modelo de producción ni ejecutan apuestas.
+- Seguimiento Codex en este chat: Investigar modelos de béisbol, 14:05 diario.
+  Revisa novedades y propuestas para preparar experimentos nuevos; guarda silencio
+  si no hay hallazgos o fallos que requieran atención. La ejecución del servidor
+  es independiente de este seguimiento local.
 
 INVESTIGACIÓN HISTÓRICA
 Se revisaron 8.912 candidatos: 104 publicados y 8.808 no publicados.
@@ -66,8 +100,15 @@ No se modificaron pesos en producción basándose en estos resultados histórico
 
 VERIFICACIÓN Y OPERACIÓN
 Pruebas: node tests/postgame.test.js; node tests/model_evaluation.test.js;
-python -m pytest tests -q. Los casos cubren captura incompleta, cero outs, reintentos,
-recibos recientes, descartes y separación entre ajuste y resultados de prueba.
+node tests/model_improvement.test.js; node tests/model_research_runner.test.js;
+node tests/research_agents.test.js; python -m pytest tests -q.
+Los casos cubren captura incompleta, cero outs, reintentos, descartes, separación
+temporal, test oculto hasta maduración, presupuesto, caché y avisos sin duplicados.
+Conexiones verificadas sin generar texto ni enviar mensajes: acceso al modelo
+OpenAI desde el VPS y getChat de Telegram. El RPC de presupuesto se probó dentro
+de una transacción revertida, incluidas compatibilidad y reserva de cuatro llamadas.
+La ejecución real del flujo guardó la evaluación; la revisión IA quedó en
+BUDGET_REACHED por el límite existente del día, pendiente de la siguiente jornada.
 Backups privados de workflows y evidencias de recuperación se guardaron fuera del
 repositorio en D:\Milb\maintenance\baseball_20261023_repair. No publicar esos backups.
 Aplicar los SQL con credencial administrativa; los RPC y vistas se restringen a

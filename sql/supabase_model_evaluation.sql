@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS public.bb_calibration_protocol (
  protocol_id text PRIMARY KEY, registered_at timestamptz NOT NULL DEFAULT now(), config jsonb NOT NULL);
-INSERT INTO bb_calibration_protocol(protocol_id,config) VALUES('all-candidates-v1',
- '{"training_games":400,"validation_games":150,"test_games":200,"minimum_span_days":60,"auto_promotion":false,"include_unpublished":true,"group_by":["league","market","pipeline","model_version"],"models":["market","current","raw","fitted_blend","logistic"]}') ON CONFLICT DO NOTHING;
+INSERT INTO bb_calibration_protocol(protocol_id,config) VALUES('all-candidates-v2',
+ '{"training_games":400,"validation_games":150,"test_games":200,"test_settlement_days":7,"minimum_span_days":60,"minimum_relative_brier_gain":0.02,"require_ci95_gain_vs_current_and_market":true,"one_final_assessment_per_group":true,"auto_promotion":false,"include_unpublished":true,"group_by":["league","market","pipeline","model_version"],"models":["market","current","raw","fitted_blend","logistic"]}') ON CONFLICT DO NOTHING;
 ALTER TABLE bb_calibration_protocol ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON bb_calibration_protocol FROM anon,authenticated;
 GRANT SELECT ON bb_calibration_protocol TO service_role;
@@ -27,7 +27,7 @@ WITH games AS (
  coalesce(c.value->>'raw_prob_estimated',c.value->>'prob_model')::numeric raw,
  coalesce(c.value->>'prob_blended',c.value->>'prob_estimated',c.value->>'prob_model')::numeric current
  FROM bb_prediction_snapshots s CROSS JOIN LATERAL jsonb_array_elements(s.output->'candidates') c(value)
- JOIN bb_calibration_protocol p ON p.protocol_id='all-candidates-v1'
+ JOIN bb_calibration_protocol p ON p.protocol_id='all-candidates-v2'
  WHERE s.prediction_at>=p.registered_at AND s.prediction_at<s.game_start AND s.captured_at<s.game_start
  AND s.scheduled_innings=9 AND s.quality_flags='[]'::jsonb
  AND s.odds_captured_at BETWEEN s.prediction_at-interval '20 minutes' AND s.prediction_at

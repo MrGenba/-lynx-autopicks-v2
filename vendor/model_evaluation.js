@@ -29,14 +29,14 @@ function scores(rows,name,params){
  return {n:rows.length,brier:avg(rows.map((r,i)=>(ps[i]-r.y)**2)),log_loss:avg(rows.map((r,i)=>-r.y*Math.log(clip(ps[i]))-(1-r.y)*Math.log(1-clip(ps[i])))),
   predicted:avg(ps),observed:avg(rows.map(r=>r.y))};
 }
-function ci(rows,name,params){
+function ci(rows,name,params,baseline='market'){
  if(rows.length<2)return null;
- const grouped=new Map();for(const r of rows){const key=r.game_id;const d=(predict(name,r,params)-r.y)**2-(r.market_probability-r.y)**2;grouped.set(key,[...(grouped.get(key)||[]),d]);}
+ const grouped=new Map();for(const r of rows){const key=r.game_id;const d=(predict(name,r,params)-r.y)**2-(predict(baseline,r,params)-r.y)**2;grouped.set(key,[...(grouped.get(key)||[]),d]);}
  const groups=[...grouped.values()];let seed=23102026;const rng=()=>{seed=(1664525*seed+1013904223)>>>0;return seed/4294967296;};const samples=[];
  for(let j=0;j<1000;j++){let sum=0,n=0;for(let i=0;i<groups.length;i++){const g=groups[Math.floor(rng()*groups.length)];sum+=g.reduce((a,b)=>a+b,0);n+=g.length;}samples.push(sum/n);}
  samples.sort((a,b)=>a-b);return [samples[25],samples[974]];
 }
-function evaluateModels(input,{prospective=false}={}){
+function evaluateModels(input,{prospective=false,now=new Date()}={}){
  const grouped=new Map();
  for(const r of input){
   if(![r.raw,r.current,r.market_probability].every(x=>typeof x==='number'&&x>0&&x<1)||![0,1].includes(r.y))continue;
@@ -52,24 +52,34 @@ function evaluateModels(input,{prospective=false}={}){
   // Prospective protocol fixes training/validation/test sizes in advance (400/150/200).
   let train,validation,test;
   if(prospective){
-   const boundary=n=>rows[n]?.game_start.slice(0,10)||'9999';const a=boundary(400),b=boundary(550),c=boundary(750);
-   train=rows.filter(r=>r.game_start.slice(0,10)<a);validation=rows.filter(r=>r.game_start.slice(0,10)>=a&&r.game_start.slice(0,10)<b);test=rows.filter(r=>r.game_start.slice(0,10)>=b&&r.game_start.slice(0,10)<c);
+   // Include the whole boundary day: 200 test games must not silently become 194.
+   const takeDays=(rs,n)=>rs.filter(r=>r.game_start.slice(0,10)<=(rs[n-1]?.game_start.slice(0,10)||'9999'));
+   train=takeDays(rows,400);
+   const afterTrain=rows.filter(r=>r.game_start.slice(0,10)>(train.at(-1)?.game_start.slice(0,10)||'9999'));
+   validation=takeDays(afterTrain,150);
+   const afterValidation=afterTrain.filter(r=>r.game_start.slice(0,10)>(validation.at(-1)?.game_start.slice(0,10)||'9999'));
+   test=takeDays(afterValidation,200);
   }else{
    const a=dates[Math.floor(dates.length*.6)]||'9999',b=dates[Math.floor(dates.length*.8)]||'9999';
    train=rows.filter(r=>r.game_start.slice(0,10)<a);validation=rows.filter(r=>r.game_start.slice(0,10)>=a&&r.game_start.slice(0,10)<b);test=rows.filter(r=>r.game_start.slice(0,10)>=b);
   }
   const info={group,eligible_games:rows.length,cohorts:{published_pair:rows.filter(r=>r.published).length,unpublished_pair:rows.filter(r=>!r.published).length},train:train.length,validation:validation.length,test:test.length,
    policy:'SHADOW_NO_AUTO_PROMOTION',evidence:prospective?'prospective_sealed_predictions':'historical_exploratory_not_fresh_holdout'};
+  const span=test.length?(Date.parse(test.at(-1).game_start)-Date.parse(rows[0].game_start))/86400000:0;
+  const settled=test.length&&now.getTime()-Date.parse(test.at(-1).game_start)>=7*86400000;
   if(train.length<30||validation.length<15||test.length<15){report.push({...info,status:'insufficient_data'});continue;}
+  if(prospective&&(train.length<400||validation.length<150||test.length<200||span<60||!settled)){
+   report.push({...info,status:'accumulating_sealed_test',minimum_settlement_days:7});continue;
+  }
   const params={blend:fitBlend(train),logistic:fitLogistic(train)};
   const names=['market','current','raw','fitted_blend','logistic'];
   const val=names.map(name=>({name,...scores(validation,name,params)}));val.sort((a,b)=>a.brier-b.brier);
-  const selected=val[0].name;const span=(Date.parse(test.at(-1).game_start)-Date.parse(rows[0].game_start))/86400000;
+  const selected=val[0].name;
   report.push({...info,status:prospective&&test.length>=200&&span>=60?'ready_for_review':'exploratory_small_or_incomplete_test',params,selected_on_validation:selected,
-   validation_scores:val,test_scores:names.map(name=>({name,...scores(test,name,params)})),ci95_selected_minus_market:ci(test,selected,params),
+   validation_scores:val,test_scores:names.map(name=>({name,...scores(test,name,params)})),ci95_selected_minus_market:ci(test,selected,params),ci95_selected_minus_current:ci(test,selected,params,'current'),
    test_cohorts:{published:scores(test.filter(r=>r.published),selected,params),unpublished:scores(test.filter(r=>!r.published),selected,params)},
    test_start:test[0].game_start,test_end:test.at(-1).game_start});
  }
- return {protocol:'all-candidates-v1',at:new Date().toISOString(),prospective,groups:report};
+ return {protocol:'all-candidates-v2',at:now.toISOString(),prospective,groups:report};
 }
 module.exports={evaluateModels,fitBlend,fitLogistic,predict};
