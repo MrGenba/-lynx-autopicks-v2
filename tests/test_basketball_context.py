@@ -3,7 +3,7 @@ from datetime import datetime,timezone
 from pypdf import PdfWriter
 from pypdf.generic import DictionaryObject,NameObject,DecodedStreamObject
 from basketball.context_sources import injury_pdf,lineups,news
-from basketball.context_capture import context_for
+from basketball.context_capture import context_for,match_name
 NOW=datetime(2026,10,23,17,10,tzinfo=timezone.utc)
 URL='https://ak-static.cms.nba.com/referee/injury/Injury-Report_2026-10-23_01_00PM.pdf'
 def pdf():
@@ -14,6 +14,10 @@ def pdf():
   stream=DecodedStreamObject();stream.set_data(('1 0 0 -1 0 595 cm\n'+'\n'.join(f'q 1 0 0 1 {x} {y} cm BT /F1 -10 Tf 0 0 Td ({t}) Tj ET Q' for x,y,t in tokens)).encode());p[NameObject('/Contents')]=w._add_object(stream)
  out=io.BytesIO();w.write(out);return out.getvalue()
 class ContextTests(unittest.TestCase):
+ def test_omitted_suffix_requires_unique_full_name_and_team_catalog(self):
+  catalog=[{'player_id':'p','player_name':'Jaime Jaquez Jr.'}]
+  self.assertEqual(match_name('Jaime Jaquez',catalog),'p')
+  self.assertIsNone(match_name('Jaime Jaquez',catalog+[{'player_id':'other','player_name':'Jaime Jaquez Sr.'}]))
  def test_pdf_keeps_team_across_page_break_and_rejects_future(self):
   r=injury_pdf(pdf(),URL,NOW);self.assertEqual(len(r['records']),2);self.assertEqual(r['records'][1]['team'],'Chicago Bulls');self.assertEqual(r['records'][0]['player_name'],'Player Example')
   with self.assertRaises(ValueError):injury_pdf(pdf(),URL,datetime(2026,10,23,16,tzinfo=timezone.utc))

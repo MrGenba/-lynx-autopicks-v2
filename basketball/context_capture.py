@@ -1,5 +1,5 @@
 """VPS-only pregame context; immutable evidence plus a fresh current pointer."""
-import asyncio,json,os
+import asyncio,json,os,re
 from datetime import datetime,timedelta,timezone
 from urllib.parse import urlparse
 import httpx
@@ -11,6 +11,11 @@ def abbreviation(g,side):
     return NBA_TEAMS.get(g[side+'_team_id']) if g['league']=='NBA' else WNBA_NAMES.get(g[side+'_team'])
 def match_name(name,players,aliases=()):
     ids={p['player_id'] for p in [*players,*aliases] if norm(p['player_name'])==norm(name)}
+    if not ids:
+        # Publishers sometimes omit generational suffixes; keep the full remaining
+        # name and exact team, and still reject any ambiguous canonical identity.
+        key=lambda s:norm(re.sub(r'\s+(?:Jr\.?|Sr\.?|II|III|IV)$','',s,flags=re.I))
+        ids={p['player_id'] for p in [*players,*aliases] if key(p['player_name'])==key(name)}
     return next(iter(ids)) if len(ids)==1 else None
 
 def context_for(g,known,aliases,report,lu,headlines,sources):
@@ -31,7 +36,7 @@ def context_for(g,known,aliases,report,lu,headlines,sources):
                 if pid:starters.append(pid)
                 else:unmapped.append({'team_id':tid,'name':p['name'],'source':'lineup'})
         confirmed=bool(lineup and lineup['confirmed'] and len(starters)==5)
-        teams[tid]={'injury_report_submitted':submitted,'lineup':'CONFIRMED' if confirmed else 'EXPECTED' if lineup else 'UNKNOWN','starters':starters,'team_name':g[side+'_team']}
+        teams[tid]={'injury_report_submitted':submitted,'lineup':'CONFIRMED' if confirmed else 'UNMAPPED' if lineup and lineup['confirmed'] else 'EXPECTED' if lineup else 'UNKNOWN','starters':starters,'team_name':g[side+'_team']}
         for p in catalog:
             players[p['player_id']]={'player_id':p['player_id'],'name':p['player_name'],'team_id':tid,'availability':'NOT_LISTED' if submitted else 'UNVERIFIED','role':'STARTER' if confirmed and p['player_id'] in starters else 'BENCH' if confirmed else 'UNKNOWN','expected_starter':bool(lineup and p['player_id'] in starters),'news':[]}
         for item in injuries:
