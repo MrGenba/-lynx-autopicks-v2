@@ -36,7 +36,7 @@ function teamForecast(game,history,config=MODELS.baseline){
  const finalGames=history.games.filter(g=>g.season>=game.season-1),homeMargins=finalGames.filter(g=>!g.neutral_site).map(g=>g.home_score-g.away_score);
  const homeAdv=game.neutral_site||!homeMargins.length?0:mean(homeMargins)*homeMargins.length/(homeMargins.length+100);
  const pace=(home.pace+away.pace)/2,homePts=pace*(home.off+away.def-leagueEff)/100+homeAdv/2,awayPts=pace*(away.off+home.def-leagueEff)/100-homeAdv/2;
- const margins=finalGames.map(g=>g.home_score-g.away_score),totals=finalGames.map(g=>g.home_score+g.away_score),variance=a=>mean(a.map(x=>(x-mean(a))**2));
+ const margins=finalGames.map(g=>g.home_score-g.away_score),totals=finalGames.map(g=>g.home_score+g.away_score),variance=a=>{const average=mean(a);return mean(a.map(x=>(x-average)**2));};
  const margin=homePts-awayPts,total=homePts+awayPts,marginVar=Math.max(64,variance(margins)),totalVar=Math.max(100,variance(totals));
  // Full-game basketball has no draw after overtime; condition the discretized margin on no tie.
  const win=normalDistribution(margin,marginVar,0,'over'),pHome=win.p_win/(1-win.p_push);
