@@ -21,7 +21,7 @@ import hashlib
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
-_INCLUIR = (("app", "*.py"), ("migrations", "*.sql"), ("vendor", "*.js"))
+_INCLUIR = (("app", "*.py"), ("migrations", "*.sql"), ("vendor", "*.js"), ("basketball", "*.js"), ("basketball", "*.py"), ("basketball/registries", "*.json"))
 # 2026-08-16: ficheros de la RAIZ que tambien definen lo desplegado. Se anadieron tras un fallo
 # real de esta misma herramienta: se cambio docker-entrypoint.sh (arranque de Tor) y la huella no
 # se movio, con lo que era imposible verificar ese despliegue -- justo lo que /version existe para

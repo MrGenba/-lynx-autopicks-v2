@@ -13,6 +13,7 @@ from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app import aliases, db
+from app.basketball_stats import register as register_basketball_stats
 from app.adapters.mlb import MlbAdapter
 from app.adapters.milb import MilbAdapter
 from app.adapters.lmb import LmbAdapter
@@ -161,14 +162,16 @@ async def scrape_odds_start(request: web.Request) -> web.Response:
         return web.json_response({"error": "unauthorized"}, status=401)
 
     league = request.query.get("league")
-    if league not in ("MLB", "MiLB", "LMB"):
-        return web.json_response({"error": "parametro 'league' debe ser MLB, MiLB o LMB"}, status=400)
+    if league not in ("MLB", "MiLB", "LMB", "NBA", "WNBA"):
+        return web.json_response({"error": "parametro 'league' debe ser MLB, MiLB, LMB, NBA o WNBA"}, status=400)
 
     # 2026-07-18: 'bookmaker' opcional, default Bet365 por compatibilidad con quien ya llamaba
     # sin este parametro. Lista blanca explicita en vez de aceptar cualquier texto -- un typo
     # aqui (ej. "Winamax") buscaria una casa que nunca aparece en cuotasahora.com y devolveria
     # partidos vacios sin ningun aviso claro de por que.
     bookmaker = request.query.get("bookmaker", "Bet365")
+    if league in ("NBA", "WNBA") and bookmaker.lower() != "bet365":
+        return web.json_response({"error": "basketball bookmaker must be Bet365"}, status=400)
     if bookmaker.lower() not in ("bet365", "winamax"):
         return web.json_response({"error": "parametro 'bookmaker' debe ser Bet365 o Winamax"}, status=400)
 
@@ -180,6 +183,8 @@ async def scrape_odds_start(request: web.Request) -> web.Response:
     # entera), asi que si n8n no puede leer el calendario sigue funcionando.
     teams_raw = request.query.get("teams", "")
     candidate_names = [t.strip() for t in teams_raw.split(",") if t.strip()] or None
+    if league in ("NBA", "WNBA") and (not candidate_names or len(candidate_names) > 6):
+        return web.json_response({"error": "basketball requires between 2 and 6 team names"}, status=400)
 
     # 2026-08-16: 'proxy=full' saca el scrape por el Tor con ExitNodes de catalogo completo.
     proxy_kind = "full" if request.query.get("proxy") == "full" else "auto"
@@ -407,6 +412,7 @@ async def run_health_server(cfg: Config, pool, port: int = 8080) -> None:
     app.router.add_get("/version", version)
     app.router.add_get("/scrape-odds/start", scrape_odds_start)
     app.router.add_get("/scrape-odds/status/{job_id}", scrape_odds_status)
+    register_basketball_stats(app)
     app.router.add_get("/tor/rotate", tor_rotate)
     app.router.add_post("/tor/rotate", tor_rotate)
     app.router.add_get("/tor/status", tor_status)

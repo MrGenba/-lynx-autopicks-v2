@@ -1,0 +1,74 @@
+NBA / WNBA parallel pipeline
+============================
+
+Separate Supabase bk_* tables and Telegram bots/destinations. No change to baseball
+models, notifications, odds parser, calendars or data tables.
+
+Data
+----
+Initial validated history: NBA 2025/26 and 2026/27, WNBA 2026. SportsDataverse
+hoopR-nba-data / wehoop-wnba-data public parquet files derived from ESPN box scores.
+Checks: event/team/player IDs, scores, shot arithmetic, player/team sums and minutes
+including overtime. Exhibition teams excluded by reviewed registry. Incomplete
+boxes remain unavailable for training; missing values never become zero or DNP.
+
+ESPN Core direct reader is implemented and tested against full NBA/WNBA examples.
+Production returned HTTP 403 on some requests on Oct 23. Direct capture is disabled.
+An authenticated server task downloads the public parquet snapshots hourly instead;
+the upstream publication cadence is daily and late source updates are reported.
+Do not claim live completeness merely because the collector ran successfully.
+
+No raw player tracking, optical tracking or proprietary NBA tracking feed is implied.
+Available box fields: minutes, starter/DNP, points, rebounds (off/def), assists,
+steals, blocks, turnovers, fouls, FGM/FGA, 3PM/3PA, FTM/FTA.
+
+Models
+------
+Experimental baseline and fixed challenger use basketball possessions, pace,
+offensive/defensive efficiency, home advantage and regularization. Props use
+weighted per-minute history and minutes uncertainty. Combinations are summed
+within each historical game, retaining correlations. Integer lines retain pushes.
+
+Snapshots are sealed before tip-off and never overwritten. Missing recent games
+block forecasts for the affected teams. Player rosters must be recent and from
+the current season; injuries and confirmed starting fives remain UNVERIFIED.
+Published projections are conditional on participation, not recommended stakes.
+
+Research includes every sealed forecast and every recorded market, including
+discarded candidates. One initial observation per event/book/market/line/side/model
+is retained immutably; bk_quotes is the mutable current price, never test evidence.
+Final outcomes settle wins/losses/pushes; DNP is void, missing player data stays pending.
+
+Predeclared primary comparison: first 200 paired prospective games, margin MSE,
+fixed-seed paired bootstrap 95% CI. Improvement requires the whole CI below zero.
+This is a claim about margin prediction only, not all props or profitability.
+No automatic model promotion; a subsequent hypothesis needs a fresh test cohort.
+Four OpenAI reviewers audit data, model, market and risk once daily per league.
+JSON evidence paths are validated. Numeric probabilities come from the models.
+Budget: at most 16 reserved calls/day; ordinary schedule uses 8. Independent key.
+
+Odds
+----
+VPS/Tor CuotasAhora reader, exact international bet365 only, full game including OT.
+Supported: moneyline, total, spread. Event date, home/away order, league and market
+scope checked. Aggregated best-book prices are never treated as Bet365 prices.
+Each market has its own observed timestamp and 15-minute expiry. The bookmaker's
+own update timestamp is unavailable and explicitly recorded as unknown.
+No player-prop quote feed: user has no provider. No invented lines or substituted
+books. Props projections can be shown, but automated prop bets are not published.
+
+Operations
+----------
+Lynx Basketball - capture: hourly at minute 1, POST /basketball-stats/start.
+Lynx Basketball - odds: every 5 minutes, existing authenticated scrape start/status.
+Lynx Basketball - analysis: every 5 minutes offset 3, calculations once per game.
+Lynx Basketball - research: daily 09:00 UTC; weekly progress and proven improvement.
+Capture, odds and forecasts run in independent server workflows. Shared scraper
+semaphore limits browser concurrency. Import runs separately from the main event loop.
+Per-job database leases, idempotent Telegram claims and message_id acknowledgements.
+Failed sends retry up to 5 attempts; pregame messages expire at tip-off.
+
+Secrets are supplied by private deployment configuration; no env files are committed.
+Service-role-only RLS/grants. SQL install: sql/supabase_basketball.sql.
+Builder: basketball/build_workflows.js. Local test:
+node --test --test-isolation=none tests/basketball.test.js

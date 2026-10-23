@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ app/
 COPY vendor/ vendor/
+COPY basketball/ basketball/
 COPY migrations/ migrations/
 COPY package.json .
 # 2026-08-16: el Dockerfile se copia a la imagen para que entre en la huella de /version. Sin

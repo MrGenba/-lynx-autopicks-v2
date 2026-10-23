@@ -1,0 +1,51 @@
+'use strict';
+const {MODELS,PROPS}=require('./model');
+const {all}=require('./capture');
+const {notify}=require('./notifications');
+const {reviewWithAgents}=require('./agents');
+const mean=a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:null;
+const metrics=errors=>({n:errors.length,mae:mean(errors.map(Math.abs)),rmse:errors.length?Math.sqrt(mean(errors.map(x=>x*x))):null});
+function pairedCI(differences){
+ if(!differences.length)return null;let seed=7382951;const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;},boot=[];
+ for(let b=0;b<2000;b++){let s=0;for(let i=0;i<differences.length;i++)s+=differences[Math.floor(random()*differences.length)];boot.push(s/differences.length);}boot.sort((a,b)=>a-b);return [boot[50],boot[1949]];
+}
+function evaluate(games,forecasts,players,candidates){
+ const gm=new Map(games.filter(g=>g.status==='final'&&g.box_complete).map(g=>[g.game_id,g])),pm=new Map(players.map(p=>[p.game_id+':'+p.player_id,p]));
+ const eligible=forecasts.filter(f=>gm.has(f.game_id)&&Date.parse(f.as_of)<Date.parse(gm.get(f.game_id).starts_at)&&Date.parse(f.created_at)<Date.parse(gm.get(f.game_id).starts_at));
+ const result={scope:'ALL_SEALED_FORECASTS_AND_DISCARDS',models:{},candidate_settlement:{total:candidates.length,settled:candidates.filter(c=>c.settled_at).length,discarded:candidates.filter(c=>c.verdict!=='PAPER_CANDIDATE').length},comparison:null};
+ for(const m of Object.values(MODELS)){
+  const fs=eligible.filter(f=>f.model_version===m.version),ts=fs.filter(f=>f.kind==='team'),ps=fs.filter(f=>f.kind==='player');
+  const props={};for(const [k,fields]of Object.entries(PROPS)){const errs=[];for(const f of ps){const p=pm.get(f.game_id+':'+f.player_id);if(!p||p.did_not_play||p.minutes<=0||!f.result.props[k])continue;errs.push(f.result.props[k].mean-fields.reduce((s,key)=>s+p.stats[key],0));}props[k]=metrics(errs);}
+  const cs=candidates.filter(c=>c.model_version===m.version&&['WIN','LOSS'].includes(c.result));
+  result.models[m.version]={team_margin:metrics(ts.map(f=>f.result.margin-(gm.get(f.game_id).home_score-gm.get(f.game_id).away_score))),team_total:metrics(ts.map(f=>f.result.total-(gm.get(f.game_id).home_score+gm.get(f.game_id).away_score))),props,
+   candidates:{n:cs.length,brier:mean(cs.map(c=>(c.p_win/(1-c.p_push)-(c.result==='WIN'?1:0))**2)),note:'Conditional on no push; correlated markets are descriptive only. No real-money ROI.'}};
+ }
+ // One predeclared comparison on the FIRST 200 paired games, never a rolling test.
+ const byGame=new Map();for(const f of eligible.filter(f=>f.kind==='team')){if(!byGame.has(f.game_id))byGame.set(f.game_id,{});byGame.get(f.game_id)[f.model_version]=f;}
+ const pairs=[...byGame.entries()].filter(([,v])=>v[MODELS.baseline.version]&&v[MODELS.challenger.version]).sort((a,b)=>Date.parse(gm.get(a[0]).starts_at)-Date.parse(gm.get(b[0]).starts_at)).slice(0,200);
+ const delta=pairs.map(([gid,v])=>{const actual=gm.get(gid).home_score-gm.get(gid).away_score;return (v[MODELS.challenger.version].result.margin-actual)**2-(v[MODELS.baseline.version].result.margin-actual)**2;});
+ const ci=pairs.length===200?pairedCI(delta):null;
+ result.comparison={test:'first_200_paired_games_margin_MSE',n:pairs.length,required:200,mean_MSE_delta:mean(delta),ci95:ci,improvement:!!ci&&ci[1]<0,
+  status:pairs.length<200?'ACCUMULATING':ci[1]<0?'IMPROVED_ON_MARGIN':'NO_DEMONSTRATED_IMPROVEMENT',no_automatic_promotion:true};return result;
+}
+async function runResearch(ctx){
+ const {rest,now=new Date(),aiConfig,http}=ctx,reports=[];
+ for(const league of ['NBA','WNBA']){
+  const day=now.toISOString().slice(0,10),rid=league+':'+day;
+  const old=await rest('bk_research?research_id=eq.'+rid+'&select=research_id');if(old.length){reports.push({league,status:'ALREADY_REVIEWED'});continue;}
+  const forecasts=await all(rest,'bk_forecasts?league=eq.'+league+'&select=*'),ids=[...new Set(forecasts.map(f=>f.game_id))];
+  const games=[],players=[];
+  for(let i=0;i<ids.length;i+=150){const list=ids.slice(i,i+150).join(',');games.push(...await all(rest,'bk_games?league=eq.'+league+'&game_id=in.('+list+')&select=*'));players.push(...await all(rest,'bk_player_box?league=eq.'+league+'&game_id=in.('+list+')&select=game_id,player_id,stats,minutes,did_not_play'));}
+  const cs=await all(rest,'bk_candidates?league=eq.'+league+'&select=model_version,verdict,result,settled_at,p_win,p_push');
+  const states=await rest('bk_state?league=eq.'+league+'&select=component,status,checked_at,detail');
+  const report=evaluate(games,forecasts,players,cs);report.health=states;report.generated_at=now.toISOString();report.league=league;report.limits=['Experimental models; injuries and starting five unverified','Historical source publication timestamps unknown; only prospective sealed predictions used to declare improvement','No validated player-prop odds feed'];
+  let ai={status:'BUDGET_OR_DUPLICATE'};
+  if(await rest('rpc/bk_reserve_ai','POST',{p_input_hash:rid})){ai=await reviewWithAgents({packet:report,decision:{mode:'paper',verdict:'WAITING_DATA',can_publish:false,can_place_bet:false},config:aiConfig,http});}
+  await rest('bk_research?on_conflict=research_id','POST',{research_id:rid,league,report,ai_review:ai},{prefer:'resolution=ignore-duplicates,return=minimal'});
+  if(report.comparison.improvement)await notify(ctx,league+':improvement:'+MODELS.challenger.version,league,league+' · mejora detectada\n'+MODELS.challenger.version+' reduce el error de margen frente al modelo actual en la prueba prefijada de 200 partidos futuros. IC 95% de la diferencia de error cuadrático: '+report.comparison.ci95.map(x=>x.toFixed(2)).join(' a ')+'.\nIncluye todas las predicciones, aunque no se publicaran. No demuestra rentabilidad; queda pendiente validación de los demás mercados.');
+  if(now.getUTCDay()===1||ai.status!=='COMPLETED')await notify(ctx,rid+':research_status',league,league+' · investigación\nPrueba futura: '+report.comparison.n+'/200 partidos. '+(ai.status==='COMPLETED'?'Los cuatro agentes han revisado datos, modelo, mercado y riesgo.':'Revisión IA pendiente: '+ai.status+'.')+'\nSe incluyen descartes. Todavía sin ventaja demostrada.');
+  await rest('bk_state?on_conflict=league,component','POST',{league,component:'research',checked_at:now.toISOString(),status:ai.status==='COMPLETED'?'healthy':'attention',detail:{review:ai.status,agents:ai.agents?.length||0,calls:ai.calls||0,comparison:report.comparison}},{prefer:'resolution=merge-duplicates,return=minimal'});
+  reports.push({league,review:ai.status,agents:ai.agents?.length||0,comparison:report.comparison});
+ }return {reports};
+}
+module.exports={metrics,pairedCI,evaluate,runResearch};
