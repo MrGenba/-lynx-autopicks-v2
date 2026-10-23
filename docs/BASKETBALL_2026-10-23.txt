@@ -225,6 +225,41 @@ edit sealed predictions or place bets. Research reuses two compact prior reviews
 from Supabase as memory, retaining preregistered statistical gates and provenance.
 Persistent failures (>20 minutes) and verified recovery notify Telegram once.
 All collectors, models, research and notifications run on the VPS with the PC off.
+Pregame context (2026-10-23)
+--------------------------
+Lynx Basketball - context runs every five minutes on the VPS. Official NBA/WNBA
+PDF injury reports are readable from ak-static.cms.nba.com; the league landing
+pages returned 403 from this VPS and are not retried. Public RotoWire lineup/news
+pages supply explicitly expected/confirmed starters and dated headline metadata.
+No subscription analysis, credentials, Tor or IP rotation is used for this feed.
+PDF table columns, page continuity, publication time, local game date, matchup,
+team and exact player identity must validate. NOT YET SUBMITTED and missing teams
+remain unverified. A missing injury listing is not confirmation of participation.
+Date-only news cannot supersede a timed official report; unresolved availability
+news blocks a value decision. News sentiment never becomes a numeric adjustment.
+Context evidence is immutable in bk_context_versions; bk_context_latest retains
+the last successful observation. Model revisions change only when the substantive
+inputs change, not on every read. bk-context-opportunity-1 preserves its original
+advanced forecast ID and creates new sealed rows rather than modifying history.
+Known absences have zero projected minutes and cannot generate under picks. A
+confirmed starter/bench role recalculates minutes from >=5 matching-role historical
+games, using at most ten and bounded to 0.5-1.5 times the original minutes. Means
+and variances scale with minutes, retaining combination covariance. Without enough
+role history, or when the impact of a recent rotation absence is not modeled, value
+alerts are blocked; no unsupported team-probability adjustment is fabricated.
+Value alerts require current context <=10 minutes old, a report <=6 hours old,
+healthy injury/lineup/news sources, a confirmed quintet, verified participation,
+no unresolved news/rotation blocker and a quote observed after the context change.
+The 10% EV threshold and all price/model/stress gates remain. The database enforces
+the context gate independently, including a match to the latest context revision.
+Telegram sends confirmed quintets once, and separate invalidation warnings for
+previous value alerts affected by new context. Old decisions remain immutable.
+The original preregistered advanced-model 200-game test is unchanged. Context
+revisions and their discarded candidates are stored separately by model/version;
+no claim of improved accuracy or profitability follows from this integration.
+Schema: sql/supabase_basketball_context.sql. Worker: basketball/context_capture.py.
+Tests: tests/test_basketball_context.py and tests/basketball_context.test.js.
+
 Player market previews now come from the analysis workflow, once per game/book.
 Each includes sealed model projections, both sides' probabilities and EV, the
 model's directional forecast and the reason a selection does not qualify. Only

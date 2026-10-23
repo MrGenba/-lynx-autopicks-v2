@@ -30,7 +30,7 @@ test('NBA and WNBA player messages include the actual projection, probabilities,
 });
 test('informational forecasts do not bypass the existing value policy',()=>{
  const {game,forecasts,quotes}=fixture();quotes.forEach(q=>{q.odds=1.9;q.opposite_odds=1.9;});
- assert.match(marketPreviews(game,forecasts,quotes,now,validateQuote)[0].text,/Supera los filtros de valor/);
+ assert.match(marketPreviews(game,forecasts,quotes,now,validateQuote)[0].text,/SIN APUESTA: falta información reciente de disponibilidad/);
  const fallback=forecasts.filter(f=>f.model_version!==VERSION);
  const text=marketPreviews(game,fallback,quotes,now,validateQuote)[0].text;
  assert.match(text,/modelo base/);assert.match(text,/SIN APUESTA: estadísticas avanzadas insuficientes/);
@@ -60,6 +60,7 @@ test('analysis sends a single combined preview per game/book and leaves failed-v
    throw Error('Unexpected write '+p);
   }
   if(p.startsWith('bk_notifications?')||p.startsWith('bk_value_alerts?'))return [];
+  if(p.startsWith('bk_context_current?'))return [];
   if(p.startsWith('bk_games?'))return p.includes('league=eq.NBA')&&p.includes('status=eq.scheduled')?[x.game]:[];
   if(p.startsWith('bk_forecasts?'))return x.forecasts;
   if(p.startsWith('bk_quotes?'))return x.quotes;

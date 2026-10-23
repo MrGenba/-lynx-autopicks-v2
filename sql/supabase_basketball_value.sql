@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS public.bk_value_alerts (
  UNIQUE(league,game_id,subject),FOREIGN KEY(league,game_id) REFERENCES public.bk_games(league,game_id)
 );
 CREATE OR REPLACE FUNCTION public.bk_seal_value_alert(p_row jsonb) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path=public,pg_temp AS $$
-DECLARE r public.bk_value_alerts;g public.bk_games;f public.bk_forecasts;q public.bk_quotes;n integer;
+DECLARE r public.bk_value_alerts;g public.bk_games;f public.bk_forecasts;q public.bk_quotes;n integer;c record;p jsonb;
 BEGIN
  r:=jsonb_populate_record(NULL::public.bk_value_alerts,p_row);
  PERFORM pg_advisory_xact_lock(hashtext('value:'||r.league||':'||r.game_id));
@@ -23,7 +23,17 @@ BEGIN
  SELECT * INTO STRICT f FROM bk_forecasts WHERE forecast_id=r.forecast_id;
  SELECT * INTO STRICT q FROM bk_quotes WHERE quote_id=r.quote_snapshot->>'quote_id';
  IF g.status<>'scheduled' OR now()>=g.starts_at OR r.as_of<now()-interval '2 minutes' OR r.as_of>now()+interval '1 minute' OR r.expires_at<=now() OR r.expires_at>g.starts_at THEN RAISE EXCEPTION 'VALUE_NOT_PREGAME';END IF;
- IF f.league<>g.league OR f.game_id<>g.game_id OR f.model_version<>'bk-advanced-opportunity-1' OR f.result->'advanced'->>'status' IS DISTINCT FROM 'APPLIED' OR coalesce(f.player_id,'game')<>r.subject THEN RAISE EXCEPTION 'VALUE_FORECAST_MISMATCH';END IF;
+ IF f.league<>g.league OR f.game_id<>g.game_id OR f.model_version<>'bk-context-opportunity-1' OR f.result->'advanced'->>'status' IS DISTINCT FROM 'APPLIED' OR coalesce(f.player_id,'game')<>r.subject THEN RAISE EXCEPTION 'VALUE_FORECAST_MISMATCH';END IF;
+ SELECT * INTO c FROM bk_context_current WHERE league=g.league AND game_id=g.game_id;
+ IF NOT FOUND OR c.checked_at<now()-interval '10 minutes' OR c.body->>'model_revision' IS DISTINCT FROM f.result->'context'->>'revision' OR jsonb_array_length(coalesce(f.result->'context'->'blockers','["MISSING"]'::jsonb))>0 THEN RAISE EXCEPTION 'VALUE_CONTEXT_NOT_CURRENT';END IF;
+ IF (c.body->>'report_published_at')::timestamptz IS NULL OR (c.body->>'report_published_at')::timestamptz<now()-interval '6 hours' OR (c.body->>'report_published_at')::timestamptz>now() OR c.body->'sources'->>'injuries' IS DISTINCT FROM 'OK' OR c.body->'sources'->>'lineups' IS DISTINCT FROM 'OK' OR c.body->'sources'->>'news' IS DISTINCT FROM 'OK' THEN RAISE EXCEPTION 'VALUE_CONTEXT_SOURCE_UNAVAILABLE';END IF;
+ IF f.player_id IS NOT NULL THEN
+  p:=c.body->'players'->f.player_id;
+  IF p IS NULL OR coalesce(p->>'availability','UNVERIFIED') NOT IN('AVAILABLE','NOT_LISTED','PROBABLE') OR c.body->'teams'->(p->>'team_id')->>'lineup' IS DISTINCT FROM 'CONFIRMED' OR p->>'news_unresolved'='true' THEN RAISE EXCEPTION 'VALUE_PARTICIPATION_UNCONFIRMED';END IF;
+ ELSE
+  IF EXISTS(SELECT 1 FROM jsonb_each(c.body->'teams') t WHERE t.value->>'lineup' IS DISTINCT FROM 'CONFIRMED' OR t.value->>'injury_report_submitted' IS DISTINCT FROM 'true') THEN RAISE EXCEPTION 'VALUE_LINEUPS_UNCONFIRMED';END IF;
+ END IF;
+ IF (f.result->'context'->>'observed_at')::timestamptz IS NULL OR q.captured_at<(f.result->'context'->>'observed_at')::timestamptz THEN RAISE EXCEPTION 'VALUE_PRICE_BEFORE_CONTEXT';END IF;
  IF f.result IS DISTINCT FROM r.decision->'forecast' OR q.league<>g.league OR q.game_id<>g.game_id OR coalesce(q.player_id,'game')<>r.subject OR q.odds IS DISTINCT FROM (r.quote_snapshot->>'odds')::numeric OR q.opposite_odds IS DISTINCT FROM (r.quote_snapshot->>'opposite_odds')::numeric OR q.period<>'full_game' OR NOT q.includes_overtime THEN RAISE EXCEPTION 'VALUE_SNAPSHOT_CHANGED';END IF;
  IF q.market IS DISTINCT FROM r.quote_snapshot->>'market' OR q.selection IS DISTINCT FROM r.quote_snapshot->>'selection' OR q.line IS DISTINCT FROM (r.quote_snapshot->>'line')::numeric OR q.source IS DISTINCT FROM r.quote_snapshot->>'source' THEN RAISE EXCEPTION 'VALUE_MARKET_CHANGED';END IF;
  IF r.policy IS DISTINCT FROM 'bk-value-estimate-2' OR coalesce((r.decision->>'ev')::numeric,-1)<0.10 OR coalesce((r.decision->>'edge')::numeric,-1)<0.04 OR coalesce((r.decision->>'stress_ev')::numeric,-1)<0.01 OR coalesce((r.decision->>'baseline_ev')::numeric,-1)<=0 THEN RAISE EXCEPTION 'VALUE_THRESHOLDS_FAILED';END IF;

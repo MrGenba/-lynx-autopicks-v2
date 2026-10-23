@@ -53,7 +53,7 @@ test('value notification retries require fresh revalidation',async()=>{
  assert.equal(await retryNotifications(ctx,now),0);assert.equal(sends,0);ctx.canRetryValue=async()=>false;assert.equal(await retryNotifications(ctx,now),0);assert.equal(sends,0);
 });
 test('pending alerts from the old policy must meet the current EV threshold',async()=>{
- for(const [ev,allowed]of [[.09,false],[.10,true],[.12,true],[null,false],[undefined,false]]){
+ for(const [ev,allowed]of [[.09,false],[.10,false],[.12,false],[null,false],[undefined,false]]){
   const q=market()[0],a={league:'NBA',game_id:'g',policy:'bk-value-estimate-1',expires_at:'2026-10-23T15:05:00Z',quote_snapshot:q,decision:{ev}};
   const ctx={rest:async path=>path.startsWith('bk_value_alerts?')?[a]:path.startsWith('bk_quotes?')?[q]:[game]};
   assert.equal(await canRetryValue(ctx,{alert_id:'old'},now),allowed,'EV '+ev);

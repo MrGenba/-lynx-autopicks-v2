@@ -15,6 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app import aliases, db
 from app.basketball_stats import register as register_basketball_stats
 from app.basketball_advanced import register as register_basketball_advanced
+from app.basketball_context import register as register_basketball_context
 from app.adapters.mlb import MlbAdapter
 from app.adapters.milb import MilbAdapter
 from app.adapters.lmb import LmbAdapter
@@ -417,6 +418,7 @@ async def run_health_server(cfg: Config, pool, port: int = 8080) -> None:
     app.router.add_get("/scrape-odds/status/{job_id}", scrape_odds_status)
     register_basketball_stats(app)
     register_basketball_advanced(app)
+    register_basketball_context(app)
     app.router.add_get("/tor/rotate", tor_rotate)
     app.router.add_post("/tor/rotate", tor_rotate)
     app.router.add_get("/tor/status", tor_status)

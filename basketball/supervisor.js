@@ -3,7 +3,7 @@
 // Model reviews retain their own budget and never receive deployment credentials.
 const {notify}=require('./notifications');
 const VERSION='bk-supervisor-1';
-const TASKS={capture:{component:'capture',minutes:90},advanced:{component:'advanced_stats',minutes:110},analysis:{component:'analysis',minutes:15},odds:{component:'odds',minutes:20,market:true},props:{component:'props',minutes:20,market:true},research:{component:'research',minutes:30*60}};
+const TASKS={context:{component:'context',minutes:15,market:true},capture:{component:'capture',minutes:90},advanced:{component:'advanced_stats',minutes:110},analysis:{component:'analysis',minutes:15},odds:{component:'odds',minutes:20,market:true},props:{component:'props',minutes:20,market:true},research:{component:'research',minutes:30*60}};
 const bad=s=>!s||['error','failed','source_error'].includes(s.status);
 function plan(states,games,locks,now){
  const issues=[],blocked=[],access=states.find(s=>s.league==='ALL'&&s.component==='ai_access');

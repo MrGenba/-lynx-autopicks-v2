@@ -5,6 +5,7 @@ const {notify,retryNotifications}=require('./notifications');
 const {VERSION:ADVANCED_VERSION,buildAdvanced}=require('./advanced_model');
 const {notifyValues,canRetryValue,LIMITS}=require('./value');
 const {marketPreviews}=require('./market_preview');
+const context=require('./context');
 const versions=[...Object.values(MODELS).map(x=>x.version),ADVANCED_VERSION];
 const id=(...parts)=>parts.map(p=>String(p??'team').replace(/[^A-Za-z0-9_.:-]/g,'_')).join(':');
 const fixed=n=>Number(n).toFixed(1);
@@ -27,7 +28,7 @@ function candidate(q,g,f,now){
  if(q.source==='winamax_fr_direct'){reasons.push('WINAMAX_FR_NOT_VERIFIED_EQUIVALENT_TO_ES');if(q.detail?.schedule_offset_seconds)reasons.push('BOOKMAKER_START_DIFFERS_FROM_CALENDAR');if(!q.detail?.rules_current_version_verified)reasons.push('RULES_REFERENCE_2024_CURRENT_VERSION_UNCONFIRMED');}
  if(q.player_id&&f.availability!=='CONFIRMED')reasons.push('PLAYER_AVAILABILITY_UNVERIFIED');
  if(ev<=0)reasons.push('NO_EDGE');
- return {candidate_id:id(g.league,g.game_id,q.bookmaker,q.player_id,q.market,q.line,q.selection,f.model_version),league:g.league,game_id:g.game_id,player_id:q.player_id||null,model_version:f.model_version,quote_id:q.quote_id,
+ return {candidate_id:id(g.league,g.game_id,q.bookmaker,q.player_id,q.market,q.line,q.selection,f.model_version)+(f.context?.revision?':'+f.context.revision:''),league:g.league,game_id:g.game_id,player_id:q.player_id||null,model_version:f.model_version,quote_id:q.quote_id,
   as_of:now.toISOString(),market:q.market,line:q.line,selection:q.selection,odds:q.odds,...p,ev,verdict:ev>0?'PAPER_CANDIDATE':'NO_EDGE',reasons,quote_snapshot:q,forecast:f};
 }
 function gameMessage(g,team,players,quotes){
@@ -40,7 +41,7 @@ function gameMessage(g,team,players,quotes){
  if(top.length)lines.push('\nJugadores · medias si participan (P/R/A):',...top.map(p=>p.player_name+': '+fixed(p.props.points.mean)+' / '+fixed(p.props.rebounds.mean)+' / '+fixed(p.props.assists.mean)+'; '+fixed(p.projected_minutes)+' min.'));
  const ml=quotes.filter(q=>q.market==='moneyline'&&!q.player_id);
  lines.push(ml.length?'\nCuotas observadas '+ml[0].bookmaker+': '+ml.map(q=>(q.selection==='home'?'local':'visitante')+' '+q.odds).join(' · '):'\nSin cuotas verificadas en esta lectura.');
- lines.push('Jugadores y minutos basados en historial; lesiones y quintetos sin confirmar. Modelo en evaluación, sin ventaja demostrada.');return lines.join('\n');
+ lines.push(team.context?'Disponibilidad y quintetos revisados; las proyecciones siguen condicionadas a participar. Los cambios de rotación sin historial suficiente bloquean las apuestas.':'Jugadores y minutos basados en historial; lesiones y quintetos sin confirmar.');lines.push('Modelo en evaluación, sin ventaja demostrada.');return lines.join('\n');
 }
 async function runAnalysis(ctx){
  const {rest,now=new Date()}=ctx,report={at:now.toISOString(),leagues:{}};
@@ -79,14 +80,24 @@ async function runAnalysis(ctx){
     }
    }
    const quotes=await all(rest,'bk_quotes?league=eq.'+league+'&game_id=in.('+ids+')&expires_at=gt.'+now.toISOString()+'&order=captured_at.desc&select=*');
+   const contexts=await rest('bk_context_current?league=eq.'+league+'&game_id=in.('+ids+')&select=*');
+   let contextHistory;
+   if(contexts.some(c=>context.currentOK(c,now)&&Object.values(c.body.teams).some(t=>t.lineup==='CONFIRMED')&&!existing.some(f=>f.game_id===c.game_id&&f.model_version===context.VERSION&&f.result.context?.revision===c.body.model_revision))){
+    const data=await rest('rpc/bk_history','POST',{p_league:league,p_team_ids:[...new Set(games.flatMap(g=>[g.home_team_id,g.away_team_id]))]});contextHistory=prepareHistory(data.games,data.teams,data.players,now,league);
+   }
    for(const g of games){
     const fs=existing.filter(f=>f.game_id===g.game_id),qs=quotes.filter(q=>q.game_id===g.game_id&&!validateQuote(q,g,now).length),candidates=[];
+    const current=contexts.find(c=>c.game_id===g.game_id);
+    if(!context.latest(fs,current).length){const rows=context.derive(g,fs,current,contextHistory,now);if(rows.length){r.forecasts_sealed+=await rest('rpc/bk_seal_forecasts','POST',{p_rows:rows});fs.push(...rows);}}
+    const contextual=context.latest(fs,current),valueCtx={...ctx,gameContext:current};
     for(const q of qs)for(const v of versions){const f=fs.find(f=>f.model_version===v&&(f.player_id||null)===(q.player_id||null));const c=candidate(q,g,f?.result,now);if(c)candidates.push(c);}
+    for(const q of qs){const f=contextual.find(f=>(f.player_id||null)===(q.player_id||null));if(!f)continue;const c=candidate(q,g,f.result,now);if(c){const blocked=context.contextReasons(f.result,current,now);c.reasons.push(...blocked);if(blocked.length)c.verdict='CONTEXT_BLOCKED';candidates.push(c);}}
     for(let i=0;i<candidates.length;i+=200)r.candidates_sealed+=await rest('rpc/bk_seal_candidates','POST',{p_rows:candidates.slice(i,i+200)});
-    const base=fs.filter(f=>f.model_version===MODELS.baseline.version),team=base.find(f=>f.kind==='team')?.result;
+    const base=contextual.length?contextual:fs.filter(f=>f.model_version===MODELS.baseline.version),team=base.find(f=>f.kind==='team')?.result;
     if(team&&Date.parse(g.starts_at)<=now.getTime()+6*3600000&&await notify(ctx,id('preview',league,g.game_id),league,gameMessage(g,team,base.filter(f=>f.kind==='player').map(f=>f.result),qs),g.starts_at))r.notifications++;
-    if(Date.parse(g.starts_at)<=now.getTime()+6*3600000){const checked=await notifyValues(ctx,g,fs,quotes.filter(q=>q.game_id===g.game_id),validateQuote);r.value_alerts+=checked.sent;r.value_checks.push({game_id:g.game_id,...checked});
-     for(const preview of marketPreviews(g,fs,qs,now,validateQuote))if(await notify(ctx,id('props-analysis-v1',league,g.game_id,preview.key),league,preview.text,preview.expires_at,{kind:'basketball_market_preview'}))r.notifications++;
+    if(Date.parse(g.starts_at)<=now.getTime()+6*3600000){const checked=await notifyValues(valueCtx,g,fs,quotes.filter(q=>q.game_id===g.game_id),validateQuote);r.value_alerts+=checked.sent;r.value_checks.push({game_id:g.game_id,...checked});
+     for(const preview of marketPreviews(g,[...fs.filter(f=>f.model_version!==context.VERSION),...contextual],qs,now,validateQuote,current))if(await notify(ctx,id('props-analysis-v1',league,g.game_id,preview.key),league,preview.text,preview.expires_at,{kind:'basketball_market_preview'}))r.notifications++;
+     r.notifications+=await context.publishChanges(ctx,g,current);
     }
    }
   }
