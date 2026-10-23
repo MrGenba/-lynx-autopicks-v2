@@ -38,6 +38,18 @@ def test_missing_or_invalid_lines_excluded():
     assert not line_missing({"market": "HC_HOME", "hc_value": 0})
 
 
+def test_snapshot_keeps_rejected_candidates_without_mutating_predictions():
+    result = {"candidates": [{"market": "ML", "pick_side": "AWAY", "edge": -0.1, "edge_threshold": 0.15},
+                             {"market": "ML", "pick_side": "HOME", "edge": 0.2, "edge_threshold": 0.15}],
+              "best_pick": {"market": "ML", "pick_side": "HOME"}}
+    snapshot = build_snapshot(1, 1, 1, fixture(), result, NOW, NOW)
+    discarded, selected = snapshot["output"]["candidates"]
+    assert discarded["model_decision"] == "not_shortlisted"
+    assert discarded["decision_reasons"] == ["below_edge_threshold"]
+    assert selected["model_decision"] == "selected"
+    assert "model_decision" not in result["candidates"][0]
+
+
 @pytest.mark.asyncio
 async def test_telegram_cannot_report_failed_delivery_as_success():
     for status, data in [(429, {}), (200, {"ok": False}), (200, {"ok": True, "result": {}})]:

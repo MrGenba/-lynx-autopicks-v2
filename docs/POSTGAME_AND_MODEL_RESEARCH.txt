@@ -1,0 +1,70 @@
+Recuperación de estadísticas y evaluación de modelos — 23 octubre 2026
+
+CAPTURA DESPUÉS DEL PARTIDO
+- vendor/postgame_ingest.js valida el boxscore oficial completo antes de guardar.
+- innings_pitched se expresa como outs/3, no como notación beisbolera decimal.
+- Conserva apariciones de cero outs y el número de lanzamientos disponible.
+- sql/supabase_postgame.sql instala la escritura atómica de partido, lanzadores y
+  recibo. Un fallo no produce un recibo de captura completa. No crea datos prepartido.
+- vendor/postgame_recovery.js se integra en SYNC_MLB_DAILY, SYNC_MILB_DAILY y
+  SYNC_LMB_DAILY: 09:30 y 22:00 Europe/Madrid. Revisa siete días, reintenta atrasos
+  y revisa el calendario de toda la temporada por la noche, incluida postemporada.
+- Actualiza de nuevo los partidos recientes después de 20 horas para recoger
+  correcciones oficiales. Los errores permanecen pendientes y aparecen en el aviso.
+- Park Factors MiLB: actualización de estadios existentes conservando su nombre;
+  todos los finales de nueve entradas, mínimo 15 partidos por estadio.
+- LYNX_RESOLVE_PICKS conserva la liquidación de picks; se retiraron los resolutores
+  duplicados de SYNC_MILB/LMB (el de LMB aplicaba fórmula americana a cuotas decimales).
+
+COMPROBACIÓN REAL
+MLB: 2.464 partidos, 21.152 registros de lanzadores.
+MiLB AAA: 2.229 partidos, 19.895 registros.
+LMB: 997 partidos, 10.731 registros.
+Total: 5.690 partidos oficiales finalizados, 51.778 registros, 502 apariciones
+de cero outs. Sin discrepancias entre recibos, jugadores guardados y outs oficiales.
+Se archivaron dos identificadores antiguos LMB ausentes en los boxscores actuales
+en bb_postgame_quarantine antes de reemplazarlos. Partidos cancelados excluidos.
+Estos recuentos describen marcadores y registros de lanzadores. Statcast sigue
+siendo una captura agregada separada; no implican disponer de todo el tracking
+de cada lanzamiento ni de Statcast LMB que la fuente no publica.
+
+CANDIDATOS DESCARTADOS Y MODELOS
+- Se conservan todos los candidatos con precio, aunque no sean seleccionados.
+  El snapshot registra selected/shortlisted/not_shortlisted y los motivos conocidos.
+  La publicación real requiere un recibo separado; no se infiere del best_pick.
+- sql/supabase_model_evaluation.sql crea un conjunto prospectivo privado basado
+  en snapshots sellados antes del inicio y resultados oficiales. Incluye candidatos
+  publicados y no publicados, pares de cuotas sin margen, línea exacta y datos frescos.
+- Solo nueve entradas y líneas medias (sin push) para la comparación primaria.
+  Una observación canónica por partido, mercado, pipeline y versión de código.
+- vendor/model_evaluation.js compara mercado, modelo actual, modelo bruto,
+  mezcla ajustada y regresión logística regularizada con el mercado como referencia.
+- Protocolo registrado all-candidates-v1: primeros aproximadamente 400 partidos
+  para ajuste, siguientes 150 para selección, siguientes 200 para prueba, separando
+  días completos y exigiendo al menos 60 días antes de revisión. No promoción automática.
+- BB_MILB_VALIDATION_DAILY ejecuta ahora también esta evaluación de las tres ligas
+  diariamente a las 10:35 UTC, guarda bb_model_evaluation_runs y avisa al alcanzar
+  la muestra prevista. LYNX_RECHEQUEO_RECALIBRACION consulta ese informe; se retiró
+  el criterio antiguo de declarar suficiente una muestra de 30 picks seleccionados.
+
+INVESTIGACIÓN HISTÓRICA
+Se revisaron 8.912 candidatos: 104 publicados y 8.808 no publicados.
+Tras los controles quedaron 1.448 pares partido/mercado, 1.434 sin publicación.
+La evaluación usa particiones temporales 60/20/20 y no usa los resultados de prueba
+para ajustar parámetros o elegir el modelo. Las fechas históricas ya se habían
+inspeccionado: son resultados exploratorios, no una prueba final independiente.
+Además, las filas antiguas son mutables y la etiqueta autopicks_v2 agrupa cambios
+de código históricos; la evidencia prospectiva emplea la huella exacta del código.
+Ejemplo MLB moneyline, pipeline 1, tramo de prueba de 84 partidos:
+Brier mercado 0,23726; actual 0,23921; bruto 0,24357; logística 0,23816.
+Menor es mejor. La alternativa elegida en validación no acredita superar al mercado.
+No se modificaron pesos en producción basándose en estos resultados históricos.
+
+VERIFICACIÓN Y OPERACIÓN
+Pruebas: node tests/postgame.test.js; node tests/model_evaluation.test.js;
+python -m pytest tests -q. Los casos cubren captura incompleta, cero outs, reintentos,
+recibos recientes, descartes y separación entre ajuste y resultados de prueba.
+Backups privados de workflows y evidencias de recuperación se guardaron fuera del
+repositorio en D:\Milb\maintenance\baseball_20261023_repair. No publicar esos backups.
+Aplicar los SQL con credencial administrativa; los RPC y vistas se restringen a
+service_role. Los helpers vendorizados se inyectan en los workflows n8n autorizados.

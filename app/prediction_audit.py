@@ -3,6 +3,7 @@ import datetime as dt
 import hashlib
 import json
 import math
+import copy
 
 from app.version import HUELLA
 
@@ -61,14 +62,27 @@ def build_snapshot(sport_id, game_id, pipeline, payload, result, prediction_at, 
     inputs = {"payload": payload, "stats_source_as_of": game.get("stats_source_as_of"),
               "retrieved_at": predicted.isoformat(), "bookmaker": game.get("bookmaker"),
               "odds_source": game.get("odds_source")}
-    canonical = json.dumps([sport_id, game_id, pipeline, HUELLA, predicted.isoformat(), inputs, result],
+    # Keep every priced candidate, including those below publication thresholds.
+    # This records the engine decision; actual delivery has its own receipt table.
+    output = copy.deepcopy(result)
+    key = lambda c: (c.get("market"), c.get("pick_side"))
+    shortlist = {key(c) for c in result.get("publicable_picks", [])}
+    best = key(result["best_pick"]) if result.get("best_pick") else None
+    for c in output.get("candidates", []):
+        c["model_decision"] = "selected" if key(c) == best else "shortlisted" if key(c) in shortlist else "not_shortlisted"
+        c["decision_reasons"] = []
+        if c.get("edge") is not None and c.get("edge_threshold") is not None and c["edge"] < c["edge_threshold"]:
+            c["decision_reasons"].append("below_edge_threshold")
+        if line_missing(c):
+            c["decision_reasons"].append("missing_market_line")
+    canonical = json.dumps([sport_id, game_id, pipeline, HUELLA, predicted.isoformat(), inputs, output],
                            sort_keys=True, separators=(",", ":"), allow_nan=False)
     return {"snapshot_id": hashlib.sha256(canonical.encode()).hexdigest(),
             "league": {1: "MLB", 11: "MiLB", 23: "LMB"}[sport_id], "game_id": game_id,
             "pipeline": pipeline, "prediction_at": predicted.isoformat(), "game_start": start.isoformat(),
             "scheduled_innings": innings, "odds_captured_at": captured.isoformat() if captured else None,
             "model_version": HUELLA, "source": "autopicks_v2", "quality_flags": flags,
-            "experiment_id": EXPERIMENT if sport_id == 11 else None, "inputs": inputs, "output": result}
+            "experiment_id": EXPERIMENT if sport_id == 11 else None, "inputs": inputs, "output": output}
 
 
 async def save_snapshot(ctx, snapshot):
