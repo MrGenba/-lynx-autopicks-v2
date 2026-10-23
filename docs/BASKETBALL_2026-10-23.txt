@@ -18,9 +18,51 @@ An authenticated server task downloads the public parquet snapshots hourly inste
 the upstream publication cadence is daily and late source updates are reported.
 Do not claim live completeness merely because the collector ran successfully.
 
-No raw player tracking, optical tracking or proprietary NBA tracking feed is implied.
+No raw optical trajectories or proprietary NBA tracking feed is implied.
 Available box fields: minutes, starter/DNP, points, rebounds (off/def), assists,
 steals, blocks, turnovers, fouls, FGM/FGA, 3PM/3PA, FTM/FTA.
+
+Advanced and tracking aggregates (added Oct 23)
+---------------------------------------------
+Public SportsDataverse release assets, independently published from NBA/WNBA stats:
+https://github.com/sportsdataverse/sportsdataverse-data/releases/tag/nba_stats_leaguedash
+https://github.com/sportsdataverse/sportsdataverse-data/releases/tag/wnba_stats_leaguedash
+https://www.nba.com/stats/help/glossary
+https://stats.wnba.com/players/advanced/
+The VPS could download the current Parquet assets. Direct NBA website access was
+denied (403); it is not retried. No paid feeds or extra credentials are involved.
+
+Both leagues: base, advanced, defense, miscellaneous, scoring and usage datasets.
+NBA additionally: passing (including potential assists), rebounding opportunities,
+possessions/touches, drives, catch-and-shoot, pull-ups, shot efficiency, rim defense,
+speed/distance, elbow/post/paint touches. These are season aggregates, not optical
+coordinates or player-game tracking. WNBA has no tracking assets in this source;
+absence is recorded explicitly, never replaced with zeroes or NBA measurements.
+
+Each dataset preserves provider-native field names/units, season type and per-mode.
+The provider's Totals label does not mean every field is a count (MIN in the advanced
+table is a per-game value). Consumers must interpret the official field definitions.
+Ranks and duplicated identity columns are omitted to limit database growth.
+Keep provider player IDs alongside canonical ESPN player IDs. Accept only an
+unambiguous published crosswalk with matching name, or exact normalized name plus
+team. Current-season NBA boxes fill teams missing from the current crosswalk.
+Ambiguous/unmatched identities keep player_id=NULL. Conflicting duplicate source
+contexts are quarantined in bk_stat_sources.detail, not merged or overwritten.
+Rebound-component discrepancies have explicit quality flags. Game counts and
+base total points are compared with the complete imported boxes of the same
+season/type. Differences are marked, not resolved by choosing whichever is newer.
+
+Tables: bk_stat_sources, bk_player_stat_versions, bk_player_stat_latest.
+View: bk_player_advanced_current (one current source row per player/context/dataset).
+The view exposes source_status and latest publication/check times; a consumer must
+check these, player_id and quality. Changed observations are appended immutably;
+identical content is reused. Service credentials cannot update/delete versions.
+Publication time and first observation time are distinct. The provider does not
+give an exact game cutoff: data_through stays NULL. New rows cannot be used as
+historically available pregame evidence before their observation. All are marked
+eligible_for_model=false until a separately tested feature integration is approved.
+Snapshots older than 48 hours are marked stale, even if the HTTP fetch succeeds.
+This addition does not change probabilities, sealed forecasts or value alerts.
 
 Models
 ------
@@ -98,6 +140,10 @@ login or prices. No credentials were used and no automatic reader was enabled.
 Operations
 ----------
 Lynx Basketball - capture: hourly at minute 1, POST /basketball-stats/start.
+Lynx Basketball - advanced: starts hourly at minute 11, polls at 16/21/26;
+POST /basketball-advanced/start. Reuses unchanged release assets. Source updates are
+daily (upstream dependent), not live. Completion/error is checked on following ticks;
+operational failures use the existing per-league Telegram deduplication mechanism.
 Lynx Basketball - odds: every 5 minutes, existing authenticated scrape start/status.
 Lynx Basketball - props: every 5 minutes offset 2, separate Winamax.fr jobs/state.
 Lynx Basketball - ps3838: every 5 minutes offset 4, delayed references only.
@@ -109,6 +155,9 @@ Per-job database leases, idempotent Telegram claims and message_id acknowledgeme
 Failed sends retry up to 5 attempts; pregame messages expire at tip-off.
 
 Secrets are supplied by private deployment configuration; no env files are committed.
-Service-role-only RLS/grants. SQL install: sql/supabase_basketball.sql.
+Service-role-only RLS/grants. SQL install: sql/supabase_basketball.sql and
+sql/supabase_basketball_advanced.sql.
 Builder: basketball/build_workflows.js. Local test:
 node --test --test-isolation=none tests/basketball.test.js tests/winamax.test.js tests/ps3838.test.js
+node --test --test-isolation=none tests/basketball_advanced.test.js
+python -m unittest discover -s tests -p test_basketball_advanced.py
