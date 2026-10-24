@@ -25,8 +25,10 @@ Cambios
   incompleta. Las probabilidades y decisiones anteriores no se reescriben.
 
 Limitaciones observadas desde el VPS en esta revisión
-- ATL–GSV, 24-10 a las 17:00 UTC: CuotasAhora mostraba el evento, pero sin
-  fila Bet365. PS3838 público no listaba WNBA. No se sustituyen marcas.
+- ATL–GSV, 24-10 a las 17:00 UTC: la comprobación directa de CuotasAhora
+  mostraba el evento sin fila Bet365. Posteriormente el lector operativo
+  guardó a las 07:50 UTC seis cuotas Bet365 (ganador, total y hándicap).
+  La cobertura puede cambiar entre lecturas. PS3838 público no listaba WNBA.
 - El PDF WNBA de 03:30 ET solo incluye a Brionna Jones (OUT, Atlanta).
   La ausencia de filas de otro equipo no se convierte en disponibilidad
   confirmada; permanece pendiente de evidencia suficiente.
@@ -41,3 +43,15 @@ Pruebas focalizadas
   antigüedad del informe, aislamiento de ligas y bloqueo de acceso real.
 - Node: filtros de contexto, mensajes, conservación de errores de cuotas,
   petición de análisis, modelo y normalización de cuotas.
+
+Verificación de producción a las 07:57 UTC
+- Código 9f2c0a5; /version devolvió f82963907d00c0d0, igual que en local.
+- Los diez flujos de baloncesto están activos en n8n del VPS.
+- Se reabrieron únicamente los bloqueos antiguos de PDF con HTTP 403,
+  después de validar otra vez HTTP 200 y contenido de los PDFs publicados.
+- Contexto WNBA healthy: noticias, quintetos y lesiones OK; ambos quintetos
+  EXPECTED, diez titulares identificados, cero nombres sin correspondencia.
+- Brionna Jones figura OUT. El equipo sin filas explícitas en el PDF sigue
+  con disponibilidad pendiente; no se infiere disponibilidad por ausencia.
+- Análisis healthy: 22 proyecciones de jugadoras con la revisión actual y
+  seis cuotas de partido. Últimos tres partidos finalizados: box_complete.
