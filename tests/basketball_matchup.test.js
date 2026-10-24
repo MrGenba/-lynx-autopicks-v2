@@ -39,6 +39,21 @@ test('new experiment cannot reuse inspected games or claim improvement before th
  const result=compare([],[],[],[],{registered_at:now.toISOString()},()=>[-1,-.1]);assert.equal(result.status,'ACCUMULATING');assert.equal(result.improvement,false);assert.equal(result.n,0);
  const games=[{...g,status:'final',box_complete:true,starts_at:'2026-10-23T20:00:00Z'}];assert.equal(compare(games,[],[],[],{registered_at:now.toISOString()},()=>[-1,-.1]).n,0);
 });
+test('prospective comparison needs 200 paired games and rejects a missing or late opposite quote',()=>{
+ const games=[],forecasts=[],players=[],candidates=[];
+ for(let i=0;i<200;i++){
+  const gid='future'+i,game={...g,game_id:gid,status:'final',box_complete:true},fid='base'+i;
+  const quote={league:'NBA',game_id:gid,player_id:'p',market:'points',line:20.5,selection:'over',odds:1.9,opposite_odds:1.9,bookmaker:'book',source:'verified',captured_at:stamp,expires_at:g.starts_at,period:'full_game',includes_overtime:true};
+  const candidate={candidate_id:'over'+i,game_id:gid,player_id:'p',market:'points',selection:'over',model_version:m.VERSION,p_win:.9,created_at:stamp,as_of:stamp,matchup:{status:'APPLIED',base_forecast_id:fid},quote_snapshot:quote};
+  games.push(game);forecasts.push({forecast_id:fid,game_id:gid,player_id:'p',result:f,as_of:stamp,created_at:stamp});players.push({game_id:gid,player_id:'p',minutes:30,stats:{points:30}});
+  candidates.push(candidate,{...candidate,candidate_id:'under'+i,selection:'under',p_win:.1,quote_snapshot:{...quote,selection:'under'}});
+ }
+ const protocol={registered_at:'2026-10-24T00:00:00Z'},ci=()=>[-.3,-.1];
+ assert.equal(compare(games,forecasts,players,candidates,protocol,ci).improvement,true);
+ assert.equal(compare(games,forecasts,players,candidates.slice(0,-1),protocol,ci).n,199);
+ candidates.at(-1).created_at=g.starts_at;
+ const late=compare(games,forecasts,players,candidates,protocol,ci);assert.equal(late.n,199);assert.equal(late.improvement,false);
+});
 test('all workflow bundles parse with the independent basketball REST URL',()=>{
  const {code}=require('../basketball/build_workflows'),AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
  for(const task of ['capture','advanced','context','analysis','research','storage','supervisor'])assert.doesNotThrow(()=>new AsyncFunction(code(task,{restUrl:'https://basketball.example',supabaseKey:'test'})));
