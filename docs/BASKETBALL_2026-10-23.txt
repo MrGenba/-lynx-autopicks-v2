@@ -260,6 +260,23 @@ no claim of improved accuracy or profitability follows from this integration.
 Schema: sql/supabase_basketball_context.sql. Worker: basketball/context_capture.py.
 Tests: tests/test_basketball_context.py and tests/basketball_context.test.js.
 
+2026-10-24: a second Telegram analysis is emitted after both confirmed quintets,
+with ten starters' P/R/A and minutes, unchanged team-model probabilities explicitly
+labelled, and the current value-filter decision. Its key uses the actual two
+quintets, so a prior preview cannot suppress it. Fresh player-price summaries also
+get a separate confirmed-lineup key; old context reanalysis retries are revalidated.
+Final-game notifications now compare the last sealed PRE-GAME forecast with the
+result, including player MAE and missing/DNP counts. Revisions are never independent
+observations. Published value alerts are counted separately from descriptive calls.
+CBS public NBA final boxes supplement delayed daily SportsDataverse snapshots on
+the VPS. Exact game/time/team identities, player identities, quarter sums, shooting,
+player/team totals and minutes must reconcile. Only unmatched DNP rows may be omitted
+and are listed in the receipt. Rounded minutes are labelled. Unknown active players
+leave only the validated final score; the box remains pending. A stale daily snapshot
+cannot downgrade a CBS final. Access denials stop this source without IP rotation.
+Descriptive context balances join the scheduled research packet without changing
+the existing prospective protocol or claiming a better model from these games.
+
 Player market previews now come from the analysis workflow, once per game/book.
 Each includes sealed model projections, both sides' probabilities and EV, the
 model's directional forecast and the reason a selection does not qualify. Only

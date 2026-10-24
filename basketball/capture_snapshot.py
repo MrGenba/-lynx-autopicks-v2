@@ -8,6 +8,7 @@ from datetime import datetime,timezone,timedelta
 from pathlib import Path
 import httpx
 from basketball.import_history import convert
+from basketball.cbs_results import refresh as refresh_results
 
 ROOT=Path(tempfile.gettempdir())/'lynx_basketball_snapshots'
 REGISTRIES=Path(__file__).parent/'registries'
@@ -28,6 +29,7 @@ async def run():
         if response.status_code>=300:raise RuntimeError('DATABASE_HTTP_'+str(response.status_code))
         return response.json() if response.content else None
       reports=[]
+      current_results=await refresh_results(client,rest,now)
       for league,season in [('NBA',now.year+(now.month>=9)),('WNBA',now.year)]:
        state={'source':'sportsdataverse_public_parquet','season':season,'live_source':'ESPN_ACCESS_DENIED','player_props_odds':'SEPARATE_WINAMAX_FR_COLLECTOR'}
        try:
@@ -50,11 +52,13 @@ async def run():
         cache.update(updates);cache_file.write_text(json.dumps(cache))
         past=now-timedelta(hours=5)
         recent=now-timedelta(days=3)
-        overdue=[p['game']['game_id'] for p in rows if recent<datetime.fromisoformat(p['game']['starts_at'])<past and p['game']['status'] in ('scheduled','live','final') and not p.get('receipt',{}).get('complete')]
+        pending=await rest('bk_games?league=eq.'+league+'&box_complete=eq.false&status=in.(scheduled,live,final)&starts_at=gt.'+recent.isoformat().replace('+00:00','Z')+'&starts_at=lt.'+past.isoformat().replace('+00:00','Z')+'&select=game_id')
+        overdue=[g['game_id'] for g in pending]
         completed=[p['game']['starts_at'] for p in rows if p.get('receipt',{}).get('complete')]
         state.update({'games':summary['games'],'valid_boxes':summary['complete'],'players':summary['players'],'updated':len(changed),'incomplete_boxes':len(summary['excluded']),
           'recent_missing':overdue,'latest_completed_start':max(completed) if completed else None,'source_urls':urls})
         state['status']='delayed' if overdue else 'daily_snapshot_ok'
+        if league=='NBA':state['current_results']=current_results
        except Exception as error:
         msg=str(error);state.update({'status':'error','error':msg if msg.startswith(('DATABASE_HTTP_','SNAPSHOT_HTTP_')) else 'SNAPSHOT_IMPORT_FAILED'})
        await rest('bk_state?on_conflict=league,component',{'league':league,'component':'capture','status':state['status'],'checked_at':now.isoformat(),'detail':state},'resolution=merge-duplicates,return=minimal')

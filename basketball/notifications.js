@@ -11,6 +11,7 @@ async function retryNotifications(ctx,now=new Date()){
  for(const r of rows){if(r.payload.expires_at&&Date.parse(r.payload.expires_at)<=now.getTime())continue;
   if(r.notification_id.startsWith('props:winamax.fr:'))continue; // Superseded by model-and-market previews.
   if(r.payload.kind==='basketball_value'&&(!ctx.canRetryValue||!await ctx.canRetryValue(r.payload,now)))continue;
+  if(r.payload.kind==='basketball_lineup_reanalysis'&&(!ctx.canRetryReanalysis||!await ctx.canRetryReanalysis(r.payload,now)))continue;
   if(await notify(ctx,r.notification_id,r.league,r.payload.text,r.payload.expires_at,r.payload))sent++;}return sent;
 }
 module.exports={notify,retryNotifications};

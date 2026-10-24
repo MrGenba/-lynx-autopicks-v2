@@ -82,6 +82,7 @@ BEGIN
  g:=jsonb_populate_record(NULL::public.bk_games,p_payload->'game');
  IF g.league NOT IN('NBA','WNBA') OR g.game_id IS NULL THEN RAISE EXCEPTION 'GAME_REQUIRED';END IF;
  IF g.source='sportsdataverse_espn' AND EXISTS(SELECT 1 FROM bk_games WHERE league=g.league AND game_id=g.game_id AND source='espn_core' AND box_complete) THEN RETURN jsonb_build_object('skipped_live_source',true);END IF;
+ IF g.source='sportsdataverse_espn' AND NOT coalesce((p_payload->'receipt'->>'complete')::boolean,false) AND EXISTS(SELECT 1 FROM bk_games WHERE league=g.league AND game_id=g.game_id AND source='cbs_public_boxscore' AND status='final') THEN RETURN jsonb_build_object('skipped_stale_snapshot',true);END IF;
  INSERT INTO public.bk_games(league,game_id,season,season_type,starts_at,status,neutral_site,home_team_id,away_team_id,home_team,away_team,home_score,away_score,periods,source,source_url,source_checked_at)
  VALUES(g.league,g.game_id,g.season,g.season_type,g.starts_at,g.status,g.neutral_site,g.home_team_id,g.away_team_id,g.home_team,g.away_team,g.home_score,g.away_score,g.periods,g.source,g.source_url,coalesce(g.source_checked_at,now()))
  ON CONFLICT(league,game_id) DO UPDATE SET starts_at=EXCLUDED.starts_at,status=EXCLUDED.status,home_score=EXCLUDED.home_score,away_score=EXCLUDED.away_score,periods=EXCLUDED.periods,

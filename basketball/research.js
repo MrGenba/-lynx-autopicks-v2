@@ -5,6 +5,7 @@ const {notify}=require('./notifications');
 const {reviewWithAgents}=require('./agents');
 const {CONFIG:ADVANCED_CONFIG}=require('./advanced_model');
 const {PROTOCOL,compareAdvanced}=require('./prospective');
+const {evaluateBalance}=require('./balance');
 const mean=a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:null;
 const metrics=errors=>({n:errors.length,mae:mean(errors.map(Math.abs)),rmse:errors.length?Math.sqrt(mean(errors.map(x=>x*x))):null});
 function pairedCI(differences){
@@ -44,6 +45,7 @@ async function runResearch(ctx){
   const states=await rest('bk_state?league=eq.'+league+'&select=component,status,checked_at,detail');
   const protocol=(await rest('bk_model_protocols?protocol_id=eq.'+PROTOCOL+'&select=*'))[0];
   const report=evaluate(games,forecasts,players,cs);report.advanced_comparison=compareAdvanced(games,forecasts,cs,protocol,pairedCI);
+  const descriptive=evaluateBalance(games,forecasts,players.map(p=>({...p,league})));report.descriptive_balance={policy:descriptive.policy,selection:descriptive.selection,models:descriptive.models,note:'Descriptive only; confirmed-lineup revisions are not a new efficacy test. Do not reuse these observed outcomes to claim a new improvement.'};
   const testPath='bk_model_test_results?protocol_id=eq.'+PROTOCOL+'&league=eq.'+league+'&select=report';
   let frozen=(await rest(testPath))[0];
   if(!frozen&&report.advanced_comparison.n===200){await rest('bk_model_test_results?on_conflict=protocol_id,league','POST',{protocol_id:PROTOCOL,league,report:report.advanced_comparison},{prefer:'resolution=ignore-duplicates,return=minimal'});frozen=(await rest(testPath))[0];}
