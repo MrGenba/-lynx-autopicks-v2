@@ -1,0 +1,51 @@
+Verificacion de baloncesto: 24 de octubre de 2026, 07:32 UTC
+==========================================================
+
+Almacenamiento
+--------------
+NBA y WNBA utilizan PostgreSQL dedicado en el VPS: basketball-db/basketball.
+Los diez flujos de n8n estan activos y apuntan al nuevo servicio PostgREST.
+Los recolectores Python tambien han escrito y actualizado datos en ese destino.
+No se necesita el ordenador local para ejecutar el sistema.
+
+Migrados 103.807 registros de 23 tablas. Recuentos y hashes de todas las filas
+coinciden, usando ordenacion C explicita para comparar instancias PostgreSQL.
+Conservados pronosticos, descartes, decisiones y recibos de Telegram.
+Se restauro la primera copia en una base temporal y se comprobaron de nuevo las
+23 tablas sin diferencias. La base temporal de prueba fue eliminada.
+
+Despues de verificar la migracion se vaciaron exclusivamente las antiguas tablas
+bk_* de Supabase y se retiraron sus permisos de escritura y ejecucion al servicio.
+Las 134 tablas ajenas a baloncesto no formaron parte de esa operacion.
+Supabase paso de 346.467.475 a 165.784.723 bytes: aproximadamente 330 a 158 MiB.
+El destino ocupa aproximadamente 139 MiB; el VPS tiene unos 108 GiB libres.
+
+Control de capacidad cada hora. Copia comprimida diaria con siete dias de retencion
+en volumen persistente. Primera copia: 12.105.957 bytes, restauracion verificada.
+Avisos de espacio o copia fallida por Telegram con deduplicacion.
+Las copias estan en el mismo VPS: no son una copia externa ante perdida del servidor.
+
+Modelo y disponibilidad
+----------------------
+Variante separada bk-shot-matchup-1, protocolo bk-shot-matchup-prospective-1
+registrado a las 07:28:26 UTC, antes de nuevas predicciones y resultados.
+Es una hipotesis en evaluacion; no sustituye el modelo de avisos de valor.
+El filtro de valor del modelo vigente sigue siendo EV estimado >= 10%.
+Detalle de variables, pruebas y restricciones en BASKETBALL_2026-10-23.txt.
+
+18 datasets NBA y 6 WNBA guardados por jugador/jugadora con sus versiones.
+Actualizacion manual de comprobacion finalizo correctamente en ambos recolectores.
+El proveedor avanzado aun publica datos del dia 23. En NBA, 243 filas base no
+coinciden con los boxscores mas recientes y quedan excluidas del modelo avanzado.
+WNBA no ofrece tracking publico en la fuente actual. El partido proximo solo tiene
+38 observaciones de equipo de playoffs frente al minimo prefijado de 50 para el
+contexto defensivo: la nueva variante no fuerza una proyeccion con ese historial.
+Al cierre hay cero pronosticos de esta variante; no existe mejora demostrada.
+La fuente de partes de lesiones tambien conserva un bloqueo de acceso previo.
+Los avisos de valor mantienen sus comprobaciones y no omiten esos requisitos.
+
+Pruebas: siete pruebas enfocadas del nuevo modelo/protocolo, pruebas previas de
+valor, mercados y unidades, y dos pruebas de enrutamiento de almacenamiento.
+Huella del worker verificada en /version: e3102d41cb42fa4c.
+Codigo del cambio b7217c7; prueba adicional e8d9d6f.
+Recibos operativos completos en maintenance/basketball_20261024 fuera del repositorio.
