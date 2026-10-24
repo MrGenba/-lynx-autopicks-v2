@@ -56,3 +56,18 @@ caps/conflicts, model generation identity, fresh roster inclusion, preservation
 of historical balances, WNBA opponent features, preview/value gates and future
 evaluation. Python tests cover public lead extraction, dates, attribution,
 numeric caps and rejecting unrelated or negated claims.
+
+Production verification at 2026-10-24 08:43 UTC
+--------------------------------------------
+Worker commit 448d66d; /version aeb8343445113ea7 matched local source.
+Dedicated basketball database value gate updated transactionally. Analysis,
+context and research workflow bundles activated on n8n. Context and analysis
+healthy for both leagues. The WNBA game 401918308 has 22 new player forecasts,
+all with opponent adjustment APPLIED; its 161 previous forecasts are unchanged.
+Public news leads captured: 25 NBA, 4 WNBA. No numeric staff cap was present in
+this live news sample; cap behavior is covered by explicit fixture tests.
+NBA's next game was outside the 12-hour production analysis window at this
+check; a read-only replay produced 18 player forecasts with opponent adjustment.
+50 targeted JavaScript tests and 9 Python tests passed. The current WNBA
+lineups remain expected, and one team's official availability report is still
+incomplete; neither condition is bypassed to send a value recommendation.
