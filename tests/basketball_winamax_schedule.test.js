@@ -55,3 +55,15 @@ test('an active browser prevents another league opening a concurrent session',as
  const h=harness(new Date('2026-10-24T13:00:00Z'));h.states.set('NBA:props_job',{detail:{job_id:'active'}});h.ctx.http=async url=>{h.calls.push(url);return {status:200,body:{status:'running'}};};
  await runProps(h.ctx);assert.equal(h.calls.length,1);assert.ok(h.calls[0].includes('/status/'));
 });
+test('worker watchdog closes a stuck navigation and the morning gate never launches Chrome',async()=>{
+ const vm=require('node:vm'),fs=require('node:fs'),source=fs.readFileSync(require.resolve('../basketball/run_winamax'),'utf8');
+ let callback,waitMs,rejectNavigation,closes=0,launches=0;
+ const page={on(){},setDefaultTimeout(){},goto:()=>new Promise((_,reject)=>{rejectNavigation=reject;callback();})};
+ const browser={newContext:async()=>({newPage:async()=>page}),close:async()=>{closes++;rejectNavigation?.(Error('Target closed'));}};
+ const load=allowed=>{const mod={exports:{}},req=name=>name==='patchright'?{chromium:{launch:async()=>{launches++;return browser;}}}:name==='./winamax_schedule'?{POLICY:s.POLICY,sessionMs:()=>allowed}:require('../basketball/winamax');
+  vm.runInNewContext('(function(require,module,exports){'+source+'\n})',{setTimeout:(fn,ms)=>{callback=fn;waitMs=ms;return 1;},clearTimeout(){}})(req,mod,mod.exports);return mod.exports.run;
+ };
+ const input={bookmaker:'Winamax',candidateNames:['Home','Away']};
+ const skipped=await load(0)('NBA',input);assert.equal(skipped.skipped,'OUTSIDE_AFTERNOON');assert.equal(launches,0);
+ const result=await load(90000)('NBA',input);assert.equal(result.errors[0].code,'BROWSER_SESSION_LIMIT');assert.equal(launches,1);assert.ok(closes>=1);assert.ok(waitMs>0&&waitMs<=90000);assert.equal(result.access_denied,false);
+});
