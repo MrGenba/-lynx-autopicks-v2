@@ -1,4 +1,5 @@
 import io,unittest
+from pathlib import Path
 from datetime import datetime,timezone
 from pypdf import PdfWriter
 from pypdf.generic import DictionaryObject,NameObject,DecodedStreamObject
@@ -14,6 +15,13 @@ def pdf():
   stream=DecodedStreamObject();stream.set_data(('1 0 0 -1 0 595 cm\n'+'\n'.join(f'q 1 0 0 1 {x} {y} cm BT /F1 -10 Tf 0 0 Td ({t}) Tj ET Q' for x,y,t in tokens)).encode());p[NameObject('/Contents')]=w._add_object(stream)
  out=io.BytesIO();w.write(out);return out.getvalue()
 class ContextTests(unittest.TestCase):
+ def test_live_wnba_fixture_accepts_shared_basketball_markup_but_not_nba_page(self):
+  html=(Path(__file__).parent/'fixtures/basketball/wnba_lineups.html').read_text(encoding='utf8')
+  rows=lineups(html,'WNBA',datetime(2026,10,24,8,tzinfo=timezone.utc))
+  self.assertEqual(len(rows),2);self.assertEqual({r['team'] for r in rows},{'ATL','GSV'})
+  self.assertTrue(all(not r['confirmed'] and len(r['players'])==5 for r in rows))
+  self.assertEqual(rows[0]['starts_at'],'2026-10-24T17:00:00+00:00')
+  self.assertEqual(lineups(html.replace('WNBA Daily Lineups','NBA Daily Lineups'),'WNBA',datetime(2026,10,24,8,tzinfo=timezone.utc)),[])
  def test_omitted_suffix_requires_unique_full_name_and_team_catalog(self):
   catalog=[{'player_id':'p','player_name':'Jaime Jaquez Jr.'}]
   self.assertEqual(match_name('Jaime Jaquez',catalog),'p')

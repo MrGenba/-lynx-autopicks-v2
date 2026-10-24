@@ -4,6 +4,7 @@ from datetime import datetime,timedelta,timezone
 from urllib.parse import urlparse
 import httpx
 from basketball.context_sources import ET,norm,digest,injury_pdf,lineups,news
+from basketball.injury_reports import latest_report
 from basketball.advanced_stats import NBA_TEAMS
 
 WNBA_NAMES={'Atlanta Dream':'ATL','Chicago Sky':'CHI','Connecticut Sun':'CON','Dallas Wings':'DAL','Golden State Valkyries':'GSV','Indiana Fever':'IND','Las Vegas Aces':'LVA','Los Angeles Sparks':'LAS','Minnesota Lynx':'MIN','New York Liberty':'NYL','Phoenix Mercury':'PHO','Seattle Storm':'SEA','Washington Mystics':'WAS','Toronto Tempo':'TOR','Portland Fire':'POR'}
@@ -89,17 +90,16 @@ async def run():
         for league in ['NBA','WNBA']:
             gs=[g for g in games if g['league']==league];sources={};report={};lu=[];ns=[]
             if gs:
-                folder='injury' if league=='NBA' else 'wnba_injury'
-                et=now.astimezone(ET).replace(second=0,microsecond=0);et-=timedelta(minutes=et.minute%15)
-                for back in range(4):
-                    at=et-timedelta(minutes=15*back);url='https://ak-static.cms.nba.com/referee/'+folder+'/Injury-Report_'+at.strftime('%Y-%m-%d_%I_%M%p')+'.pdf'
-                    try:
-                        response=await fetch(league+'_injury_pdf',url)
-                        if response.status_code==404:continue
-                        if response.status_code!=200:raise RuntimeError('SOURCE_HTTP_'+str(response.status_code))
-                        report=injury_pdf(response.content,url,now);sources['injuries']='OK';break
-                    except Exception as e:sources['injuries']=str(e) if isinstance(e,(ValueError,RuntimeError)) else 'SOURCE_FAILED';break
-                sources.setdefault('injuries','AWAITING_REPORT')
+                source=league+'_injury_pdf'
+                if any(s['detail'].get('source')==source for s in blocked):
+                    sources['injuries']='SOURCE_ACCESS_BLOCKED'
+                else:
+                    prior=await rest('bk_state?league=eq.'+league+'&component=eq.injury_report&select=detail')
+                    report,detail=await latest_report(league,now,client.get,prior[0]['detail'] if prior else None)
+                    sources['injuries']=detail['source_status']
+                    await rest('bk_state?on_conflict=league,component',{'league':league,'component':'injury_report','checked_at':now.isoformat(),'status':detail['source_status'],'detail':detail},'resolution=merge-duplicates,return=minimal')
+                    if detail.get('blocked'):
+                        await rest('bk_state?on_conflict=league,component',{'league':source,'component':'context_source_access','checked_at':now.isoformat(),'status':'blocked','detail':{'source':source,'http':detail.get('http'),'url':detail['last_attempt_url'],'control_http':detail.get('control_http')}},'resolution=merge-duplicates,return=minimal')
                 for kind in ['lineups','news']:
                     path=('basketball/nba-lineups.php' if league=='NBA' else 'wnba/lineups.php') if kind=='lineups' else ('basketball/news.php' if league=='NBA' else 'wnba/news.php')
                     try:

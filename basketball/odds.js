@@ -34,12 +34,13 @@ async function runOdds(ctx){
  const {rest,now=new Date()}=ctx,report={leagues:{}};
  for(const league of ['NBA','WNBA']){
   const games=await rest('bk_games?league=eq.'+league+'&status=eq.scheduled&starts_at=gt.'+now.toISOString()+'&starts_at=lt.'+new Date(now.getTime()+12*3600000).toISOString()+'&order=starts_at.asc&select=*');
-  const old=(await rest('bk_state?league=eq.'+league+'&component=eq.odds_job&select=*'))[0],checked=old?.detail?.checked||{},r={games:games.length,quotes:0,rejected:[],player_props:'SEPARATE_WINAMAX_FR_COLLECTOR'};report.leagues[league]=r;let jobId=null;
+  const old=(await rest('bk_state?league=eq.'+league+'&component=eq.odds_job&select=*'))[0],checked=old?.detail?.checked||{},r={games:games.length,quotes:0,rejected:[],bookmaker:'bet365',player_props:'SEPARATE_WINAMAX_FR_COLLECTOR'};report.leagues[league]=r;let jobId=null,latest=old?.detail?.latest_capture||null;
   let last=lastStarted(old?.detail,now);
   if(old?.detail?.job_id){const job=await server(ctx,'/scrape-odds/status/'+old.detail.job_id);
    if(job?.status==='running'){r.status='RUNNING';continue;}
    if(job?.status==='done'){const normalized=normalizeQuotes(job.result,games,now);r.rejected=normalized.rejected;r.source_errors=job.result.errors||[];
     if(normalized.quotes.length){await rest('bk_quotes?on_conflict=quote_id','POST',normalized.quotes,{prefer:'resolution=merge-duplicates,return=minimal'});r.quotes=normalized.quotes.length;r.fresh_quotes=freshCount(normalized.quotes,now);}
+    latest={completed_at:now.toISOString(),quotes:r.quotes,source_errors:r.source_errors,rejected:r.rejected,expires_at:normalized.quotes.length?new Date(Math.max(...normalized.quotes.map(q=>Date.parse(q.expires_at)))).toISOString():null};
    }else r.error='ODDS_JOB_FAILED';
   }
   if(games.length&&canStart(last,now)){const selected=[...games].sort((a,b)=>(checked[a.game_id]||'').localeCompare(checked[b.game_id]||'')).slice(0,3);
@@ -48,8 +49,9 @@ async function runOdds(ctx){
    last=now.getTime();for(const g of selected)checked[g.game_id]=now.toISOString();
   }
   const active=new Set(games.map(g=>g.game_id));for(const key of Object.keys(checked))if(!active.has(key))delete checked[key];
-  r.status=games.length?'partial':'no_games';
-  await rest('bk_state?on_conflict=league,component','POST',{league,component:'odds_job',status:r.status,checked_at:now.toISOString(),detail:{job_id:jobId,checked,last_started_at:last?new Date(last).toISOString():null}},{prefer:'resolution=merge-duplicates,return=minimal'});
+  r.latest_capture=latest;
+  r.status=!games.length?'no_games':jobId?'running':latest?.quotes===0?'source_unavailable':Date.parse(latest?.expires_at)>now.getTime()?'captured':'awaiting_refresh';
+  await rest('bk_state?on_conflict=league,component','POST',{league,component:'odds_job',status:r.status,checked_at:now.toISOString(),detail:{job_id:jobId,checked,last_started_at:last?new Date(last).toISOString():null,latest_capture:latest}},{prefer:'resolution=merge-duplicates,return=minimal'});
   await rest('bk_state?on_conflict=league,component','POST',{league,component:'odds',status:r.status,checked_at:now.toISOString(),detail:r},{prefer:'resolution=merge-duplicates,return=minimal'});
  }return requestAnalysis(ctx,report);
 }

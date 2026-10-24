@@ -1,0 +1,43 @@
+WNBA: correcciones de captura y diagnóstico (24-10-2026)
+
+Fallos reproducidos
+- La página WNBA de RotoWire usa la clase .lineup.is-nba. El lector anterior
+  aceptaba solo .is-wnba y devolvía cero quintetos. La nueva compatibilidad
+  exige además que el título identifique expresamente WNBA.
+- Se intentaba el PDF de lesiones del cuarto de hora que acababa de comenzar.
+  Un 403 desactivaba la fuente para siempre. Desde el mismo VPS, los PDFs
+  publicados de WNBA y NBA de 03:30 ET devolvieron HTTP 200 (07:30 UTC).
+
+Cambios
+- Quintetos previstos y confirmados conservan estados diferentes; cinco
+  nombres únicos, identidad de equipos y hora siguen siendo obligatorios.
+- Lectura de un cuarto de hora anterior, como máximo un intento por versión.
+  Un 404 conserva el último informe válido sin cambiar su fecha de publicación.
+- Un 403 XML AccessDenied solo se clasifica como publicación pendiente si
+  un PDF previamente validado en el mismo servidor devuelve 200 y se valida.
+  Un bloqueo real de acceso detiene el lector; no se rotan conexiones.
+- Los informes caducan a las seis horas de su publicación, aunque se relean.
+- El análisis registra por partido las proyecciones disponibles, cuotas,
+  estado de fuentes/quintetos y hora prevista de envío del resumen.
+- El último resultado de cuotas se conserva entre ticks. Cero mercados se
+  identifica como source_unavailable, no como una captura aparentemente sana.
+- El resumen de Telegram distingue quintetos previstos y disponibilidad
+  incompleta. Las probabilidades y decisiones anteriores no se reescriben.
+
+Limitaciones observadas desde el VPS en esta revisión
+- ATL–GSV, 24-10 a las 17:00 UTC: CuotasAhora mostraba el evento, pero sin
+  fila Bet365. PS3838 público no listaba WNBA. No se sustituyen marcas.
+- El PDF WNBA de 03:30 ET solo incluye a Brionna Jones (OUT, Atlanta).
+  La ausencia de filas de otro equipo no se convierte en disponibilidad
+  confirmada; permanece pendiente de evidencia suficiente.
+- Los resúmenes salen desde seis horas antes del partido. Para este evento,
+  desde 13:00 Europe/Madrid. Winamax mantiene 15:00–22:00 Europe/Madrid y
+  el presupuesto compartido de sesiones. No se navegó Winamax fuera de horario.
+- La captura no garantiza que existan actuaciones de jugadoras ofertadas ni
+  una apuesta que supere EV 10%, quintetos confirmados y demás validaciones.
+
+Pruebas focalizadas
+- Python: contexto (incluye HTML WNBA real), publicación diferida, caché,
+  antigüedad del informe, aislamiento de ligas y bloqueo de acceso real.
+- Node: filtros de contexto, mensajes, conservación de errores de cuotas,
+  petición de análisis, modelo y normalización de cuotas.

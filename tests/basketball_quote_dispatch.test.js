@@ -36,3 +36,15 @@ test('a price published hours ago qualifies when newly observed; stale captures 
 test('legacy checkpoints ignore future empty-market backoffs when finding the last browser launch',()=>{
  const last=lastStarted({checked:{old:'2026-10-23T14:55:00Z',empty:'2026-10-23T15:45:00Z'}},now);assert.equal(last,Date.parse('2026-10-23T14:55:00Z'));assert.equal(canStart(last,now),true);
 });
+
+test('empty capture evidence survives idle ticks without presenting old odds as fresh',async()=>{
+ const h=harness('odds');h.ctx.http=async()=>({status:200,body:{status:'done',result:{league:'NBA',games:[],errors:[{code:'NO_BET365_MARKETS'}]}}});
+ const first=await runOdds(h.ctx);
+ assert.equal(first.leagues.NBA.status,'source_unavailable');
+ const next=await runOdds({...h.ctx,now:new Date('2026-10-23T15:02:00Z')});
+ assert.equal(next.leagues.NBA.status,'source_unavailable');
+ assert.equal(next.leagues.NBA.latest_capture.completed_at,now.toISOString());
+ assert.equal(next.leagues.NBA.latest_capture.source_errors[0].code,'NO_BET365_MARKETS');
+ assert.equal(next.leagues.NBA.fresh_quotes,undefined);
+ assert.equal(h.analyses(),0);
+});

@@ -47,3 +47,13 @@ test('prices observed before new lineup evidence cannot generate a value alert',
  const q={quote_id:'q',league:'NBA',game_id:'g',player_id:'p',market:'points',line:12.5,selection:'over',odds:1.9,opposite_odds:1.9,bookmaker:'test',source:'test',source_url:'https://example.test',period:'full_game',includes_overtime:true,captured_at:'2026-10-23T16:58:00Z',expires_at:'2026-10-23T17:10:00Z'},pair={...q,quote_id:'u',selection:'under'};
  const a=assess(q,x.game,f.result,x.forecasts[0].result,[q,pair],now,validateQuote,x.current);assert.equal(a.qualifies,false);assert.ok(a.reasons.includes('PRICE_BEFORE_CONTEXT'));
 });
+
+test('WNBA preview labels expected lineups and incomplete reports honestly',()=>{
+ const {gameMessage}=require('../basketball/pipeline');
+ const g={league:'WNBA',home_team:'Atlanta Dream',away_team:'Golden State Valkyries',starts_at:'2026-10-24T17:00:00Z'};
+ const f={home_points:80,away_points:75,total:155,p_home:.6,p_away:.4,context:{lineups:{h:{team_name:g.home_team,lineup:'EXPECTED',injury_report_submitted:true},a:{team_name:g.away_team,lineup:'EXPECTED',injury_report_submitted:false}}}};
+ const text=gameMessage(g,f,[],[]);
+ assert.match(text,/Atlanta Dream previsto/);assert.match(text,/Golden State Valkyries previsto/);
+ assert.match(text,/Disponibilidad incompleta/);assert.match(text,/Sin cuotas verificadas/);
+ assert.doesNotMatch(text,/quintetos revisados/);
+});

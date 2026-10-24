@@ -65,7 +65,13 @@ def lineups(html,league,now):
     date=datetime.strptime(m[1],'%B %d, %Y').date()
     if abs((date-now.astimezone(ET).date()).days)>1:raise ValueError('LINEUP_DATE_STALE')
     rows=[]
-    for block in soup.select('.lineup.is-'+league.lower()):
+    selector='.lineup.is-'+league.lower()
+    # RotoWire renders its WNBA page with the shared basketball ``is-nba``
+    # class. Require explicit WNBA page identity before accepting that markup.
+    page_title=soup.title.get_text(' ',strip=True) if soup.title else ''
+    if league=='WNBA' and re.search(r'\bWNBA\b',page_title,re.I):
+        selector+=', .lineup.is-nba'
+    for block in soup.select(selector):
         teams=block.select('.lineup__teams .lineup__abbr');clock=block.select_one('.lineup__time')
         if len(teams)!=2 or not clock:continue
         try:start=datetime.strptime(date.isoformat()+' '+clock.get_text(' ',strip=True).replace(' ET',''),'%Y-%m-%d %I:%M %p').replace(tzinfo=ET).astimezone(timezone.utc)
