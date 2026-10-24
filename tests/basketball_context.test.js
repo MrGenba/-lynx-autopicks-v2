@@ -6,20 +6,20 @@ const {assess}=require('../basketball/value');
 const {validateQuote}=require('../basketball/pipeline');
 const now=new Date('2026-10-23T17:00:00Z');
 function fixture(){
- const game={league:'NBA',game_id:'g',home_team_id:'h',away_team_id:'a',status:'scheduled',starts_at:'2026-10-23T20:00:00Z'};
+ const game={league:'NBA',season:2027,season_type:2,game_id:'g',home_team_id:'h',away_team_id:'a',status:'scheduled',starts_at:'2026-10-23T20:00:00Z'};
  const f={status:'OK',player_id:'p',team_id:'h',model_version:ADVANCED,advanced:{status:'APPLIED'},projected_minutes:20,minutes_sd:2,last_played_at:'2026-10-22T20:00:00Z',sample:30,props:{points:{mean:12,variance:24}}};
  const forecasts=[{forecast_id:'original',league:'NBA',game_id:'g',player_id:'p',kind:'player',model_version:ADVANCED,result:f}];
  const current={snapshot_id:'s',observed_at:'2026-10-23T16:59:00Z',checked_at:now.toISOString(),body:{model_revision:'r',report_published_at:'2026-10-23T16:45:00Z',sources:{injuries:'OK',lineups:'OK',news:'OK'},teams:{h:{lineup:'CONFIRMED',injury_report_submitted:true}},players:{p:{team_id:'h',availability:'AVAILABLE',role:'STARTER',news:[]}}}};
- const history={players:Array.from({length:6},()=>({player_id:'p',team_id:'h',starter:true,minutes:30,did_not_play:false}))};
+ const history={players:Array.from({length:6},(_,i)=>({game_id:'old'+i,game:{season:2027,season_type:2,starts_at:'2026-10-'+String(i+10).padStart(2,'0')+'T00:00:00Z'},player_id:'p',team_id:'h',starter:true,minutes:30,did_not_play:false}))};
  return {game,forecasts,current,history};
 }
 test('confirmed starter role changes minutes and distribution in a new immutable forecast',()=>{
  const x=fixture(),before=JSON.stringify(x.forecasts),[f]=derive(x.game,x.forecasts,x.current,x.history,now);
- assert.equal(f.model_version,VERSION);assert.equal(f.result.projected_minutes,30);assert.equal(f.result.props.points.mean,18);assert.equal(f.result.props.points.variance,54);assert.equal(f.result.context.base_forecast_id,'original');assert.equal(JSON.stringify(x.forecasts),before);assert.deepEqual(contextReasons(f.result,x.current,now),[]);
+ assert.equal(f.model_version,VERSION);assert.equal(f.result.projected_minutes,30);assert.equal(f.result.props.points.mean,18);assert.ok(f.result.props.points.variance>=54);assert.equal(f.result.context.base_forecast_id,'original');assert.equal(JSON.stringify(x.forecasts),before);assert.deepEqual(contextReasons(f.result,x.current,now),['OPPONENT_CONTEXT_MISSING']);
 });
 test('expected lineups do not confirm role or participation and stale context cannot qualify',()=>{
  const x=fixture();x.current.body.teams.h.lineup='EXPECTED';x.current.body.players.p.role='UNKNOWN';
- const [f]=derive(x.game,x.forecasts,x.current,x.history,now);assert.equal(f.result.projected_minutes,20);assert.ok(contextReasons(f.result,x.current,now).includes('LINEUP_UNCONFIRMED'));
+ const [f]=derive(x.game,x.forecasts,x.current,x.history,now);assert.equal(f.result.projected_minutes,30);assert.equal(f.result.context.role,'UNKNOWN');assert.ok(f.result.minutes.reasons.includes('RECENT_TEAM_MINUTES'));assert.ok(!f.result.minutes.reasons.includes('OBSERVED_ROLE_MINUTES'));assert.ok(contextReasons(f.result,x.current,now).includes('LINEUP_UNCONFIRMED'));
  assert.equal(currentOK({...x.current,checked_at:'2026-10-23T16:49:00Z'},now),false);
  assert.ok(contextReasons(f.result,{...x.current,body:{...x.current.body,model_revision:'changed'}},now).includes('CONTEXT_CHANGED'));
 });

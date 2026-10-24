@@ -1,5 +1,6 @@
 'use strict';
 const {VERSION:CONTEXT}=require('./context');
+const {VERSION:LEGACY_CONTEXT}=require('./legacy_context');
 const {VERSION:ADVANCED}=require('./advanced_model');
 const {MODELS,PROPS}=require('./model');
 const avg=a=>a.length?a.reduce((s,x)=>s+x,0)/a.length:null;
@@ -28,7 +29,7 @@ function gameBalance(g,forecasts,players,version=CONTEXT,confirmed=false){
 }
 function evaluateBalance(games,forecasts,players){
  const result={policy:'bk-descriptive-balance-1',selection:'LAST_SEALED_PREGAME_PER_MODEL_GAME_PLAYER',models:{},games:[]};
- for(const version of [MODELS.baseline.version,MODELS.challenger.version,ADVANCED,CONTEXT])for(const confirmed of version===CONTEXT?[false,true]:[false]){
+ for(const version of [MODELS.baseline.version,MODELS.challenger.version,ADVANCED,LEGACY_CONTEXT,CONTEXT])for(const confirmed of [CONTEXT,LEGACY_CONTEXT].includes(version)?[false,true]:[false]){
   const rows=games.map(g=>gameBalance(g,forecasts,players,version,confirmed)).filter(Boolean),key=version+(confirmed?':confirmed':'');
   const ps=rows.flatMap(r=>r.players),props={};for(const k of ['minutes',...Object.keys(PROPS)])props[k]=metrics(ps.map(p=>p.errors[k]).filter(Number.isFinite));
   result.models[key]={games:rows.length,winner_correct:rows.filter(r=>r.team.correct).length,winner_accuracy:avg(rows.map(r=>Number(r.team.correct))),brier:avg(rows.map(r=>r.team.brier)),margin:metrics(rows.map(r=>r.team.margin_error)),total:metrics(rows.map(r=>r.team.total_error)),props,excluded_dnp:rows.reduce((s,r)=>s+r.excluded.dnp,0),missing_players:rows.reduce((s,r)=>s+r.excluded.missing,0)};
@@ -37,7 +38,7 @@ function evaluateBalance(games,forecasts,players){
  return result;
 }
 function message(g,forecasts,players,published=0){
- const b=gameBalance(g,forecasts,players)||gameBalance(g,forecasts,players,ADVANCED)||gameBalance(g,forecasts,players,MODELS.baseline.version);if(!b)return null;
+ const b=gameBalance(g,forecasts,players)||gameBalance(g,forecasts,players,LEGACY_CONTEXT)||gameBalance(g,forecasts,players,ADVANCED)||gameBalance(g,forecasts,players,MODELS.baseline.version);if(!b)return null;
  const fix=x=>Number(x).toFixed(1),lines=[g.league+' · balance del partido',g.away_team+' '+g.away_score+' — '+g.home_team+' '+g.home_score,
   'Último pronóstico guardado antes del inicio: '+b.team.winner+' · '+fix(100*(b.team.predicted_home?b.team.p_home:1-b.team.p_home))+'% · '+(b.team.correct?'ACIERTO':'FALLO')+'.',
   'Marcador previsto: '+b.team.predicted_score.map(fix).join(' — ')+'.',

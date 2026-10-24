@@ -21,6 +21,11 @@ test('confirmed cohort stays distinct from latest snapshot and never changes the
  const a=row('a','2026-10-23T18:00:00Z'),b=row('b','2026-10-23T19:00:00Z');b.result.context.lineups.h.lineup='UNKNOWN';const before=JSON.stringify([a,b]);
  assert.equal(latestBefore(g,[a,b],VERSION,true)[0].forecast_id,'a');assert.equal(JSON.stringify([a,b]),before);
 });
+
+test('historical context balances remain available after the active model changes',()=>{
+ const legacy=require('../basketball/legacy_context').VERSION,f=row('old','2026-10-23T19:00:00Z');f.model_version=legacy;f.result.model_version=legacy;
+ const report=evaluateBalance([g],[f],[]);assert.equal(report.models[legacy].games,1);assert.equal(report.models[VERSION].games,0);assert.match(message(g,[f],[]),/Home · 60.0%/);
+});
 test('reanalyis waits for both real quintets, has a stable key and shows adjusted projections',()=>{
  const now=new Date('2026-10-23T19:00:00Z'),game={...g,status:'scheduled'},teams={},players={},fs=[row('team',now.toISOString())];
  for(const tid of ['h','a']){const ids=Array.from({length:5},(_,i)=>tid+i);teams[tid]={lineup:'CONFIRMED',starters:ids,team_name:tid,injury_report_submitted:true};for(const id of ids){players[id]={name:id,availability:'AVAILABLE'};fs.push(row(id,now.toISOString(),id));}}

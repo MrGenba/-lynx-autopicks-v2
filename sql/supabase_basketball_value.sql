@@ -23,7 +23,7 @@ BEGIN
  SELECT * INTO STRICT f FROM bk_forecasts WHERE forecast_id=r.forecast_id;
  SELECT * INTO STRICT q FROM bk_quotes WHERE quote_id=r.quote_snapshot->>'quote_id';
  IF g.status<>'scheduled' OR now()>=g.starts_at OR r.as_of<now()-interval '2 minutes' OR r.as_of>now()+interval '1 minute' OR r.expires_at<=now() OR r.expires_at>g.starts_at THEN RAISE EXCEPTION 'VALUE_NOT_PREGAME';END IF;
- IF f.league<>g.league OR f.game_id<>g.game_id OR f.model_version<>'bk-context-opportunity-1' OR f.result->'advanced'->>'status' IS DISTINCT FROM 'APPLIED' OR coalesce(f.player_id,'game')<>r.subject THEN RAISE EXCEPTION 'VALUE_FORECAST_MISMATCH';END IF;
+ IF f.league<>g.league OR f.game_id<>g.game_id OR f.model_version NOT IN('bk-context-opportunity-1','bk-player-context-2') OR f.result->'advanced'->>'status' IS DISTINCT FROM 'APPLIED' OR coalesce(f.player_id,'game')<>r.subject THEN RAISE EXCEPTION 'VALUE_FORECAST_MISMATCH';END IF;
  SELECT * INTO c FROM bk_context_current WHERE league=g.league AND game_id=g.game_id;
  IF NOT FOUND OR c.checked_at<now()-interval '10 minutes' OR c.body->>'model_revision' IS DISTINCT FROM f.result->'context'->>'revision' OR jsonb_array_length(coalesce(f.result->'context'->'blockers','["MISSING"]'::jsonb))>0 THEN RAISE EXCEPTION 'VALUE_CONTEXT_NOT_CURRENT';END IF;
  IF (c.body->>'report_published_at')::timestamptz IS NULL OR (c.body->>'report_published_at')::timestamptz<now()-interval '6 hours' OR (c.body->>'report_published_at')::timestamptz>now() OR c.body->'sources'->>'injuries' IS DISTINCT FROM 'OK' OR c.body->'sources'->>'lineups' IS DISTINCT FROM 'OK' OR c.body->'sources'->>'news' IS DISTINCT FROM 'OK' THEN RAISE EXCEPTION 'VALUE_CONTEXT_SOURCE_UNAVAILABLE';END IF;

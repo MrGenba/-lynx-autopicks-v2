@@ -23,8 +23,8 @@ function buildReanalysis(game,forecasts,current,now,valueCheck){
    if(!row){missing++;lines.push((p?.name||pid)+': historial insuficiente para proyectar.');continue;}
    const f=row.result;forecastIds.push(row.forecast_id);adjusted+=Number(f.context.minutes_adjusted);
    const base=forecasts.find(r=>r.forecast_id===f.context.base_forecast_id)?.result;
-   const minutes=(base?fixed(base.projected_minutes)+' → ':'')+fixed(f.projected_minutes)+' min';
-   lines.push(f.player_name+': '+['points','rebounds','assists'].map(k=>fixed(f.props[k].mean)).join(' / ')+'; '+minutes+(context.unavailable(f.availability)?' · BAJA, revisar contradicción':'')+'.');
+   const minutes=(base?fixed(base.projected_minutes)+' → ':'')+fixed(f.projected_minutes)+' min'+(f.minutes?.range?' (rango '+f.minutes.range.map(fixed).join('–')+(f.minutes.staff_cap?'; límite '+f.minutes.staff_cap:'')+')':'');
+   lines.push(f.player_name+': '+['points','rebounds','assists'].map(k=>fixed(f.props[k].mean)).join(' / ')+'; '+minutes+(context.unavailable(f.availability)?' · BAJA, revisar contradicción':'')+(f.context.blockers?.includes('RETURN_MINUTES_UNCERTAIN')?' · regreso incierto: SIN APUESTA':'')+'.');
   }
  }
  lines.push('\n'+adjusted+' proyecciones de minutos ajustadas al rol con historial suficiente'+(missing?'; '+missing+' titulares sin proyección':'')+'.');
@@ -34,8 +34,8 @@ function buildReanalysis(game,forecasts,current,now,valueCheck){
  if(reasons.includes('ROTATION_IMPACT_UNMODELED'))lines.push('Impacto de bajas en la rotación sin validar: apuestas bloqueadas.');
  if(valueCheck?.qualified)lines.push(valueCheck.qualified+' selecciones superan los filtros; los avisos de valor se envían por separado con su cuota.');
  else lines.push('SIN APUESTA DE VALOR VALIDADA en esta revisión'+(!valueCheck?.assessed?': sin cuotas evaluables.':'.'));
- lines.push('EV mínimo 10%. Proyecciones experimentales condicionadas a participar; la probabilidad de equipo conserva el modelo histórico.');
- return {key,text:lines.join('\n'),expires_at:new Date(Math.min(Date.parse(game.starts_at),Date.parse(current.checked_at)+10*60000)).toISOString(),payload:{kind:'basketball_lineup_reanalysis',game_id:game.game_id,lineup_key:key,context_revision:current.body.model_revision,forecast_ids:forecastIds}};
+ lines.push('EV mínimo 10%. Rangos de minutos orientativos. Proyecciones experimentales condicionadas a participar; la probabilidad de equipo conserva el modelo histórico. Límites del staff: fuente y fecha guardadas con cada pronóstico.');
+ return {key:key+':'+context.VERSION+':'+current.body.model_revision,text:lines.join('\n'),expires_at:new Date(Math.min(Date.parse(game.starts_at),Date.parse(current.checked_at)+10*60000)).toISOString(),payload:{kind:'basketball_lineup_reanalysis',game_id:game.game_id,lineup_key:key,context_revision:current.body.model_revision,forecast_ids:forecastIds}};
 }
 async function publishReanalysis(ctx,game,forecasts,current,valueCheck){
  const item=buildReanalysis(game,forecasts,current,ctx.now,valueCheck);if(!item)return false;

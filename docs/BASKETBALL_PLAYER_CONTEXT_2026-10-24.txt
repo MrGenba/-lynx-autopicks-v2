@@ -1,0 +1,58 @@
+NBA/WNBA: opponent adjustments and workload context
+===================================================
+
+Active generation: bk-player-context-2. This is a user-requested functional
+change for future projections, not a statistically established improvement.
+Old forecasts, decisions, prices and balances remain immutable. Old context
+generations stay available for both settlement and prospective comparison.
+
+Individual forecasts apply opponent two/three-point conversion allowed,
+assists per possession and offensive/defensive rebound opportunities inferred
+from missed field goals. The player's observed shot mix and ORB/DRB shares
+determine the adjustment. Opponent samples: last 20 verified games, minimum 8;
+league prior: minimum 100 team records; factors bounded to 0.92--1.08 and
+shrunk with 400/300 attempts or 1000 possessions. Current season is preferred;
+previous season and regular-season/playoff pooling are explicitly labelled.
+No optical WNBA tracking, individual defensive assignments or measured xFG
+are invented. Expected makes are historical rates adjusted for exposure.
+
+Minutes use recent same-team games, confirmed role when known, overtime
+normalization and comparable rotations. Two missed team games flag a possible
+return (not an injury diagnosis); the first three return games use observed
+post-return minutes and retain an uncertainty block. Staff-reported returns
+also increase uncertainty. Relevant teammate absences/returns require at least
+five comparable rotation observations; otherwise value remains blocked.
+Team minutes are capped at 240 NBA / 200 WNBA without inventing missing players.
+Fresh rosters and recent team appearances can add players without old forecasts.
+
+Sources: official injury reports, confirmed/expected RotoWire lineups, and the
+public RotoWire news lead (subscription analysis is excluded). The last two
+calendar days of captured news are retained on the VPS so a restriction does
+not disappear when a story leaves the main feed. This is coverage of captured
+public news, not every staff interview. A numeric cap requires an explicit
+named-player statement, staff attribution and a matching game date. Conflicting
+caps use the smaller number and block value. Date-only news never establishes
+medical clearance. Qualitative restrictions without a cap also block value.
+Published minute ranges are indicative, not calibrated confidence intervals.
+
+Runtime: worker and n8n on the VPS; dedicated basketball PostgreSQL/PostgREST.
+No local PC runtime or baseball Supabase storage required. Context and analysis
+refresh every five minutes. Existing EV >= 10%, quote freshness, paired market,
+confirmed lineup, uncertainty and injury gates remain. Confirmed lineups or a
+changed availability/news revision trigger a separate reanalysis. Telegram
+previews display minute ranges, cap source/date and opponent adjustment status.
+
+Prospective registration: bk-player-context-prospective-2,
+2026-10-24T08:30:28.101294Z, before new live forecasts were created.
+First 200 eligible future games per league; includes discarded candidates;
+paired half-point O/U quotes with margin <=12%; immutable old context baseline
+and no-vig market; fixed 2000-resample game-level bootstrap. Both upper 95%
+bounds must be below zero. Results freeze at 200 games; no inspected test reuse,
+automatic subsequent model promotion or betting. Existing four-agent call
+budget is unchanged. No improved accuracy or profitability claim at deployment.
+
+Verification: targeted JS tests cover return minutes, teammate rotation, staff
+caps/conflicts, model generation identity, fresh roster inclusion, preservation
+of historical balances, WNBA opponent features, preview/value gates and future
+evaluation. Python tests cover public lead extraction, dates, attribution,
+numeric caps and rejecting unrelated or negated claims.

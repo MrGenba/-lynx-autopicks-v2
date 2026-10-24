@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
+from basketball.rotation_news import signals
 
 ET = ZoneInfo('America/New_York')
 def norm(s):
@@ -98,6 +99,9 @@ def news(html,league,now):
         if not 0<=(now.astimezone(ET).date()-day).days<=2:continue
         title=head.get_text(' ',strip=True)[:180];url=head.get('href') or player.get('href')
         if not url or not url.startswith(('/basketball/','/wnba/')):continue
-        rows.append({'name':player.get_text(' ',strip=True),'team':logo.get('alt'),'headline':title,'date':day.isoformat(),'date_precision':'day','source_url':'https://www.rotowire.com'+url,'status':status(inj.get_text(' ',strip=True)) if inj else 'UNVERIFIED',
-                     'availability_risk':bool(inj or re.search(r'\b(out|doubtful|questionable|suspend|injur|limited|restriction|scratch|waiv|starting|bench|resting)',title,re.I))})
+        # Only the public news lead. The subscription-only analysis is excluded.
+        lead=item.select_one('.news-update__news');summary=lead.get_text(' ',strip=True)[:1200] if lead else ''
+        rotation=signals(player.get_text(' ',strip=True),title,summary,day.isoformat())
+        rows.append({'name':player.get_text(' ',strip=True),'team':logo.get('alt'),'headline':title,'summary':summary,'rotation':rotation,'date':day.isoformat(),'date_precision':'day','source_url':'https://www.rotowire.com'+url,'status':status(inj.get_text(' ',strip=True)) if inj else 'UNVERIFIED',
+                     'availability_risk':bool(inj or rotation['rotation_risk'] or re.search(r'\b(out|doubtful|questionable|suspend|injur|scratch|waiv)',title,re.I))})
     return rows

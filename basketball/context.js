@@ -1,10 +1,14 @@
 'use strict';
-const {VERSION:ADVANCED}=require('./advanced_model');
-const {weighted,MODELS}=require('./model');
+const {VERSION:ADVANCED,buildAdvanced}=require('./advanced_model');
 const {notify}=require('./notifications');
-const VERSION='bk-context-opportunity-1';
+const legacy=require('./legacy_context');
+const minutes=require('./minutes_model');
+const matchup=require('./player_matchup');
+const {fingerprint}=require('./fingerprint');
+const VERSION='bk-player-context-2';
+const INPUT_VERSION='bk-advanced-input-2';
+const POLICY='bk-player-context-prospective-2';
 const unavailable=s=>['OUT','SUSPENDED','INACTIVE'].includes(s);
-const risky=s=>['OUT','SUSPENDED','INACTIVE','DOUBTFUL','QUESTIONABLE','CONFLICT'].includes(s);
 function currentOK(current,now){return !!current?.body?.model_revision&&Number.isFinite(Date.parse(current.checked_at))&&Date.parse(current.checked_at)<=now.getTime()+60000&&Date.parse(current.checked_at)>=now.getTime()-10*60000;}
 function contextReasons(f,current,now){
  const reasons=[];
@@ -23,35 +27,48 @@ function contextReasons(f,current,now){
  }else if(Object.values(current.body.teams).some(t=>t.lineup!=='CONFIRMED'||!t.injury_report_submitted))reasons.push('LINEUP_OR_REPORT_UNCONFIRMED');
  return [...new Set(reasons)];
 }
-function derive(game,forecasts,current,history,now){
+function derive(game,forecasts,current,history,now,comparison=[]){
  if(!currentOK(current,now))return [];
- const originals=forecasts.filter(f=>f.model_version===ADVANCED),body=current.body,revision=body.model_revision;
- const affected=originals.filter(f=>f.player_id&&f.result.projected_minutes>=10&&Date.parse(f.result.last_played_at)>now.getTime()-7*86400000&&risky(body.players[f.player_id]?.availability));
- return originals.map(row=>{
-  const f=JSON.parse(JSON.stringify(row.result)),p=body.players[row.player_id],team=body.teams[f.team_id],blockers=[];
-  f.model_version=VERSION;
-  f.context={revision,snapshot_id:current.snapshot_id,observed_at:current.observed_at,base_forecast_id:row.forecast_id,base_model:ADVANCED,report_url:body.report_url,lineup:team?.lineup||'UNKNOWN',blockers,news:p?.news||[],minutes_adjusted:false};
-  if(row.player_id){
-   f.availability=p?.availability||'UNVERIFIED';f.context.role=p?.role||'UNKNOWN';f.context.injury_reason=p?.injury_reason||null;
-   if(unavailable(f.availability)){f.projected_minutes=0;for(const prop of Object.values(f.props)){prop.mean=0;prop.variance=0;}blockers.push('PLAYER_UNAVAILABLE');}
-   else if(p?.role&&p.role!=='UNKNOWN'){
-    const rows=(history?.players||[]).filter(x=>x.player_id===row.player_id&&x.team_id===f.team_id&&!x.did_not_play&&x.minutes>0&&x.starter===(p.role==='STARTER')).slice(-10);
-    f.context.role_sample=rows.length;
-    if(rows.length>=5){const minutes=weighted(rows,x=>x.minutes,MODELS.baseline.decay),target=Math.min(game.league==='NBA'?48:40,Math.max(f.projected_minutes*.5,Math.min(f.projected_minutes*1.5,minutes.mean))),ratio=target/f.projected_minutes;
-     for(const prop of Object.values(f.props)){prop.mean*=ratio;prop.variance=Math.max(prop.mean,prop.variance*ratio*ratio);}
-     f.context.original_minutes=f.projected_minutes;f.projected_minutes=target;f.minutes_sd=Math.sqrt(minutes.variance);f.context.minutes_adjusted=true;
-    }else blockers.push('ROLE_SAMPLE_INSUFFICIENT');
-   }
-   if(affected.some(a=>a.player_id!==row.player_id&&a.result.team_id===f.team_id))blockers.push('ROTATION_IMPACT_UNMODELED');
-  }else{
-   f.context.lineups=body.teams;
-   if(affected.length)blockers.push('ROTATION_IMPACT_UNMODELED');
-   if(Object.values(body.players).some(p=>p.news_unresolved))blockers.push('NEWS_UNRESOLVED');
-  }
-  return {...row,forecast_id:['context',game.league,game.game_id,row.player_id||'team',revision].join(':'),model_version:VERSION,as_of:now.toISOString(),result:f};
+ const originals=forecasts.filter(f=>[ADVANCED,INPUT_VERSION].includes(f.model_version)),body=current.body;
+ const rows=legacy.derive(game,originals.map(r=>({...r,model_version:ADVANCED})),current,history,now).map(row=>{
+  const source=originals.find(f=>(f.player_id||null)===(row.player_id||null)),old=row.result;
+  if(!row.player_id)return {...row,result:{...old,model_version:VERSION,context:{...old.context,base_model:source.model_version}}};
+  const estimate=minutes.estimate(source.result,game,history,body,originals.map(f=>f.result),now);
+  let f=minutes.apply({...source.result,availability:old.availability,context:old.context},estimate);
+  f.context={...f.context,base_model:source.model_version,blockers:estimate.blockers,original_minutes:source.result.projected_minutes,role_sample:estimate.sample,minutes_adjusted:Math.abs(f.projected_minutes-source.result.projected_minutes)>.01};
+  f.model_version=VERSION;return {...row,result:f};
  });
+ minutes.constrainTeam(rows.filter(r=>r.player_id).map(r=>r.result),game);
+ for(const row of rows.filter(r=>r.player_id)){
+  row.result=matchup.apply(row.result,game,history,now);
+  row.result.context.minutes_adjusted=Math.abs(row.result.projected_minutes-row.result.context.original_minutes)>.01;
+  if(row.result.defense.status!=='APPLIED')row.result.context.blockers.push('OPPONENT_CONTEXT_MISSING');
+  row.result.context.blockers=[...new Set(row.result.context.blockers)];
+ }
+ const team=rows.find(r=>!r.player_id);
+ if(team&&rows.some(r=>r.result.context.blockers.some(b=>['RETURN_MINUTES_UNCERTAIN','STAFF_REPORTS_CONFLICT','STAFF_WORKLOAD_UNQUANTIFIED'].includes(b))))team.result.context.blockers.push('ROTATION_IMPACT_UNMODELED');
+ // Separate generation identity from the availability revision. Fresh historical
+ // and advanced inputs create a new immutable forecast even if lineups are stable.
+ const inputRevision=fingerprint({version:VERSION,revision:body.model_revision,players:rows.map(r=>({id:r.player_id,props:r.result.props,minutes:r.result.minutes,defense:r.result.defense,advanced:r.result.advanced,blockers:r.result.context.blockers})),team:team&&[team.result.home_points,team.result.away_points,team.result.p_home,team.result.total_variance,team.result.margin_variance]});
+ return rows.map(row=>({...row,forecast_id:[VERSION,game.league,game.game_id,row.player_id||'team',inputRevision].join(':'),model_version:VERSION,as_of:now.toISOString(),result:{...row.result,context:{...row.result.context,input_revision:inputRevision},evaluation:{protocol:POLICY,base_forecast_id:comparison.find(f=>(f.player_id||null)===(row.player_id||null))?.forecast_id||null}}}));
 }
-function latest(forecasts,current){return forecasts.filter(f=>f.model_version===VERSION&&f.result.context?.revision===current?.body?.model_revision);}
+function inputs(game,history,current,stats,forecasts,now,rosters=[]){
+ if(!currentOK(current,now))return [];
+ const roster=[game.home_team_id,game.away_team_id].map(team_id=>{
+  const fresh=rosters.find(r=>r.team_id===team_id&&r.game_id===game.game_id&&Date.parse(r.observed_at)<=now.getTime()&&Date.parse(r.observed_at)>now.getTime()-3*3600000);
+  const ids=new Set(fresh?fresh.players.map(p=>p.player_id):forecasts.filter(f=>f.model_version===ADVANCED&&f.player_id&&f.result.team_id===team_id).map(f=>f.player_id));
+  if(!fresh){
+   const recent=history.teams.filter(t=>t.team_id===team_id&&t.game.season===game.season&&Date.parse(t.game.starts_at)>now.getTime()-30*86400000).at(-1);
+   if(recent)for(const p of history.players.filter(p=>p.team_id===team_id&&p.game_id===recent.game_id))ids.add(p.player_id);
+  }
+  for(const p of Object.values(current.body.players||{}))if(p.team_id===team_id&&(p.expected_starter||p.role==='STARTER'||(p.rotation_evidence||[]).some(e=>e.returning)))ids.add(p.player_id);
+  return {team_id,players:[...ids].sort().map(player_id=>({player_id}))};
+ });
+ const eligible={games:history.games.filter(g=>[2,3].includes(g.season_type)),teams:history.teams.filter(r=>[2,3].includes(r.game.season_type)),players:history.players.filter(r=>[2,3].includes(r.game.season_type))};
+ const built=buildAdvanced(game,eligible,roster,stats,now),results=[built.team,...built.players].filter(f=>f.status==='OK');
+ return results.map(f=>{const result={...f,model_version:INPUT_VERSION};return {forecast_id:[INPUT_VERSION,game.league,game.game_id,f.player_id||'team',fingerprint(result)].join(':'),league:game.league,game_id:game.game_id,player_id:f.player_id||null,model_version:INPUT_VERSION,kind:f.player_id?'player':'team',as_of:now.toISOString(),result};});
+}
+function latest(forecasts,current){const rows=forecasts.filter(f=>f.model_version===VERSION&&f.result.context?.revision===current?.body?.model_revision).sort((a,b)=>Date.parse(b.as_of)-Date.parse(a.as_of));if(!rows.length)return [];const generation=rows[0].result.context.input_revision;return rows.filter(f=>f.result.context.input_revision===generation);}
 async function publishChanges(ctx,game,current){
  if(!currentOK(current,ctx.now))return 0;
  let sent=0;const body=current.body;
@@ -74,4 +91,4 @@ async function refresh(ctx){
  if(r.status!==200||r.body?.status==='error')throw Error('CONTEXT_CAPTURE_FAILED');
  if(r.body?.status!=='already_running'&&ctx.requestAnalysis)await ctx.requestAnalysis();return r.body;
 }
-module.exports={VERSION,currentOK,contextReasons,derive,latest,publishChanges,refresh,unavailable};
+module.exports={VERSION,INPUT_VERSION,POLICY,inputs,currentOK,contextReasons,derive,latest,publishChanges,refresh,unavailable};

@@ -2,7 +2,7 @@
 const {probability}=require('./model');
 const {VERSION}=require('./advanced_model');
 const {notify}=require('./notifications');
-const {VERSION:CONTEXT_VERSION,contextReasons}=require('./context');
+const {VERSION:CONTEXT_VERSION,contextReasons,latest}=require('./context');
 const POLICY='bk-value-estimate-2';
 const LIMITS={minEV:.10,minEdge:.04,minStressEV:.01,maxAgeMinutes:5,minOdds:1.5,maxOdds:3.5,minOverround:1,maxOverround:1.12,maxPerGame:3};
 const opposite=q=>q.selection==='over'?'under':q.selection==='under'?'over':q.selection==='home'?'away':'home';
@@ -55,7 +55,7 @@ function message(g,q,f,a){
 async function notifyValues(ctx,g,forecasts,quotes,validateQuote){
  const {now=new Date(),rest}=ctx,report={assessed:0,qualified:0,sent:0,rejected:{}};
  const prior=await rest('bk_value_alerts?league=eq.'+g.league+'&game_id=eq.'+g.game_id+'&select=alert_id,subject');
- const advanced=forecasts.filter(f=>f.model_version===CONTEXT_VERSION&&f.result.context?.revision===ctx.gameContext?.body?.model_revision),qualified=[];
+ const advanced=latest(forecasts,ctx.gameContext),qualified=[];
  for(const q of quotes){const f=advanced.find(f=>(f.player_id||null)===(q.player_id||null)),b=forecasts.find(f=>f.model_version==='bk-pace-minutes-1'&&(f.player_id||null)===(q.player_id||null));
   const a=assess(q,g,f?.result,b?.result,quotes,now,validateQuote,ctx.gameContext);report.assessed++;
   for(const r of a.reasons)report.rejected[r]=(report.rejected[r]||0)+1;

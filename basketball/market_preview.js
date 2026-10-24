@@ -7,6 +7,7 @@ const labels={points:'puntos',rebounds:'rebotes',assists:'asistencias',threes:'t
 const fixed=n=>Number(n).toFixed(1),percent=n=>fixed(100*n)+'%';
 const reasons={ADVANCED_NOT_APPLIED:'estadísticas avanzadas insuficientes',BASELINE_UNAVAILABLE:'falta contraste con modelo base',ODDS_OUTSIDE_POLICY:'cuota fuera del rango permitido',MARKET_MARGIN_INVALID:'margen de la bookie fuera del límite',MINUTES_OR_SAMPLE_UNCERTAIN:'minutos o muestra insuficientes',NO_RECENT_PARTICIPATION:'sin participación reciente',PLAYER_UNAVAILABLE:'baja o participación dudosa',EV_BELOW_THRESHOLD:'EV inferior al '+(100*LIMITS.minEV)+'%',EDGE_BELOW_THRESHOLD:'ventaja insuficiente sobre el mercado',STRESS_TEST_FAILED:'no supera el escenario adverso',BASELINE_DISAGREES:'el modelo base no confirma valor',PROBABILITY_OUTSIDE_POLICY:'probabilidad fuera del rango admitido'};
 reasons.INJURY_IDENTITY_UNRESOLVED='baja pendiente de identificar';
+Object.assign(reasons,{RETURN_MINUTES_UNCERTAIN:'carga de minutos tras el regreso sin estabilizar',STAFF_REPORTS_CONFLICT:'información del staff contradictoria',STAFF_WORKLOAD_UNQUANTIFIED:'restricción de carga sin minutos concretos',OPPONENT_CONTEXT_MISSING:'historial defensivo rival insuficiente'});
 Object.assign(reasons,{CONTEXT_STALE_OR_MISSING:'falta información reciente de disponibilidad',CONTEXT_CHANGED:'la información ha cambiado',CONTEXT_SOURCE_UNAVAILABLE:'fuente de disponibilidad incompleta',INJURY_REPORT_STALE:'informe de lesiones desactualizado',PARTICIPATION_UNCONFIRMED:'participación sin confirmar',LINEUP_UNCONFIRMED:'quinteto pendiente',LINEUP_OR_REPORT_UNCONFIRMED:'quinteto o informe pendiente',NEWS_UNRESOLVED:'noticia pendiente de contrastar',ROLE_SAMPLE_INSUFFICIENT:'historial insuficiente para este rol',ROTATION_IMPACT_UNMODELED:'impacto de las bajas en la rotación sin validar',PRICE_BEFORE_CONTEXT:'cuota leída antes del cambio de disponibilidad'});
 function forecastsFor(rows,playerId){
  const matches=rows.filter(f=>(f.player_id||null)===(playerId||null));
@@ -48,6 +49,9 @@ function marketPreviews(game,forecasts,quotes,now,validateQuote,current){
     'Pronóstico del modelo: '+(likely.q.selection==='over'?'más':'menos')+' de '+q.line+'.');
    if(a[0].p.p_push>0)lines.push('Devolución: '+percent(a[0].p.p_push)+'.');
    if(f.context)lines.push('Disponibilidad: '+f.availability+' · quinteto '+f.context.lineup+' · rol '+f.context.role+'.');
+   if(f.minutes){lines.push('Minutos: rango orientativo '+f.minutes.range.map(fixed).join('–')+(f.minutes.staff_cap?' · límite anunciado '+f.minutes.staff_cap:'')+(f.minutes.return_status!=='NORMAL'?' · regreso tras ausencia':'')+'.');
+    const e=f.minutes.staff_evidence.find(e=>e.numeric_evidence==='EXPLICIT_STAFF_CAP');if(e)lines.push('Fuente del límite ('+e.published_date+'): '+e.source_url);}
+   if(f.defense)lines.push(f.defense.status==='APPLIED'?'Incluye ajuste por tiros permitidos, asistencias y rebotes ante la defensa rival.':'Defensa rival: historial insuficiente para aplicar el ajuste.');
    const failed=[...best.gate.reasons];if(best.ev<LIMITS.minEV&&!failed.includes('EV_BELOW_THRESHOLD'))failed.push('EV_BELOW_THRESHOLD');
    lines.push(qualified?'Supera los filtros de valor; sujeto al límite de avisos por partido.':'SIN APUESTA: '+[...new Set(failed.map(r=>r==='MARKET_MARGIN_INVALID'?'margen de la bookie '+percent(1/q.odds+1/q.opposite_odds-1)+' fuera de 0–'+percent(LIMITS.maxOverround-1):reasons[r]||'validación pendiente'))].slice(0,3).join('; ')+'.');
   }

@@ -54,7 +54,13 @@ def context_for(g,known,aliases,report,lu,headlines,sources):
             players[pid]['news'].append(item)
             # Date-only headlines cannot overturn a timed official status. Unresolved
             # health/role news is a blocker, never a numeric sentiment adjustment.
-            if item['availability_risk'] and (not submitted or players[pid]['availability']=='NOT_LISTED'):
+            rotation=item.get('rotation',{})
+            applicable=rotation.get('target_date')==date
+            if applicable:
+                players[pid].setdefault('rotation_evidence',[]).append({**rotation,'source_url':item['source_url'],'published_date':item['date'],'date_precision':item.get('date_precision','day')})
+            # A sourced cap resolves the workload question, never the medical status.
+            known_cap=applicable and rotation.get('numeric_evidence')=='EXPLICIT_STAFF_CAP'
+            if item['availability_risk'] and not known_cap and (not submitted or players[pid]['availability']=='NOT_LISTED'):
                 players[pid]['news_unresolved']=True
     model_inputs={'teams':teams,'players':{pid:{k:v for k,v in p.items() if k!='injury_source'} for pid,p in players.items()},'sources':sources,'unmapped':unmapped}
     return {'policy':'bk-context-1','model_revision':digest(model_inputs),'league':g['league'],'game_id':g['game_id'],'teams':teams,'players':players,'unmapped':unmapped,'sources':sources,'report_published_at':report.get('published_at'),'report_url':report.get('source_url')}
@@ -106,7 +112,20 @@ async def run():
                         response=await fetch('rotowire_'+league+'_'+kind,'https://www.rotowire.com/'+path)
                         if response.status_code!=200:raise RuntimeError('SOURCE_HTTP_'+str(response.status_code))
                         if kind=='lineups':lu=lineups(response.text,league,now)
-                        else:ns=news(response.text,league,now)
+                        else:
+                            incoming=news(response.text,league,now)
+                            cached=await rest('bk_state?league=eq.'+league+'&component=eq.news_cache&select=detail')
+                            previous=cached[0]['detail'].get('items',[]) if cached else []
+                            # Headlines scroll off the public page; preserve recent
+                            # captured restrictions instead of silently forgetting them.
+                            items={}
+                            for item in [*previous,*incoming]:
+                                try:
+                                    age=(now.astimezone(ET).date()-datetime.fromisoformat(item['date']).date()).days
+                                except (ValueError,KeyError):continue
+                                if 0<=age<=2:items[(item['source_url'],item['date'],item['headline'])]=item
+                            ns=sorted(items.values(),key=lambda item:item['date'],reverse=True)[:500]
+                            await rest('bk_state?on_conflict=league,component',{'league':league,'component':'news_cache','checked_at':now.isoformat(),'status':'healthy','detail':{'items':ns,'retention_days':2,'max_items':500}},'resolution=merge-duplicates,return=minimal')
                         sources[kind]='OK'
                     except Exception as e:sources[kind]=str(e) if isinstance(e,(ValueError,RuntimeError)) else 'SOURCE_FAILED'
             snapshots=0

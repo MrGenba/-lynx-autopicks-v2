@@ -1,6 +1,7 @@
 'use strict';
 const {PROPS,MODELS}=require('./model');
 const {VERSION:CONTEXT}=require('./context');
+const {VERSION:LEGACY_CONTEXT}=require('./legacy_context');
 const {VERSION:ADVANCED}=require('./advanced_model');
 const reference=require('./ps3838_reference');
 const POLICY='bk-market-balance-2';
@@ -98,10 +99,10 @@ function publishedSelections(g,notifications,forecasts,players,alerts=[]){
 function evaluatedSelections(g,candidates,players){
  // Fixed descriptive policy: context > advanced > baseline; last paired pregame revision,
  // one line and the more probable side per book/subject/market. Outcomes are not consulted.
- const grouped=new Map(),rank={[CONTEXT]:3,[ADVANCED]:2,[MODELS.baseline.version]:1};
+ const grouped=new Map(),rank={[CONTEXT]:4,[LEGACY_CONTEXT]:3,[ADVANCED]:2,[MODELS.baseline.version]:1};
  for(const c of candidates){
   if(c.league!==g.league||c.game_id!==g.game_id||!rank[c.model_version]||!before(c.as_of,g)||!before(c.created_at,g)||!usableQuote(c.quote_snapshot,g,c.as_of))continue;
-  const key=[subject({...c,bookmaker:c.quote_snapshot.bookmaker}),c.quote_snapshot.source,c.model_version,c.forecast?.context?.revision||'',c.market==='spread'?Math.abs(c.line):c.line,c.quote_snapshot.captured_at].join('|');
+  const key=[subject({...c,bookmaker:c.quote_snapshot.bookmaker}),c.quote_snapshot.source,c.model_version,c.forecast?.context?.input_revision||c.forecast?.context?.revision||'',c.market==='spread'?Math.abs(c.line):c.line,c.quote_snapshot.captured_at].join('|');
   if(!grouped.has(key))grouped.set(key,[]);grouped.get(key).push(c);
  }
  const paired=[];

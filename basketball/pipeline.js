@@ -6,6 +6,7 @@ const {VERSION:ADVANCED_VERSION,buildAdvanced}=require('./advanced_model');
 const {notifyValues,canRetryValue,LIMITS}=require('./value');
 const {marketPreviews,teamMarketPreviews}=require('./market_preview');
 const context=require('./context');
+const legacyContext=require('./legacy_context');
 const reanalysis=require('./reanalysis');
 const balance=require('./balance');
 const marketBalance=require('./market_balance');
@@ -33,7 +34,7 @@ function candidate(q,g,f,now){
  if(q.source==='winamax_fr_direct'){reasons.push('WINAMAX_FR_NOT_VERIFIED_EQUIVALENT_TO_ES');if(q.detail?.schedule_offset_seconds)reasons.push('BOOKMAKER_START_DIFFERS_FROM_CALENDAR');if(!q.detail?.rules_current_version_verified)reasons.push('RULES_REFERENCE_2024_CURRENT_VERSION_UNCONFIRMED');}
  if(q.player_id&&f.availability!=='CONFIRMED')reasons.push('PLAYER_AVAILABILITY_UNVERIFIED');
  if(ev<=0)reasons.push('NO_EDGE');
- return {candidate_id:id(g.league,g.game_id,q.bookmaker,q.player_id,q.market,q.line,q.selection,f.model_version)+(f.context?.revision?':'+f.context.revision:''),league:g.league,game_id:g.game_id,player_id:q.player_id||null,model_version:f.model_version,quote_id:q.quote_id,
+ return {candidate_id:id(g.league,g.game_id,q.bookmaker,q.player_id,q.market,q.line,q.selection,f.model_version)+(f.context?.revision?':'+(f.context.input_revision||f.context.revision):''),league:g.league,game_id:g.game_id,player_id:q.player_id||null,model_version:f.model_version,quote_id:q.quote_id,
   as_of:now.toISOString(),market:q.market,line:q.line,selection:q.selection,odds:q.odds,...p,ev,verdict:ev>0?'PAPER_CANDIDATE':'NO_EDGE',reasons,quote_snapshot:q,forecast:f};
 }
 function gameMessage(g,team,players,quotes){
@@ -92,23 +93,31 @@ async function runAnalysis(ctx){
    }
    const quotes=await all(rest,'bk_quotes?league=eq.'+league+'&game_id=in.('+ids+')&expires_at=gt.'+now.toISOString()+'&order=captured_at.desc&select=*');
    const contexts=await rest('bk_context_current?league=eq.'+league+'&game_id=in.('+ids+')&select=*');
-   let contextHistory;
-   if(contexts.some(c=>context.currentOK(c,now)&&Object.values(c.body.teams).some(t=>t.lineup==='CONFIRMED')&&!existing.some(f=>f.game_id===c.game_id&&f.model_version===context.VERSION&&f.result.context?.revision===c.body.model_revision))){
+   let contextHistory,contextStats,contextRosters;
+   if(contexts.some(c=>context.currentOK(c,now))){
     const data=await rest('rpc/bk_history','POST',{p_league:league,p_team_ids:[...new Set(games.flatMap(g=>[g.home_team_id,g.away_team_id]))]});contextHistory=prepareHistory(data.games,data.teams,data.players,now,league);
+    contextStats=await all(rest,'bk_player_advanced_current?league=eq.'+league+'&select=*');
+    contextRosters=await rest('bk_rosters?league=eq.'+league+'&game_id=in.('+ids+')&observed_at=gt.'+new Date(now.getTime()-3*3600000).toISOString()+'&select=*');
    }
    const matchupProtocol=(await rest('bk_model_protocols?protocol_id=eq.'+matchup.POLICY+'&select=registered_at'))[0];
    let matchupHistory,matchupStats;
    if(matchupProtocol&&games.some(g=>Date.parse(g.starts_at)>Date.parse(matchupProtocol.registered_at)&&!existing.some(f=>f.game_id===g.game_id&&f.model_version===matchup.VERSION))){
     if(contextHistory)matchupHistory=contextHistory;else{const data=await rest('rpc/bk_history','POST',{p_league:league,p_team_ids:[...new Set(games.flatMap(g=>[g.home_team_id,g.away_team_id]))]});matchupHistory=prepareHistory(data.games,data.teams,data.players,now,league);}
-    matchupStats=await all(rest,'bk_player_advanced_current?league=eq.'+league+'&select=*');
+    matchupStats=contextStats||await all(rest,'bk_player_advanced_current?league=eq.'+league+'&select=*');
    }
    for(const g of games){
     const fs=existing.filter(f=>f.game_id===g.game_id),qs=quotes.filter(q=>q.game_id===g.game_id&&!validateQuote(q,g,now).length),candidates=[];
     const current=contexts.find(c=>c.game_id===g.game_id);
-    if(!context.latest(fs,current).length){const rows=context.derive(g,fs,current,contextHistory,now);if(rows.length){r.forecasts_sealed+=await rest('rpc/bk_seal_forecasts','POST',{p_rows:rows});fs.push(...rows);}}
+    if(contextHistory&&!legacyContext.latest(fs,current).length){const rows=legacyContext.derive(g,fs,current,contextHistory,now);if(rows.length){r.forecasts_sealed+=await rest('rpc/bk_seal_forecasts','POST',{p_rows:rows});fs.push(...rows);}}
+    if(contextHistory&&context.currentOK(current,now)){
+     const inputs=context.inputs(g,contextHistory,current,contextStats,fs,now,contextRosters),newInputs=inputs.filter(r=>!fs.some(f=>f.forecast_id===r.forecast_id));
+     if(newInputs.length){r.forecasts_sealed+=await rest('rpc/bk_seal_forecasts','POST',{p_rows:newInputs});fs.push(...newInputs);}
+     const rows=context.derive(g,inputs,current,contextHistory,now,legacyContext.latest(fs,current)).filter(r=>!fs.some(f=>f.forecast_id===r.forecast_id));
+     if(rows.length){r.forecasts_sealed+=await rest('rpc/bk_seal_forecasts','POST',{p_rows:rows});fs.push(...rows);}
+    }
     const contextual=context.latest(fs,current),valueCtx={...ctx,gameContext:current};
     if(matchupHistory&&!fs.some(f=>f.model_version===matchup.VERSION)){
-     const inputs=[...contextual,...fs.filter(f=>f.model_version===ADVANCED_VERSION&&!contextual.some(c=>c.player_id===f.player_id))];
+     const previous=legacyContext.latest(fs,current),inputs=[...previous,...fs.filter(f=>f.model_version===ADVANCED_VERSION&&!previous.some(c=>c.player_id===f.player_id))];
      const shadow=matchup.build(g,matchupHistory,inputs.map(f=>f.result),matchupStats,now).filter(f=>f.matchup.status==='APPLIED').map(f=>({forecast_id:id(league,g.game_id,f.player_id,matchup.VERSION),league,game_id:g.game_id,player_id:f.player_id,model_version:matchup.VERSION,as_of:now.toISOString(),kind:'player',result:{...f,matchup:{...f.matchup,base_forecast_id:inputs.find(b=>b.player_id===f.player_id)?.forecast_id}}}));
      if(shadow.length){r.forecasts_sealed+=await rest('rpc/bk_seal_forecasts','POST',{p_rows:shadow});fs.push(...shadow);}
     }
