@@ -22,10 +22,10 @@ function harness(task){
   throw Error('Unexpected request '+p);
  }};return {ctx,state,stored,calls,analyses:()=>analyses};
 }
-for(const [task,run]of [['odds',runOdds],['props',runProps]])test(task+' consumes completed captures promptly, triggers analysis and retains a five-minute launch limit',async()=>{
+for(const [task,run]of [['odds',runOdds],['props',runProps]])test(task+' consumes captures promptly while preserving its browser launch interval',async()=>{
  const h=harness(task),r=await run(h.ctx);assert.equal(h.stored.length,2);assert.equal(h.stored[0].captured_at,captured);assert.equal(h.analyses(),1);assert.equal(r.analysis_requested,true);assert.equal(h.calls.filter(u=>u.includes('/start?')).length,0);assert.equal(h.state.NBA.detail.job_id,null);
  await run({...h.ctx,now:new Date('2026-10-23T15:02:00Z')});assert.equal(h.analyses(),1);assert.equal(h.calls.filter(u=>u.includes('/status/')).length,1);
- await run({...h.ctx,now:new Date('2026-10-23T15:05:00Z')});assert.equal(h.calls.filter(u=>u.includes('/start?')).length,1);
+ await run({...h.ctx,now:new Date(task==='props'?'2026-10-23T16:00:00Z':'2026-10-23T15:05:00Z')});assert.equal(h.calls.filter(u=>u.includes('/start?')).length,1);
 });
 test('a price published hours ago qualifies when newly observed; stale captures still fail',()=>{
  const q={quote_id:'q',league:'NBA',game_id:'g',player_id:null,market:'moneyline',line:null,selection:'home',odds:1.9,opposite_odds:1.9,bookmaker:'bet365',source:'cuotasahora',source_url:'https://example.test',period:'full_game',includes_overtime:true,captured_at:captured,price_updated_at:'2026-10-23T05:00:00Z',expires_at:'2026-10-23T15:15:15Z'};

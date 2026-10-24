@@ -294,6 +294,28 @@ preview without prices, plus a separate confirmed-lineup key. Both sides are sho
 the independent value policy still requires 10% EV and every existing eligibility gate.
 All scheduling and delivery run in the VPS analysis workflow, not on the desktop.
 
+Winamax low-traffic observation policy (2026-10-24)
+------------------------------------------------
+Only launch browsers from 15:00 up to 22:00 Europe/Madrid, including DST changes.
+NBA and WNBA share a durable Supabase budget: one session per >=30 minutes, at most
+14 sessions per Madrid day, up to three games per session, no overlapping jobs.
+Each game is revisited at most hourly. League priority rotates between sessions.
+The one-minute n8n tick polls our own VPS/database; it is not a Winamax page visit.
+Queued worker jobs recheck the window before starting Chrome. The browser closes
+at 90 seconds or 22:00, whichever is earlier; process-tree cleanup is bounded at
+110 seconds. Errors cause a one-hour shared cooldown; access denials stop capture.
+Do not extend quote freshness or reuse afternoon prices for nocturnal value alerts.
+An overnight confirmed lineup can therefore have analysis without a fresh prop price.
+
+bk_state/props_publication records each game's inspected absence and first observed
+valid player market, with job IDs, times and market names. Failed/partial reads are
+not absent markets. First positive reads alone provide no exact publication time.
+After >=20 bounded absence-to-presence intervals on >=7 distinct Madrid dates,
+checks per game outside the conservative observed window slow to once per two hours.
+Sampling still stays within 15:00-22:00 and the shared budget. Telegram reports a
+new learned window once; unchanged observations do not generate messages.
+History is bounded to 300 games and 45 days per league. No desktop automation runs it.
+
 Player market previews now come from the analysis workflow, once per game/book.
 Each includes sealed model projections, both sides' probabilities and EV, the
 model's directional forecast and the reason a selection does not qualify. Only

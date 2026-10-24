@@ -2,7 +2,7 @@
 // Build on the trusted deployment host. Secrets are supplied by the private env file,
 // never committed or returned from a workflow execution.
 const fs=require('fs'),path=require('path');
-const MODULES=['espn','capture','model','notifications','pipeline','agents','research','odds','winamax','props','ps3838','ps3838_capture','advanced','advanced_model','value','prospective','supervisor','quote_dispatch','market_preview','context','reanalysis','balance','market_balance'];
+const MODULES=['espn','capture','model','notifications','pipeline','agents','research','odds','winamax','winamax_schedule','props','ps3838','ps3838_capture','advanced','advanced_model','value','prospective','supervisor','quote_dispatch','market_preview','context','reanalysis','balance','market_balance'];
 function bundle(){return 'const __modules={'+MODULES.map(name=>JSON.stringify(name)+':function(module,exports,require){\n'+fs.readFileSync(path.join(__dirname,name+'.js'),'utf8')+'\n}').join(',')+'};const __cache={};function __require(name){if(name.startsWith("./"))name=name.slice(2);if(!__cache[name]){const m={exports:{}};__cache[name]=m;__modules[name](m,m.exports,__require);}return __cache[name].exports;}\n';}
 function code(task,config){
  const method={context:'__require("context").refresh',capture:'__require("odds").runSnapshot',advanced:'__require("advanced").runAdvanced',odds:'__require("odds").runOdds',props:'__require("props").runProps',ps3838:'__require("ps3838_capture").runPublicOdds',analysis:'__require("pipeline").runAnalysis',research:'__require("research").runResearch',supervisor:'__require("supervisor").runSupervisor'}[task];if(!method)throw Error('UNKNOWN_TASK');
