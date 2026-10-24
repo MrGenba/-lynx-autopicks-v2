@@ -7,7 +7,7 @@ FROM python:3.12-slim
 # `tini` (2026-09-13): init de verdad como PID 1 -- ver ENTRYPOINT al final y la razon completa
 # en CLAUDE.md, seccion "APAGON DE CUOTAS: 9.458 zombis de Chrome". Verificado que el paquete
 # existe en esta base (Debian 13 trixie, tini 0.19.0) e instala /usr/bin/tini.
-RUN apt-get update && apt-get install -y --no-install-recommends curl gnupg ca-certificates tor tini \
+RUN apt-get update && apt-get install -y --no-install-recommends curl gnupg ca-certificates tor tini postgresql-client \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && test -x /usr/bin/tini \

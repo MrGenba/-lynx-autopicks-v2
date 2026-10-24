@@ -59,8 +59,8 @@ def context_for(g,known,aliases,report,lu,headlines,sources):
     return {'policy':'bk-context-1','model_revision':digest(model_inputs),'league':g['league'],'game_id':g['game_id'],'teams':teams,'players':players,'unmapped':unmapped,'sources':sources,'report_published_at':report.get('published_at'),'report_url':report.get('source_url')}
 
 async def run():
-    now=datetime.now(timezone.utc);base=os.environ['SUPABASE_URL'].rstrip('/')+'/rest/v1/'
-    headers={'apikey':os.environ['SUPABASE_KEY'],'Authorization':'Bearer '+os.environ['SUPABASE_KEY']}
+    from basketball.storage import rest_config
+    now=datetime.now(timezone.utc);base,headers=rest_config()
     async with httpx.AsyncClient(timeout=25) as client:
         async def rest(path,body=None,prefer=None):
             r=await client.request('GET' if body is None else 'POST',base+path,headers={**headers,**({'Prefer':prefer} if prefer else {})},**({'json':body} if body is not None else {}))

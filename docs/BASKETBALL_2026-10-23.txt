@@ -1,8 +1,53 @@
 NBA / WNBA parallel pipeline
 ============================
 
-Separate Supabase bk_* tables and Telegram bots/destinations. No change to baseball
-models, notifications, odds parser, calendars or data tables.
+Current storage (2026-10-24): dedicated VPS PostgreSQL database `basketball`,
+service lynx_hunter/basketball-db, with a persistent database volume and no public
+PostgreSQL port. Dedicated PostgREST service basketball-api requires its own JWT;
+anonymous access and OpenAPI discovery are disabled. Basketball collectors use
+BASKETBALL_REST_URL / BASKETBALL_REST_KEY; baseball SUPABASE_* remain unchanged.
+Workflow configuration uses restUrl for the same backend. No desktop runtime is
+required. Original deployment used separate bk_* tables in baseball's Supabase;
+the migration preserves all rows, sealed predictions, protocols and Telegram IDs.
+
+Hourly storage check and daily compressed pg_dump on persistent /app/basketball-data,
+retaining seven days after a successful verified dump. Alert at 80% disk used or
+10 GiB database size; refuse backup creation below 2 GiB free. Forecasts/decisions
+are never deleted by retention. Backups share the VPS: this is not an offsite copy.
+Deployment operations and migration receipts live in maintenance outside the repo;
+future SQL changes must be applied to the basketball VPS database, not Tipster_DB.
+
+New fixed research variant: bk-shot-matchup-1
+-----------------------------------------
+The active value model remains frozen. This variant seals separate pregame player
+forecasts and research-only candidates, including rejected markets, never value
+alerts. First forecast per player/game; no post-result fitting or rewriting.
+Uses validated shot volumes/conversion for 2P/3P/FT, separate catch-and-shoot and
+pull-up categories where coherent, and residual attempts to avoid double counting.
+Conversion shrinks to league priors. Expected makes/points are our estimates from
+aggregate shot categories, not optical expected-field-goal data or shot coordinates.
+Opportunity-based assists/rebounds use validated tracking when present; WNBA keeps
+missing tracking as NULL and falls back to explicit seasonal-rate estimates.
+Pace, projected minutes, usage and injury/lineup context enter through the sealed
+current forecast and exposure. Opponent historical allowed 2P/3P conversion,
+assisted baskets and own/opponent misses provide bounded matchup factors.
+Roster-weighted player defensive ratings are team-on-court context, not isolated
+defender talent or an inferred direct matchup. Missing roster coverage has no
+defense adjustment. Steals, blocks, OREB/DREB, fouls and turnovers are preserved as
+auditable inputs; no unsupported independent coefficient is assigned to each field.
+Source rows must match identity, season/playoff scope, games and minutes, and have
+been observed before prediction. Unavailable/ambiguous categories are excluded.
+Adjustments blend at <=25%; targets are bounded +/-25%, variance never decreases.
+
+Protocol bk-shot-matchup-prospective-1 is registered before future observations.
+Primary test: first 200 eligible future games per league; first paired half-point
+over market per player/stat, all discards included. Brier differences average within
+game, then fixed-seed bootstrap games (not correlated individual props). Both 95%
+upper bounds must be below zero against the contemporaneous sealed base forecast
+and margin-free market. No test conclusion before 200 games; freeze the result.
+No automatic promotion or bets. Existing four reviewers receive the new comparison
+within their unchanged API budget. Telegram improvement notices are deduplicated.
+Data glossary: https://www.nba.com/stats/help/glossary
 
 Data
 ----

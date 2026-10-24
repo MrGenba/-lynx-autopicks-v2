@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 import httpx
 import pandas as pd
+from basketball.storage import rest_config
 
 RELEASES = 'https://api.github.com/repos/sportsdataverse/sportsdataverse-data/releases/tags/'
 BASIC = ['advanced', 'base', 'defense', 'misc', 'scoring', 'usage']
@@ -174,9 +175,7 @@ def normalize(frame, league, season, dataset, index, asset, observed_at, quarant
 async def run():
     now = datetime.now(timezone.utc)
     observed = now.isoformat()
-    base = os.environ['SUPABASE_URL'].rstrip('/') + '/rest/v1/'
-    key = os.environ['SUPABASE_KEY']
-    headers = {'apikey': key, 'Authorization': 'Bearer ' + key}
+    base, headers = rest_config()
     reports = []
     async with httpx.AsyncClient(timeout=50, follow_redirects=True, trust_env=False) as client:
         async def rest(path, body=None, prefer=None):

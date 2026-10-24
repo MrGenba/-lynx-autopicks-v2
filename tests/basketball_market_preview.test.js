@@ -61,6 +61,7 @@ test('analysis sends a single combined preview per game/book and leaves failed-v
   }
   if(p.startsWith('bk_notifications?')||p.startsWith('bk_value_alerts?'))return [];
   if(p.startsWith('bk_context_current?'))return [];
+  if(p.startsWith('bk_model_protocols?'))return [];
   if(p.startsWith('bk_games?'))return p.includes('league=eq.NBA')&&p.includes('status=eq.scheduled')?[x.game]:[];
   if(p.startsWith('bk_forecasts?'))return x.forecasts;
   if(p.startsWith('bk_quotes?'))return x.quotes;

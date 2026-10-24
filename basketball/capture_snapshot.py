@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 from basketball.import_history import convert
 from basketball.cbs_results import refresh as refresh_results
+from basketball.storage import rest_config
 
 ROOT=Path(tempfile.gettempdir())/'lynx_basketball_snapshots'
 REGISTRIES=Path(__file__).parent/'registries'
@@ -21,8 +22,7 @@ def snapshot_url(league,season,kind):
 async def run():
     ROOT.mkdir(exist_ok=True)
     now=datetime.now(timezone.utc)
-    base=os.environ['SUPABASE_URL'].rstrip('/')+'/rest/v1/'
-    headers={'apikey':os.environ['SUPABASE_KEY'],'Authorization':'Bearer '+os.environ['SUPABASE_KEY']}
+    base,headers=rest_config()
     async with httpx.AsyncClient(timeout=40) as client:
       async def rest(path,body=None,prefer=None):
         response=await client.request('GET' if body is None else 'POST',base+path,headers={**headers,**({'Prefer':prefer} if prefer else {})},**({'json':body} if body is not None else {}))

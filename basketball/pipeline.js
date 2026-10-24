@@ -10,6 +10,7 @@ const reanalysis=require('./reanalysis');
 const balance=require('./balance');
 const marketBalance=require('./market_balance');
 const ps3838Reference=require('./ps3838_reference');
+const matchup=require('./matchup_model');
 const versions=[...Object.values(MODELS).map(x=>x.version),ADVANCED_VERSION];
 const id=(...parts)=>parts.map(p=>String(p??'team').replace(/[^A-Za-z0-9_.:-]/g,'_')).join(':');
 const fixed=n=>Number(n).toFixed(1);
@@ -90,13 +91,25 @@ async function runAnalysis(ctx){
    if(contexts.some(c=>context.currentOK(c,now)&&Object.values(c.body.teams).some(t=>t.lineup==='CONFIRMED')&&!existing.some(f=>f.game_id===c.game_id&&f.model_version===context.VERSION&&f.result.context?.revision===c.body.model_revision))){
     const data=await rest('rpc/bk_history','POST',{p_league:league,p_team_ids:[...new Set(games.flatMap(g=>[g.home_team_id,g.away_team_id]))]});contextHistory=prepareHistory(data.games,data.teams,data.players,now,league);
    }
+   const matchupProtocol=(await rest('bk_model_protocols?protocol_id=eq.'+matchup.POLICY+'&select=registered_at'))[0];
+   let matchupHistory,matchupStats;
+   if(matchupProtocol&&games.some(g=>Date.parse(g.starts_at)>Date.parse(matchupProtocol.registered_at)&&!existing.some(f=>f.game_id===g.game_id&&f.model_version===matchup.VERSION))){
+    if(contextHistory)matchupHistory=contextHistory;else{const data=await rest('rpc/bk_history','POST',{p_league:league,p_team_ids:[...new Set(games.flatMap(g=>[g.home_team_id,g.away_team_id]))]});matchupHistory=prepareHistory(data.games,data.teams,data.players,now,league);}
+    matchupStats=await all(rest,'bk_player_advanced_current?league=eq.'+league+'&select=*');
+   }
    for(const g of games){
     const fs=existing.filter(f=>f.game_id===g.game_id),qs=quotes.filter(q=>q.game_id===g.game_id&&!validateQuote(q,g,now).length),candidates=[];
     const current=contexts.find(c=>c.game_id===g.game_id);
     if(!context.latest(fs,current).length){const rows=context.derive(g,fs,current,contextHistory,now);if(rows.length){r.forecasts_sealed+=await rest('rpc/bk_seal_forecasts','POST',{p_rows:rows});fs.push(...rows);}}
     const contextual=context.latest(fs,current),valueCtx={...ctx,gameContext:current};
+    if(matchupHistory&&!fs.some(f=>f.model_version===matchup.VERSION)){
+     const inputs=[...contextual,...fs.filter(f=>f.model_version===ADVANCED_VERSION&&!contextual.some(c=>c.player_id===f.player_id))];
+     const shadow=matchup.build(g,matchupHistory,inputs.map(f=>f.result),matchupStats,now).filter(f=>f.matchup.status==='APPLIED').map(f=>({forecast_id:id(league,g.game_id,f.player_id,matchup.VERSION),league,game_id:g.game_id,player_id:f.player_id,model_version:matchup.VERSION,as_of:now.toISOString(),kind:'player',result:{...f,matchup:{...f.matchup,base_forecast_id:inputs.find(b=>b.player_id===f.player_id)?.forecast_id}}}));
+     if(shadow.length){r.forecasts_sealed+=await rest('rpc/bk_seal_forecasts','POST',{p_rows:shadow});fs.push(...shadow);}
+    }
     for(const q of qs)for(const v of versions){const f=fs.find(f=>f.model_version===v&&(f.player_id||null)===(q.player_id||null));const c=candidate(q,g,f?.result,now);if(c)candidates.push(c);}
     for(const q of qs){const f=contextual.find(f=>(f.player_id||null)===(q.player_id||null));if(!f)continue;const c=candidate(q,g,f.result,now);if(c){const blocked=context.contextReasons(f.result,current,now);c.reasons.push(...blocked);if(blocked.length)c.verdict='CONTEXT_BLOCKED';candidates.push(c);}}
+    for(const q of qs.filter(q=>q.player_id)){const f=fs.find(f=>f.model_version===matchup.VERSION&&f.player_id===q.player_id);if(!f)continue;const c=candidate(q,g,f.result,now);if(c){c.verdict='RESEARCH_ONLY';c.reasons.push('NO_AUTOMATIC_PROMOTION');candidates.push(c);}}
     for(let i=0;i<candidates.length;i+=200)r.candidates_sealed+=await rest('rpc/bk_seal_candidates','POST',{p_rows:candidates.slice(i,i+200)});
     const base=contextual.length?contextual:fs.filter(f=>f.model_version===MODELS.baseline.version),team=base.find(f=>f.kind==='team')?.result;
     if(team&&Date.parse(g.starts_at)<=now.getTime()+6*3600000&&await notify(ctx,id('preview',league,g.game_id),league,gameMessage(g,team,base.filter(f=>f.kind==='player').map(f=>f.result),qs),g.starts_at))r.notifications++;

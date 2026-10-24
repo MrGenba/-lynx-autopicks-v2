@@ -6,6 +6,7 @@ const {reviewWithAgents}=require('./agents');
 const {CONFIG:ADVANCED_CONFIG}=require('./advanced_model');
 const {PROTOCOL,compareAdvanced}=require('./prospective');
 const {evaluateBalance}=require('./balance');
+const matchup=require('./matchup_model'),matchupResearch=require('./matchup_research');
 const mean=a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:null;
 const metrics=errors=>({n:errors.length,mae:mean(errors.map(Math.abs)),rmse:errors.length?Math.sqrt(mean(errors.map(x=>x*x))):null});
 function pairedCI(differences){
@@ -41,10 +42,14 @@ async function runResearch(ctx){
   const forecasts=await all(rest,'bk_forecasts?league=eq.'+league+'&select=*'),ids=[...new Set(forecasts.map(f=>f.game_id))];
   const games=[],players=[];
   for(let i=0;i<ids.length;i+=150){const list=ids.slice(i,i+150).join(',');games.push(...await all(rest,'bk_games?league=eq.'+league+'&game_id=in.('+list+')&select=*'));players.push(...await all(rest,'bk_player_box?league=eq.'+league+'&game_id=in.('+list+')&select=game_id,player_id,stats,minutes,did_not_play'));}
-  const cs=await all(rest,'bk_candidates?league=eq.'+league+'&select=game_id,player_id,market,as_of,model_version,verdict,result,settled_at,p_win,p_push,quote_snapshot');
+  const cs=await all(rest,'bk_candidates?league=eq.'+league+'&select=candidate_id,game_id,player_id,market,selection,created_at,as_of,model_version,verdict,result,settled_at,p_win,p_push,quote_snapshot,matchup:forecast->matchup');
   const states=await rest('bk_state?league=eq.'+league+'&select=component,status,checked_at,detail');
   const protocol=(await rest('bk_model_protocols?protocol_id=eq.'+PROTOCOL+'&select=*'))[0];
   const report=evaluate(games,forecasts,players,cs);report.advanced_comparison=compareAdvanced(games,forecasts,cs,protocol,pairedCI);
+  const mp=(await rest('bk_model_protocols?protocol_id=eq.'+matchup.POLICY+'&select=*'))[0];
+  const priorMatchup=(await rest('bk_model_test_results?protocol_id=eq.'+matchup.POLICY+'&league=eq.'+league+'&select=report'))[0];
+  report.matchup_comparison=priorMatchup?.report||matchupResearch.compare(games,forecasts,players,cs,mp,pairedCI);
+  if(!priorMatchup&&report.matchup_comparison.n===200)await rest('bk_model_test_results?on_conflict=protocol_id,league','POST',{protocol_id:matchup.POLICY,league,report:report.matchup_comparison},{prefer:'resolution=ignore-duplicates,return=minimal'});
   const descriptive=evaluateBalance(games,forecasts,players.map(p=>({...p,league})));report.descriptive_balance={policy:descriptive.policy,selection:descriptive.selection,models:descriptive.models,note:'Descriptive only; confirmed-lineup revisions are not a new efficacy test. Do not reuse these observed outcomes to claim a new improvement.'};
   const testPath='bk_model_test_results?protocol_id=eq.'+PROTOCOL+'&league=eq.'+league+'&select=report';
   let frozen=(await rest(testPath))[0];
@@ -65,6 +70,7 @@ async function runResearch(ctx){
   await rest('bk_research?on_conflict=research_id','POST',{research_id:rid,league,report,ai_review:ai},{prefer:'resolution=ignore-duplicates,return=minimal'});
   if(report.comparison.improvement)await notify(ctx,league+':improvement:'+MODELS.challenger.version,league,league+' · mejora detectada\n'+MODELS.challenger.version+' reduce el error de margen frente al modelo actual en la prueba prefijada de 200 partidos futuros. IC 95% de la diferencia de error cuadrático: '+report.comparison.ci95.map(x=>x.toFixed(2)).join(' a ')+'.\nIncluye todas las predicciones, aunque no se publicaran. No demuestra rentabilidad; queda pendiente validación de los demás mercados.');
   if(report.advanced_comparison.improvement){const c=report.advanced_comparison;await notify(ctx,league+':improvement:'+PROTOCOL,league,league+' · validación prospectiva del modelo avanzado\nEn los primeros 200 partidos elegibles, mejora el Brier de ganador frente al modelo base y a las cuotas observadas sin margen. IC 95% frente a base: '+c.ci95_baseline.map(x=>x.toFixed(5)).join(' a ')+'. Frente al mercado: '+c.ci95_market.map(x=>x.toFixed(5)).join(' a ')+'.\nIncluye descartes. No demuestra rentabilidad ni mejora en actuaciones de jugadores.');}
+  if(report.matchup_comparison.improvement){const c=report.matchup_comparison;await notify(ctx,league+':improvement:'+matchup.POLICY,league,league+' · variante de tiros y defensa validada\nEn 200 partidos futuros con cuotas pareadas, mejora el Brier de actuaciones frente al modelo vigente y al mercado sin margen. IC95% vigente: '+c.ci95_current.map(x=>x.toFixed(5)).join(' a ')+'; mercado: '+c.ci95_market.map(x=>x.toFixed(5)).join(' a ')+'. Incluye descartes. La mejora no demuestra rentabilidad; promoción pendiente de revisión.');}
   if(now.getUTCDay()===1||ai.status!=='COMPLETED')await notify(ctx,rid+':research_status',league,league+' · investigación\nPrueba futura: '+report.comparison.n+'/200 partidos. '+(ai.status==='COMPLETED'?'Los cuatro agentes han revisado datos, modelo, mercado y riesgo.':'Revisión IA pendiente: '+ai.status+'.')+'\nSe incluyen descartes. Todavía sin ventaja demostrada.');
   await rest('bk_state?on_conflict=league,component','POST',{league,component:'research',checked_at:now.toISOString(),status:ai.status==='COMPLETED'?'healthy':'attention',detail:{review:ai.status,error_code:ai.error_code||null,retry_at:ai.retry_at||null,agents:ai.agents?.length||0,calls:ai.calls||0,comparison:report.comparison}},{prefer:'resolution=merge-duplicates,return=minimal'});
   reports.push({league,review:ai.status,agents:ai.agents?.length||0,comparison:report.comparison});
