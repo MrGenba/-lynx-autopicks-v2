@@ -4,10 +4,11 @@ const {all}=require('./capture');
 const {notify,retryNotifications}=require('./notifications');
 const {VERSION:ADVANCED_VERSION,buildAdvanced}=require('./advanced_model');
 const {notifyValues,canRetryValue,LIMITS}=require('./value');
-const {marketPreviews}=require('./market_preview');
+const {marketPreviews,teamMarketPreviews}=require('./market_preview');
 const context=require('./context');
 const reanalysis=require('./reanalysis');
 const balance=require('./balance');
+const marketBalance=require('./market_balance');
 const versions=[...Object.values(MODELS).map(x=>x.version),ADVANCED_VERSION];
 const id=(...parts)=>parts.map(p=>String(p??'team').replace(/[^A-Za-z0-9_.:-]/g,'_')).join(':');
 const fixed=n=>Number(n).toFixed(1);
@@ -100,19 +101,32 @@ async function runAnalysis(ctx){
     if(team&&Date.parse(g.starts_at)<=now.getTime()+6*3600000&&await notify(ctx,id('preview',league,g.game_id),league,gameMessage(g,team,base.filter(f=>f.kind==='player').map(f=>f.result),qs),g.starts_at))r.notifications++;
     if(Date.parse(g.starts_at)<=now.getTime()+6*3600000){const checked=await notifyValues(valueCtx,g,fs,quotes.filter(q=>q.game_id===g.game_id),validateQuote);r.value_alerts+=checked.sent;r.value_checks.push({game_id:g.game_id,...checked});
      const lineupKey=reanalysis.lineupKey(g,current,now);
-     for(const preview of marketPreviews(g,[...fs.filter(f=>f.model_version!==context.VERSION),...contextual],qs,now,validateQuote,current))if(await notify(ctx,lineupKey?id('props-lineup-v1',league,g.game_id,lineupKey,preview.key):id('props-analysis-v1',league,g.game_id,preview.key),league,lineupKey?preview.text.replace('pronósticos y cuotas','reanálisis con quintetos · cuotas'):preview.text,preview.expires_at,{kind:'basketball_market_preview'}))r.notifications++;
+     const pricedForecasts=[...fs.filter(f=>f.model_version!==context.VERSION),...contextual];
+     for(const preview of marketPreviews(g,pricedForecasts,qs,now,validateQuote,current))if(await notify(ctx,lineupKey?id('props-lineup-v1',league,g.game_id,lineupKey,preview.key):id('props-analysis-v1',league,g.game_id,preview.key),league,lineupKey?preview.text.replace('pronósticos y cuotas','reanálisis con quintetos · cuotas'):preview.text,preview.expires_at,preview.payload))r.notifications++;
+     for(const preview of teamMarketPreviews(g,pricedForecasts,qs,now,validateQuote,current))if(await notify(ctx,id('team-odds-v1',league,g.game_id,lineupKey||'initial',preview.key),league,preview.text,preview.expires_at,preview.payload))r.notifications++;
      r.notifications+=await context.publishChanges(ctx,g,current);
      if(await reanalysis.publishReanalysis(ctx,g,fs,current,checked))r.notifications++;
     }
    }
   }
   const finals=await rest('bk_games?league=eq.'+league+'&status=eq.final&starts_at=gt.'+new Date(now.getTime()-2*86400000).toISOString()+'&select=*');
-  for(const g of finals){const nid=id('balance-v1',league,g.game_id,g.box_complete?'box':'score');if((await rest('bk_notifications?notification_id=eq.'+nid+'&sent_at=not.is.null&select=notification_id')).length)continue;
+  for(const g of finals){const nid=id('balance-v1',league,g.game_id,g.box_complete?'box':'score'),marketId=id('market-balance-v1',league,g.game_id,g.box_complete?'box':'score');
+   const generalDone=(await rest('bk_notifications?notification_id=eq.'+nid+'&sent_at=not.is.null&select=notification_id')).length;
+   const marketPages=await rest('bk_notifications?notification_id=like.'+marketId+':*&order=created_at.asc&select=*');
+   if(generalDone&&marketPages.some(n=>n.sent_at&&n.payload.complete))continue;
    const f=await all(rest,'bk_forecasts?league=eq.'+league+'&game_id=eq.'+g.game_id+'&select=*');if(!f.length)continue;
    const players=g.box_complete?await rest('bk_player_box?league=eq.'+league+'&game_id=eq.'+g.game_id+'&select=*'):[];
-   const alerts=await rest('bk_value_alerts?league=eq.'+league+'&game_id=eq.'+g.game_id+'&select=alert_id');
+   const alerts=await rest('bk_value_alerts?league=eq.'+league+'&game_id=eq.'+g.game_id+'&select=*');
    const delivered=alerts.length?await rest('bk_notifications?notification_id=in.('+alerts.map(a=>a.alert_id).join(',')+')&sent_at=not.is.null&select=notification_id'):[];
-   const text=balance.message(g,f,players,delivered.length);if(text&&await notify(ctx,nid,league,text,null,{kind:'basketball_result_balance',game_id:g.game_id,policy:'bk-descriptive-balance-1'}))r.notifications++;}
+   const text=balance.message(g,f,players,delivered.length);if(!generalDone&&text&&await notify(ctx,nid,league,text,null,{kind:'basketball_result_balance',game_id:g.game_id,policy:'bk-descriptive-balance-1'}))r.notifications++;
+   let priced=marketPages[0]?.payload.balance;
+   if(!priced){const candidates=await all(rest,'bk_candidates?league=eq.'+league+'&game_id=eq.'+g.game_id+'&select=*');
+    const notifications=await all(rest,'bk_notifications?league=eq.'+league+'&sent_at=not.is.null&created_at=gte.'+new Date(Date.parse(g.starts_at)-24*3600000).toISOString()+'&created_at=lt.'+new Date(g.starts_at).toISOString()+'&select=*');
+    priced=marketBalance.build(g,f,players,candidates,notifications,alerts);}
+   const pages=marketBalance.messages(g,priced);
+   for(let i=0;i<pages.length;i++){const pageId=marketId+':'+(i+1);if(marketPages.some(n=>n.notification_id===pageId&&n.sent_at))continue;
+    if(await notify(ctx,pageId,league,pages[i],null,{kind:'basketball_market_balance',game_id:g.game_id,policy:marketBalance.POLICY,complete:i===pages.length-1,...(i===0?{balance:priced}:{})}))r.notifications++;else break;}
+  }
   await rest('bk_state?on_conflict=league,component','POST',{league,component:'analysis',checked_at:now.toISOString(),status:r.insufficient_history||r.blocked_missing_recent_stats?'partial':'healthy',detail:r},{prefer:'resolution=merge-duplicates,return=minimal'});
   if(await notify(ctx,id('value-enabled',league,ADVANCED_VERSION),league,league+' · avisos de valor estimado activados\nEl análisis corre en el VPS cada 5 minutos y utiliza estadísticas avanzadas validadas.\nFiltro: cuota observada hace menos de 5 minutos, EV estimado ≥'+(100*LIMITS.minEV)+'%, ventaja ≥4 puntos porcentuales frente al mercado sin margen y escenario adverso positivo.\nLas alertas indicarán las condiciones de participación y la fuente de la cuota. Modelo experimental: rentabilidad aún no demostrada.'))r.notifications++;
  }return report;

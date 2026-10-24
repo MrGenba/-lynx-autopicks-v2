@@ -277,6 +277,23 @@ cannot downgrade a CBS final. Access denials stop this source without IP rotatio
 Descriptive context balances join the scheduled research packet without changing
 the existing prospective protocol or claiming a better model from these games.
 
+2026-10-24 follow-up: market balances now show the exact player line, direction,
+bookmaker, price, projection and observed result. Previously delivered previews
+are recovered from their saved text; future previews seal structured selections
+and quote snapshots in the delivery payload. Current mutable quotes never replace
+historical delivered prices. One last delivered revision per book/subject/market
+is counted; unpublished candidates, informational previews and actual value alerts
+remain distinct. DNP and missing data are not losses; integer pushes are retained.
+Optional 1-unit simulations are expressly hypothetical, with no real-money claim.
+The separate descriptive candidate cohort uses context > advanced > baseline,
+then latest paired pregame revision and most probable side, including discards.
+It excludes delayed/reference PS3838 prices and any row sealed after tip-off.
+Telegram result pages have stable keys, saved evidence and delivery receipts.
+Team odds now have an independent notification when they arrive after an initial
+preview without prices, plus a separate confirmed-lineup key. Both sides are shown;
+the independent value policy still requires 10% EV and every existing eligibility gate.
+All scheduling and delivery run in the VPS analysis workflow, not on the desktop.
+
 Player market previews now come from the analysis workflow, once per game/book.
 Each includes sealed model projections, both sides' probabilities and EV, the
 model's directional forecast and the reason a selection does not qualify. Only

@@ -54,8 +54,37 @@ function marketPreviews(game,forecasts,quotes,now,validateQuote,current){
   lines.push('\nResumen de '+selected.length+' jugadores. Las alertas de valor revisan todos los mercados y exigen EV ≥'+(100*LIMITS.minEV)+'% y el resto de filtros.',
    'Proyecciones condicionadas a participar. La disponibilidad y el quinteto solo están confirmados cuando se indica expresamente. Horas de Madrid. Modelo experimental.');
   if(selected.some(e=>e.q.source==='winamax_fr_direct'))lines.push('Winamax.fr: equivalencia con España y versión actual de las reglas sin verificar.');
-  messages.push({key,text:lines.join('\n'),expires_at:new Date(Math.min(Date.parse(game.starts_at),...selected.flatMap(e=>[Date.parse(e.q.expires_at),Date.parse(e.q.captured_at)+LIMITS.maxAgeMinutes*60000]))).toISOString()});
+  const selections=selected.map(({q,f,assessments:a})=>{const likely=a[0].p.p_win>=a[1].p.p_win?a[0]:a[1];return {player_name:f.player_name,forecast_id:rows.find(r=>r.result===f)?.forecast_id,model_version:f.model_version,projected:f.props[q.market].mean,p_win:likely.p.p_win,quote_snapshot:likely.q};});
+  messages.push({key,text:lines.join('\n'),payload:{kind:'basketball_market_preview',game_id:game.game_id,selections},expires_at:new Date(Math.min(Date.parse(game.starts_at),...selected.flatMap(e=>[Date.parse(e.q.expires_at),Date.parse(e.q.captured_at)+LIMITS.maxAgeMinutes*60000]))).toISOString()});
  }
  return messages;
 }
-module.exports={marketPreviews};
+function teamMarketPreviews(game,forecasts,quotes,now,validateQuote,current){
+ const {forecast:f,base}=forecastsFor(forecasts.filter(r=>r.league===game.league&&r.game_id===game.game_id),null);if(f?.status!=='OK')return [];
+ const groups=new Map();
+ for(const q of quotes){
+  if(q.player_id||!['home','over'].includes(q.selection)||validateQuote(q,game,now).length||Date.parse(q.captured_at)<now.getTime()-LIMITS.maxAgeMinutes*60000)continue;
+  const pair=pairFor(q,quotes);if(!pair||validateQuote(pair,game,now).length||pair.odds!==q.opposite_odds||pair.opposite_odds!==q.odds)continue;
+  const key=q.bookmaker+':'+q.source;if(!groups.has(key))groups.set(key,[]);groups.get(key).push({q,pair});
+ }
+ const messages=[];
+ for(const [key,entries]of groups){
+  entries.sort((a,b)=>Date.parse(b.q.captured_at)-Date.parse(a.q.captured_at)||String(a.q.quote_id).localeCompare(String(b.q.quote_id)));
+  const seen=new Set(),selected=entries.filter(e=>{if(seen.has(e.q.market))return false;seen.add(e.q.market);return true;});
+  const lines=[game.league+' · pronósticos y cuotas de partido · '+selected[0].q.bookmaker,game.away_team+' @ '+game.home_team],selections=[];
+  for(const {q,pair}of selected){
+   const a=[q,pair].map(price=>({q:price,p:probability(price,f),gate:assess(price,game,f,base,quotes,now,validateQuote,current)}));
+   if(a.some(x=>!Number.isFinite(x.p.p_win)))continue;
+   const likely=a[0].p.p_win>=a[1].p.p_win?a[0]:a[1],name=price=>price.market==='total'?(price.selection==='over'?'Más de ':'Menos de ')+price.line:(price.selection==='home'?game.home_team:game.away_team)+(price.market==='spread'?' '+(price.line>0?'+':'')+price.line:'');
+   const time=new Date(q.captured_at).toLocaleTimeString('es-ES',{timeZone:'Europe/Madrid',hour:'2-digit',minute:'2-digit'});
+   lines.push('\n'+({moneyline:'Ganador',spread:'Hándicap',total:'Total'}[q.market])+' · lectura '+time+' (Madrid)',name(q)+' @'+q.odds.toFixed(2)+' / '+name(pair)+' @'+pair.odds.toFixed(2),
+    'Pronóstico: '+name(likely.q)+' · '+percent(likely.p.p_win)+'.',a.some(x=>x.gate.qualifies)&&f.model_version===context.VERSION?'Supera los filtros; aviso de valor por separado.':'SIN APUESTA DE VALOR VALIDADA.');
+   selections.push({forecast_id:forecasts.find(r=>r.result===f)?.forecast_id,model_version:f.model_version,p_win:likely.p.p_win,quote_snapshot:likely.q});
+  }
+  if(!selections.length)continue;
+  lines.push('\nCuotas observadas prepartido; pronósticos informativos. EV mínimo 10% y todos los filtros para publicar una apuesta.');
+  messages.push({key,text:lines.join('\n'),payload:{kind:'basketball_team_market_preview',game_id:game.game_id,selections},expires_at:new Date(Math.min(Date.parse(game.starts_at),...selections.map(s=>Date.parse(s.quote_snapshot.captured_at)+LIMITS.maxAgeMinutes*60000))).toISOString()});
+ }
+ return messages;
+}
+module.exports={marketPreviews,teamMarketPreviews};
