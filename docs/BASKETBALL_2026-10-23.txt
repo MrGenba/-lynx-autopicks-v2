@@ -294,6 +294,30 @@ preview without prices, plus a separate confirmed-lineup key. Both sides are sho
 the independent value policy still requires 10% EV and every existing eligibility gate.
 All scheduling and delivery run in the VPS analysis workflow, not on the desktop.
 
+2026-10-24: market balance v2 shows net units for each selection, won units,
+lost units, settled stake, gross return and ROI. Fixed illustrative stake: 1u;
+win = odds-1, loss = -1, push/DNP/void = 0; missing observations are not losses.
+DNP/void are excluded from settled stake. Odds retain three decimal places when
+supplied. bk_state/units_ledger contains the cumulative ledger per league. Only
+delivered complete result receipts enter it, one latest complete box per game;
+old versions, score-only revisions and discarded candidates are not added again.
+Informational forecasts and delivered value alerts have separate subtotals.
+Telegram sends the cumulative summary only when its source receipts change.
+
+PS3838 reference previews now show paired team and player quotes separately from
+the value flow, with delayed/unknown-update-time/overtime-unverified labels.
+Team and player deliveries have independent keys so later props are not suppressed
+by an earlier team quote. Observations expire after 15 minutes or at tip-off.
+The existing analysis task sends these previews, including confirmed-lineup keys;
+no extra scraper sessions are introduced. PS3838 still cannot pass the value gate.
+Historical comparisons use only the exact player, line and direction actually
+delivered in another book's preview, and the latest stored paired PS3838 observation
+before tip-off. They are explicitly retrospective references, never reconstructed
+published PS3838 bets. Missing equivalent prices stay missing; unmapped identities,
+incoherent pairs and post-start observations are excluded. Unknown overtime rules
+block unit settlement when periods are unknown or exceed four. The reference
+subtotal is separate from delivered-price units. Saved balance evidence is immutable.
+
 Winamax low-traffic observation policy (2026-10-24)
 ------------------------------------------------
 Only launch browsers from 15:00 up to 22:00 Europe/Madrid, including DST changes.

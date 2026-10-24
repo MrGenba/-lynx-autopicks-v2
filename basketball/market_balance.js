@@ -2,7 +2,8 @@
 const {PROPS,MODELS}=require('./model');
 const {VERSION:CONTEXT}=require('./context');
 const {VERSION:ADVANCED}=require('./advanced_model');
-const POLICY='bk-market-balance-1';
+const reference=require('./ps3838_reference');
+const POLICY='bk-market-balance-2';
 const labels={points:'puntos',rebounds:'rebotes',assists:'asistencias',threes:'triples',pra:'P+R+A',pr:'P+R',pa:'P+A',ra:'R+A',moneyline:'ganador',total:'total',spread:'hándicap'};
 const fixed=x=>Number.isFinite(x)?x.toFixed(2):'—';
 const before=(t,g)=>Number.isFinite(Date.parse(t))&&Date.parse(t)<Date.parse(g.starts_at);
@@ -34,9 +35,24 @@ function settle(g,row,players){
  return {...row,actual,result,paper_units:result==='WIN'?row.odds-1:result==='LOSS'?-1:['PUSH','DNP','VOID'].includes(result)?0:null};
 }
 function summary(rows){
- const counts={WIN:0,LOSS:0,PUSH:0,DNP:0,VOID:0,MISSING:0,PENDING:0};for(const r of rows)counts[r.result]++;
- const n=counts.WIN+counts.LOSS,staked=n+counts.PUSH,units=rows.reduce((s,r)=>s+(r.paper_units??0),0);
- return {...counts,total:rows.length,accuracy:n?counts.WIN/n:null,paper_staked:staked,paper_units:units,paper_roi:staked?units/staked:null};
+ const counts={WIN:0,LOSS:0,PUSH:0,DNP:0,VOID:0,MISSING:0,PENDING:0,RULES_UNVERIFIED:0};for(const r of rows)counts[r.result]++;
+ const n=counts.WIN+counts.LOSS,staked=n+counts.PUSH,won=rows.filter(r=>r.result==='WIN').reduce((s,r)=>s+r.odds-1,0),lost=counts.LOSS,units=won-lost;
+ return {...counts,total:rows.length,accuracy:n?counts.WIN/n:null,paper_staked:staked,paper_won:won,paper_lost:lost,paper_returned:staked+units,paper_units:units,paper_roi:staked?units/staked:null};
+}
+function byBook(rows){return Object.fromEntries([...new Set(rows.map(r=>r.bookmaker))].sort().map(book=>[book,summary(rows.filter(r=>r.bookmaker===book))]));}
+function referenceComparison(g,published,quotes,players){
+ const entries=reference.pairs(g,quotes),rows=[],missing=[];
+ // Compare ONLY the already delivered direction and exact line. This does not
+ // invent a historical PS3838 forecast or replace the original delivered price.
+ for(const original of published){
+  const q=entries.flatMap(e=>[e.q,e.pair]).find(q=>(q.player_id||null)===(original.player_id||null)&&q.market===original.market&&q.line===original.line&&q.selection===original.selection&&
+   (!q.player_id||reference.norm(q.detail.player_name)===reference.norm(original.player_name)));
+  if(!q){missing.push({notification_id:original.notification_id,player_id:original.player_id,market:original.market,line:original.line,selection:original.selection});continue;}
+  let row=settle(g,{...original,...q,origin:'RETROSPECTIVE_REFERENCE_COMPARISON',original_bookmaker:original.bookmaker,original_odds:original.odds,reference_only:true},players);
+  if(g.status==='final'&&q.includes_overtime!==true&&g.periods!==4)row={...row,actual:null,result:'RULES_UNVERIFIED',paper_units:null};
+  rows.push(row);
+ }
+ return {rows,missing,team_pairs:reference.teamPairs(entries),summary:summary(rows)};
 }
 // Read the exact historical text for older deliveries that did not seal structured selections.
 // Prices, side and line come from that message, never from mutable current quotes.
@@ -100,19 +116,21 @@ function evaluatedSelections(g,candidates,players){
  const latest=new Map();for(const r of paired)latest.set(subject(r),r);
  return [...latest.values()].map(r=>settle(g,r,players));
 }
-function build(g,forecasts,players,candidates,notifications,alerts=[]){
+function build(g,forecasts,players,candidates,notifications,alerts=[],quotes=[]){
  const published=publishedSelections(g,notifications,forecasts,players,alerts),evaluated=evaluatedSelections(g,candidates,players);
- return {policy:POLICY,game_id:g.game_id,league:g.league,published:published.informational,value:published.value,evaluated,
+ return {policy:POLICY,game_id:g.game_id,league:g.league,box_complete:!!g.box_complete,published:published.informational,value:published.value,evaluated,reference:referenceComparison(g,published.informational,quotes,players),
   summaries:{published:summary(published.informational),value:summary(published.value),evaluated:summary(evaluated),player_published:summary(published.informational.filter(r=>r.player_id)),player_evaluated:summary(evaluated.filter(r=>r.player_id))}};
 }
 function selectionText(g,r){return r.player_id?r.player_name+' · '+labels[r.market]+' '+(r.selection==='over'?'más de ':'menos de ')+r.line:
  r.market==='total'?'Total '+(r.selection==='over'?'más de ':'menos de ')+r.line:(r.selection==='home'?g.home_team:g.away_team)+(r.market==='spread'?' '+(r.line>0?'+':'')+r.line:' gana');}
 function rowText(g,r){
- const outcomes={WIN:'ACIERTO',LOSS:'FALLO',PUSH:'DEVOLUCIÓN',DNP:'SIN PARTICIPACIÓN',VOID:'ANULADO',MISSING:'SIN DATO VALIDADO',PENDING:'PENDIENTE'};
- return selectionText(g,r)+'\n'+r.bookmaker+' @'+fixed(r.odds)+(Number.isFinite(r.projected)&&r.player_id?' · proy. '+r.projected.toFixed(1):'')+' · real '+actualText(g,r)+' · '+outcomes[r.result]+'.';
+ const outcomes={WIN:'ACIERTO',LOSS:'FALLO',PUSH:'DEVOLUCIÓN',DNP:'SIN PARTICIPACIÓN',VOID:'ANULADO',MISSING:'SIN DATO VALIDADO',PENDING:'PENDIENTE',RULES_UNVERIFIED:'PRÓRROGA SIN REGLAS VALIDADAS'};
+ return selectionText(g,r)+'\n'+r.bookmaker+' @'+reference.price(r.odds)+(Number.isFinite(r.projected)&&r.player_id?' · proy. '+r.projected.toFixed(1):'')+' · real '+actualText(g,r)+' · '+outcomes[r.result]+' · '+unitsText(r.paper_units)+'.';
 }
+function unitsText(n){return Number.isFinite(n)?(n>=0?'+':'')+fixed(n)+' u':'sin liquidar';}
+function accounting(s){return 'Ganadas +'+fixed(s.paper_won)+' u · perdidas −'+fixed(s.paper_lost)+' u · neto '+unitsText(s.paper_units)+'\nBase liquidada '+s.paper_staked+' u · retorno '+fixed(s.paper_returned)+' u · ROI '+(s.paper_roi===null?'—':fixed(100*s.paper_roi)+'%')+'.';}
 function actualText(g,r){return r.actual===null||r.actual===undefined?'—':!r.player_id&&r.market==='moneyline'?g.away_score+'–'+g.home_score:!r.player_id&&r.market==='spread'?'margen '+(r.selection==='home'?r.actual:-r.actual):String(r.actual);}
-function summaryText(s){return s.WIN+' aciertos / '+s.LOSS+' fallos'+(s.PUSH?' / '+s.PUSH+' devoluciones':'')+(s.DNP?' / '+s.DNP+' sin participación':'')+(s.MISSING?' / '+s.MISSING+' sin dato':'')+'; '+(s.accuracy===null?'sin resueltos':(100*s.accuracy).toFixed(1)+'% de acierto')+'.';}
+function summaryText(s){return s.WIN+' aciertos / '+s.LOSS+' fallos'+(s.PUSH?' / '+s.PUSH+' devoluciones':'')+(s.DNP?' / '+s.DNP+' sin participación':'')+(s.MISSING?' / '+s.MISSING+' sin dato':'')+(s.RULES_UNVERIFIED?' / '+s.RULES_UNVERIFIED+' sin reglas de prórroga':'')+'; '+(s.accuracy===null?'sin resueltos':(100*s.accuracy).toFixed(1)+'% de acierto')+'.';}
 function messages(g,b){
  const header=g.league+' · balance de cuotas y actuaciones\n'+g.away_team+' '+g.away_score+' — '+g.home_team+' '+g.home_score;
  const sections=['Pronósticos informativos enviados por Telegram (última revisión por jugador/mercado/casa):',...b.published.map(r=>rowText(g,r))];
@@ -120,11 +138,39 @@ function messages(g,b){
  const team=b.evaluated.filter(r=>!r.player_id&&r.bookmaker==='bet365');
  if(team.length)sections.push('Partido · cuotas históricas Bet365 evaluadas (no acreditan una apuesta publicada):',...team.map(r=>rowText(g,r)));
  sections.push('Actuaciones enviadas: '+summaryText(b.summaries.player_published));
- if(b.summaries.player_published.paper_staked)sections.push('Simulación de 1 unidad por actuación enviada: '+(b.summaries.player_published.paper_units>=0?'+':'')+fixed(b.summaries.player_published.paper_units)+' u; ROI '+fixed(100*b.summaries.player_published.paper_roi)+'%. No es dinero apostado.');
- sections.push('Todos los mercados de jugadores evaluados, incluidos descartes: '+summaryText(b.summaries.player_evaluated));
+ sections.push('Simulación de 1 unidad por selección enviada (jugadores y partidos):\n'+accounting(b.summaries.published)+' No es dinero apostado.');
+ for(const [book,s]of Object.entries(byBook(b.published)))sections.push(book+' · enviados: '+summaryText(s)+'\n'+accounting(s));
+ sections.push('Todos los mercados de jugadores evaluados, incluidos descartes (cohorte distinta; no sumar al enviado): '+summaryText(b.summaries.player_evaluated)+'\n'+accounting(b.summaries.player_evaluated));
  if(b.value.length)sections.push('Alertas de valor entregadas:',...b.value.map(r=>rowText(g,r)));
+ if(b.value.length)sections.push('Saldo de alertas de valor (1 u): '+accounting(b.summaries.value));
  sections.push('Alertas de valor entregadas: '+b.value.length+'. Los pronósticos «sin apuesta» siguen siendo informativos. DNP excluidos del acierto; las reglas vigentes de la casa pueden afectar la liquidación real.');
+ if(b.reference?.team_pairs.length||b.reference?.rows.length){
+  sections.push('PS3838 · referencias retrasadas observadas antes del partido. No eran apuestas publicadas ni precios de ejecución confirmados; comparación retrospectiva separada.');
+  sections.push(...b.reference.team_pairs.map(e=>reference.pairText(g,e)));
+  sections.push(...b.reference.rows.map(r=>rowText(g,r)+' Misma línea y dirección del pronóstico enviado; precio PS3838 observado '+new Date(r.captured_at).toLocaleTimeString('es-ES',{timeZone:'Europe/Madrid',hour:'2-digit',minute:'2-digit'})+' (Madrid).'));
+  sections.push('Comparación PS3838 de los enviados: '+summaryText(b.reference.summary)+'\n'+accounting(b.reference.summary)+'\nSin cuota PS3838 equivalente: '+b.reference.missing.length+'. No se suma al saldo enviado.');
+ }else sections.push('PS3838: sin pareja de cuotas prepartido válida para mostrar; no se inventa una cuota.');
  const pages=[];let text=header;for(const section of sections){if(text.length+section.length+2>3600){pages.push(text);text=header+' · continuación';}text+='\n\n'+section;}pages.push(text);
  return pages;
 }
-module.exports={POLICY,labels,usableQuote,settle,summary,legacySelections,publishedSelections,evaluatedSelections,build,selectionText,actualText,messages};
+function ledger(notifications,league){
+ const groups=new Map();
+ for(const n of notifications){if(n.league!==league||!n.sent_at||n.payload?.kind!=='basketball_market_balance')continue;
+  const prefix=n.notification_id.replace(/:\d+$/,'');if(!groups.has(prefix))groups.set(prefix,[]);groups.get(prefix).push(n);}
+ const latest=new Map();
+ const complete=[...groups.values()].filter(ns=>ns.some(n=>n.payload.complete)).map(ns=>ns.find(n=>n.payload.balance)).filter(Boolean);
+ complete.sort((a,b)=>Number(a.payload.balance.box_complete??a.notification_id.includes(':box:'))-Number(b.payload.balance.box_complete??b.notification_id.includes(':box:'))||Date.parse(a.created_at)-Date.parse(b.created_at)||a.notification_id.localeCompare(b.notification_id));
+ for(const n of complete)latest.set(n.payload.balance.game_id,n);
+ const sources=[...latest.values()].sort((a,b)=>a.notification_id.localeCompare(b.notification_id)),balances=sources.map(n=>n.payload.balance),published=balances.flatMap(b=>b.published),value=balances.flatMap(b=>b.value),references=balances.flatMap(b=>b.reference?.rows||[]);
+ const signature=sources.map(n=>n.notification_id).join('|');let hash=2166136261;for(const c of signature)hash=Math.imul(hash^c.charCodeAt(0),16777619)>>>0;
+ return {policy:POLICY,league,games:balances.length,source_ids:sources.map(n=>n.notification_id),signature:hash.toString(16),published:summary(published),players:summary(published.filter(r=>r.player_id)),teams:summary(published.filter(r=>!r.player_id)),value:summary(value),by_book:byBook(published),reference:summary(references),reference_missing:balances.reduce((s,b)=>s+(b.reference?.missing.length||0),0)};
+}
+function ledgerMessage(l){return [l.league+' · acumulado de unidades · '+l.games+' partidos',
+ 'Simulación de 1 unidad fija por selección enviada; cada revisión sustituye la anterior para el recuento.',
+ 'Pronósticos informativos enviados: '+summaryText(l.published),accounting(l.published),
+ ...Object.entries(l.by_book).map(([book,s])=>book+': '+s.WIN+' A / '+s.LOSS+' F · '+unitsText(s.paper_units)),
+ 'Alertas de valor entregadas: '+l.value.total+' · '+summaryText(l.value)+'\n'+accounting(l.value),
+ ...(l.reference.total?['PS3838 · comparación retrospectiva de las mismas selecciones/líneas con referencias retrasadas: '+summaryText(l.reference)+'\n'+accounting(l.reference)+'\nSin cuota equivalente: '+l.reference_missing+'. Este subtotal no se suma al anterior.']:[]),
+ 'Los descartes no se suman al saldo publicado. DNP/anulados: 0 u; sin datos o reglas: sin liquidar. No acredita apuestas realizadas ni rentabilidad futura.'
+ ].join('\n\n');}
+module.exports={POLICY,labels,usableQuote,settle,summary,byBook,referenceComparison,legacySelections,publishedSelections,evaluatedSelections,build,selectionText,actualText,unitsText,accounting,messages,ledger,ledgerMessage};

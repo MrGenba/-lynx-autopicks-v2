@@ -9,6 +9,7 @@ const context=require('./context');
 const reanalysis=require('./reanalysis');
 const balance=require('./balance');
 const marketBalance=require('./market_balance');
+const ps3838Reference=require('./ps3838_reference');
 const versions=[...Object.values(MODELS).map(x=>x.version),ADVANCED_VERSION];
 const id=(...parts)=>parts.map(p=>String(p??'team').replace(/[^A-Za-z0-9_.:-]/g,'_')).join(':');
 const fixed=n=>Number(n).toFixed(1);
@@ -104,13 +105,14 @@ async function runAnalysis(ctx){
      const pricedForecasts=[...fs.filter(f=>f.model_version!==context.VERSION),...contextual];
      for(const preview of marketPreviews(g,pricedForecasts,qs,now,validateQuote,current))if(await notify(ctx,lineupKey?id('props-lineup-v1',league,g.game_id,lineupKey,preview.key):id('props-analysis-v1',league,g.game_id,preview.key),league,lineupKey?preview.text.replace('pronósticos y cuotas','reanálisis con quintetos · cuotas'):preview.text,preview.expires_at,preview.payload))r.notifications++;
      for(const preview of teamMarketPreviews(g,pricedForecasts,qs,now,validateQuote,current))if(await notify(ctx,id('team-odds-v1',league,g.game_id,lineupKey||'initial',preview.key),league,preview.text,preview.expires_at,preview.payload))r.notifications++;
+     for(const preview of ps3838Reference.previews(g,pricedForecasts,quotes.filter(q=>q.game_id===g.game_id),now))if(await notify(ctx,id('ps3838-reference-v1',league,g.game_id,lineupKey||'initial',preview.key),league,preview.text,preview.expires_at,preview.payload))r.notifications++;
      r.notifications+=await context.publishChanges(ctx,g,current);
      if(await reanalysis.publishReanalysis(ctx,g,fs,current,checked))r.notifications++;
     }
    }
   }
   const finals=await rest('bk_games?league=eq.'+league+'&status=eq.final&starts_at=gt.'+new Date(now.getTime()-2*86400000).toISOString()+'&select=*');
-  for(const g of finals){const nid=id('balance-v1',league,g.game_id,g.box_complete?'box':'score'),marketId=id('market-balance-v1',league,g.game_id,g.box_complete?'box':'score');
+  for(const g of finals){const nid=id('balance-v1',league,g.game_id,g.box_complete?'box':'score'),marketId=id('market-balance-v2',league,g.game_id,g.box_complete?'box':'score');
    const generalDone=(await rest('bk_notifications?notification_id=eq.'+nid+'&sent_at=not.is.null&select=notification_id')).length;
    const marketPages=await rest('bk_notifications?notification_id=like.'+marketId+':*&order=created_at.asc&select=*');
    if(generalDone&&marketPages.some(n=>n.sent_at&&n.payload.complete))continue;
@@ -122,10 +124,17 @@ async function runAnalysis(ctx){
    let priced=marketPages[0]?.payload.balance;
    if(!priced){const candidates=await all(rest,'bk_candidates?league=eq.'+league+'&game_id=eq.'+g.game_id+'&select=*');
     const notifications=await all(rest,'bk_notifications?league=eq.'+league+'&sent_at=not.is.null&created_at=gte.'+new Date(Date.parse(g.starts_at)-24*3600000).toISOString()+'&created_at=lt.'+new Date(g.starts_at).toISOString()+'&select=*');
-    priced=marketBalance.build(g,f,players,candidates,notifications,alerts);}
+    const references=await all(rest,'bk_quotes?league=eq.'+league+'&game_id=eq.'+g.game_id+'&bookmaker=eq.ps3838&captured_at=lt.'+new Date(g.starts_at).toISOString()+'&select=*');
+    priced=marketBalance.build(g,f,players,candidates,notifications,alerts,references);}
    const pages=marketBalance.messages(g,priced);
    for(let i=0;i<pages.length;i++){const pageId=marketId+':'+(i+1);if(marketPages.some(n=>n.notification_id===pageId&&n.sent_at))continue;
     if(await notify(ctx,pageId,league,pages[i],null,{kind:'basketball_market_balance',game_id:g.game_id,policy:marketBalance.POLICY,complete:i===pages.length-1,...(i===0?{balance:priced}:{})}))r.notifications++;else break;}
+  }
+  const receipts=await all(rest,'bk_notifications?league=eq.'+league+'&payload->>kind=eq.basketball_market_balance&sent_at=not.is.null&select=notification_id,league,created_at,sent_at,payload');
+  const units=marketBalance.ledger(receipts,league);
+  if(units.games){
+   await rest('bk_state?on_conflict=league,component','POST',{league,component:'units_ledger',checked_at:now.toISOString(),status:'healthy',detail:units},{prefer:'resolution=merge-duplicates,return=minimal'});
+   if(await notify(ctx,id('units-ledger-v1',league,units.signature),league,marketBalance.ledgerMessage(units),null,{kind:'basketball_units_ledger',ledger:units}))r.notifications++;
   }
   await rest('bk_state?on_conflict=league,component','POST',{league,component:'analysis',checked_at:now.toISOString(),status:r.insufficient_history||r.blocked_missing_recent_stats?'partial':'healthy',detail:r},{prefer:'resolution=merge-duplicates,return=minimal'});
   if(await notify(ctx,id('value-enabled',league,ADVANCED_VERSION),league,league+' · avisos de valor estimado activados\nEl análisis corre en el VPS cada 5 minutos y utiliza estadísticas avanzadas validadas.\nFiltro: cuota observada hace menos de 5 minutos, EV estimado ≥'+(100*LIMITS.minEV)+'%, ventaja ≥4 puntos porcentuales frente al mercado sin margen y escenario adverso positivo.\nLas alertas indicarán las condiciones de participación y la fuente de la cuota. Modelo experimental: rentabilidad aún no demostrada.'))r.notifications++;
