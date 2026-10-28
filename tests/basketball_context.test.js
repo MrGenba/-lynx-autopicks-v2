@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
-const {VERSION,derive,contextReasons,currentOK}=require('../basketball/context');
+const {VERSION,derive,contextReasons,currentOK}=require('../basketball/previous_context');
 const {VERSION:ADVANCED}=require('../basketball/advanced_model');
 const {assess}=require('../basketball/value');
 const {validateQuote}=require('../basketball/pipeline');
@@ -45,7 +45,7 @@ test('unmapped injury identities block the affected team rather than silently dr
 test('prices observed before new lineup evidence cannot generate a value alert',()=>{
  const x=fixture(),[f]=derive(x.game,x.forecasts,x.current,x.history,now);
  const q={quote_id:'q',league:'NBA',game_id:'g',player_id:'p',market:'points',line:12.5,selection:'over',odds:1.9,opposite_odds:1.9,bookmaker:'test',source:'test',source_url:'https://example.test',period:'full_game',includes_overtime:true,captured_at:'2026-10-23T16:58:00Z',expires_at:'2026-10-23T17:10:00Z'},pair={...q,quote_id:'u',selection:'under'};
- const a=assess(q,x.game,f.result,x.forecasts[0].result,[q,pair],now,validateQuote,x.current);assert.equal(a.qualifies,false);assert.ok(a.reasons.includes('PRICE_BEFORE_CONTEXT'));
+ f.result.model_version=require('../basketball/context').VERSION;const a=assess(q,x.game,f.result,x.forecasts[0].result,[q,pair],now,validateQuote,x.current);assert.equal(a.qualifies,false);assert.ok(a.reasons.includes('PRICE_BEFORE_CONTEXT'));
 });
 
 test('WNBA preview labels expected lineups and incomplete reports honestly',()=>{

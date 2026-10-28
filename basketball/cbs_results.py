@@ -7,7 +7,7 @@ from basketball.context_sources import norm,ET
 from basketball.advanced_stats import NBA_TEAMS
 
 SOURCE='cbs_public_boxscore'
-CBS_CODES={'NYK':'NY','GSW':'GS','NOP':'NO','SAS':'SA','UTA':'UTA'}
+CBS_CODES={'NYK':'NY','GSW':'GS','NOP':'NO','SAS':'SA','UTA':'UTA','PHX':'PHO'}
 # Explicit publisher aliases, never fuzzy surname or initial matching.
 # https://gleague.nba.com/player/1641842/ronald-holland-ii
 # https://www.cbssports.com/nba/players/28952672/gregory-jackson/
@@ -43,6 +43,9 @@ def parse(page,g,known,now):
     periods=int(board['game_status']['quarter'])
     scores={s:count(board[s+'TeamScore']) for s in ('home','away')}
     if periods<4 or scores['home']==scores['away'] or any(len(q)!=periods or sum(count(v) for v in q.values())!=scores[s] for q,s in zip(quarters,('home','away'))):raise ValueError('CBS_PERIOD_SCORE_MISMATCH')
+    if any(set(q)!=set(map(str,range(1,periods+1))) for q in quarters):raise ValueError('CBS_PERIOD_KEYS_INVALID')
+    period_scores={side:[count(q[str(i)]) for i in range(1,periods+1)] for side,q in zip(('home','away'),quarters)}
+    if any(sum(period_scores['home'][:i])!=sum(period_scores['away'][:i]) for i in range(4,periods)):raise ValueError('CBS_OVERTIME_TIE_MISMATCH')
     game={**g,'status':'final','home_score':scores['home'],'away_score':scores['away'],'periods':periods,'source':SOURCE,'source_url':url_for(g),'source_checked_at':now.isoformat()}
     payload={'game':game,'teams':[],'players':[]}
     # A validated final score remains useful if the player identities are incomplete.
@@ -98,6 +101,7 @@ def parse(page,g,known,now):
         payload['receipt']={'complete':True,'collector':'cbs-validated-1','team_count':2,'player_count':len(payload['players']),'omitted_unmapped_dnp':sorted(set(omitted)),'source_url':game['source_url'],'observed_at':now.isoformat(),'minutes_precision':'rounded_whole_minutes'}
     except (ValueError,KeyError,TypeError) as e:
         payload={'game':game,'teams':[],'players':[],'receipt':{'complete':False,'collector':'cbs-validated-1','reason':str(e) if isinstance(e,ValueError) else 'CBS_BOX_FIELDS_MISSING'}}
+    payload['receipt']['period_scores']=period_scores
     return payload
 
 async def refresh(client,rest,now):

@@ -25,3 +25,4 @@ function compareAdvanced(games,forecasts,candidates,protocol,pairedCI){
   cohort_game_ids:pairs.map(([id])=>id),scope:'FIRST_200_PAIRED_GAMES_ALL_CANDIDATES_INCLUDING_DISCARDS',claim_scope:'Moneyline Brier only; not player props, ROI or closing-price superiority',no_reuse_for_new_hypotheses:true};
 }
 module.exports={PROTOCOL,compareAdvanced};
+

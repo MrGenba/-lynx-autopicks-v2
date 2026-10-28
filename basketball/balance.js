@@ -1,5 +1,6 @@
 'use strict';
-const {VERSION:CONTEXT}=require('./context');
+const {VERSION:CONTEXT,PREVIOUS_VERSION}=require('./context');
+const overtime=require('./overtime');
 const {VERSION:LEGACY_CONTEXT}=require('./legacy_context');
 const {VERSION:ADVANCED}=require('./advanced_model');
 const {MODELS,PROPS}=require('./model');
@@ -20,29 +21,36 @@ function gameBalance(g,forecasts,players,version=CONTEXT,confirmed=false){
  for(const row of rows.filter(f=>f.kind==='player')){
   const p=players.find(p=>p.league===g.league&&p.game_id===g.game_id&&p.player_id===row.player_id);
   if(!g.box_complete||!p){excluded.missing++;continue;}if(p.did_not_play||p.minutes<=0){excluded.dnp++;continue;}
-  const errors={minutes:row.result.projected_minutes-p.minutes};
+  const errors={minutes:row.result.projected_minutes-p.minutes},rate_errors={};
   for(const [k,fields]of Object.entries(PROPS))if(row.result.props[k]&&fields.every(k=>Number.isFinite(p.stats?.[k])))errors[k]=row.result.props[k].mean-fields.reduce((s,k)=>s+p.stats[k],0);
-  playerRows.push({player_id:p.player_id,name:p.player_name,forecast_id:row.forecast_id,role:row.result.context?.role,minutes_adjusted:row.result.context?.minutes_adjusted||false,projected_minutes:row.result.projected_minutes,actual_minutes:p.minutes,errors});
+  for(const [k,fields]of Object.entries(PROPS))if(Number.isFinite(errors[k])&&row.result.projected_minutes>0)rate_errors[k]=row.result.props[k].mean/row.result.projected_minutes-fields.reduce((s,k)=>s+p.stats[k],0)/p.minutes;
+  playerRows.push({rate_errors,player_id:p.player_id,name:p.player_name,forecast_id:row.forecast_id,role:row.result.context?.role,minutes_adjusted:row.result.context?.minutes_adjusted||false,projected_minutes:row.result.projected_minutes,actual_minutes:p.minutes,errors});
  }
  return {league:g.league,game_id:g.game_id,starts_at:g.starts_at,away:g.away_team,home:g.home_team,score:[g.away_score,g.home_score],box_complete:g.box_complete,source_url:g.source_url,model_version:version,confirmed_only:confirmed,
+  overtime:{...overtime.diagnostic(g),predicted_probability:f.overtime?.p_any??null},
   team:{forecast_id:team.forecast_id,as_of:team.as_of,p_home:f.p_home,predicted_home:f.p_home>=.5,winner:f.p_home>=.5?g.home_team:g.away_team,correct:(f.p_home>=.5)===homeWin,brier:(f.p_home-Number(homeWin))**2,margin_error:f.margin-(g.home_score-g.away_score),total_error:f.total-g.home_score-g.away_score,predicted_score:[f.away_points,f.home_points]},players:playerRows,excluded};
 }
 function evaluateBalance(games,forecasts,players){
  const result={policy:'bk-descriptive-balance-1',selection:'LAST_SEALED_PREGAME_PER_MODEL_GAME_PLAYER',models:{},games:[]};
- for(const version of [MODELS.baseline.version,MODELS.challenger.version,ADVANCED,LEGACY_CONTEXT,CONTEXT])for(const confirmed of [CONTEXT,LEGACY_CONTEXT].includes(version)?[false,true]:[false]){
+ for(const version of [MODELS.baseline.version,MODELS.challenger.version,ADVANCED,LEGACY_CONTEXT,PREVIOUS_VERSION,CONTEXT])for(const confirmed of [CONTEXT,PREVIOUS_VERSION,LEGACY_CONTEXT].includes(version)?[false,true]:[false]){
   const rows=games.map(g=>gameBalance(g,forecasts,players,version,confirmed)).filter(Boolean),key=version+(confirmed?':confirmed':'');
   const ps=rows.flatMap(r=>r.players),props={};for(const k of ['minutes',...Object.keys(PROPS)])props[k]=metrics(ps.map(p=>p.errors[k]).filter(Number.isFinite));
   result.models[key]={games:rows.length,winner_correct:rows.filter(r=>r.team.correct).length,winner_accuracy:avg(rows.map(r=>Number(r.team.correct))),brier:avg(rows.map(r=>r.team.brier)),margin:metrics(rows.map(r=>r.team.margin_error)),total:metrics(rows.map(r=>r.team.total_error)),props,excluded_dnp:rows.reduce((s,r)=>s+r.excluded.dnp,0),missing_players:rows.reduce((s,r)=>s+r.excluded.missing,0)};
+  result.models[key].overtime_groups=Object.fromEntries(['regulation','overtime','unknown'].map(group=>{const cohort=rows.filter(r=>(r.overtime.periods===null?'unknown':r.overtime.periods>0?'overtime':'regulation')===group),ps=cohort.flatMap(r=>r.players);return [group,{games:cohort.length,total:metrics(cohort.map(r=>r.team.total_error)),props_per_minute:Object.fromEntries(Object.keys(PROPS).map(k=>[k,metrics(ps.map(p=>p.rate_errors[k]).filter(Number.isFinite))])),props:Object.fromEntries(['minutes',...Object.keys(PROPS)].map(k=>[k,metrics(ps.map(p=>p.errors[k]).filter(Number.isFinite))]))}];}));
+  const otPredictions=rows.filter(r=>r.overtime.periods!==null&&Number.isFinite(r.overtime.predicted_probability));
+  result.models[key].overtime_probability={n:otPredictions.length,expected:avg(otPredictions.map(r=>r.overtime.predicted_probability)),observed:avg(otPredictions.map(r=>Number(r.overtime.periods>0))),brier:avg(otPredictions.map(r=>(r.overtime.predicted_probability-Number(r.overtime.periods>0))**2))};
   result.games.push(...rows);
  }
  return result;
 }
 function message(g,forecasts,players,published=0){
- const b=gameBalance(g,forecasts,players)||gameBalance(g,forecasts,players,LEGACY_CONTEXT)||gameBalance(g,forecasts,players,ADVANCED)||gameBalance(g,forecasts,players,MODELS.baseline.version);if(!b)return null;
+ const b=gameBalance(g,forecasts,players)||gameBalance(g,forecasts,players,PREVIOUS_VERSION)||gameBalance(g,forecasts,players,LEGACY_CONTEXT)||gameBalance(g,forecasts,players,ADVANCED)||gameBalance(g,forecasts,players,MODELS.baseline.version);if(!b)return null;
  const fix=x=>Number(x).toFixed(1),lines=[g.league+' · balance del partido',g.away_team+' '+g.away_score+' — '+g.home_team+' '+g.home_score,
   'Último pronóstico guardado antes del inicio: '+b.team.winner+' · '+fix(100*(b.team.predicted_home?b.team.p_home:1-b.team.p_home))+'% · '+(b.team.correct?'ACIERTO':'FALLO')+'.',
   'Marcador previsto: '+b.team.predicted_score.map(fix).join(' — ')+'.',
   'Error absoluto: margen '+fix(Math.abs(b.team.margin_error))+'; total '+fix(Math.abs(b.team.total_error))+' puntos.'];
+ if(b.overtime.periods>0){const ot=b.overtime;lines.push('⏱ '+ot.periods+' prórroga(s): '+ot.actual_duration+' minutos de partido. El balance usa los totales finales.',ot.regulation_score?'Final del tiempo reglamentario: '+ot.regulation_score.away+' — '+ot.regulation_score.home+'; '+ot.overtime_points+' puntos añadidos en prórroga.':'Marcador al final del tiempo reglamentario no capturado.', 'Estadísticas de jugadores por periodo no disponibles: no se atribuye producción concreta a la prórroga.');}
+ if(Number.isFinite(b.overtime.predicted_probability))lines.push('Probabilidad de prórroga prevista: '+fix(100*b.overtime.predicted_probability)+'%.');
  if(b.players.length)lines.push('Jugadores ('+b.players.length+' que participaron): error medio absoluto P/R/A '+['points','rebounds','assists'].map(k=>fix(avg(b.players.map(p=>Math.abs(p.errors[k])).filter(Number.isFinite)))).join(' / ')+'.',
   'Minutos: error medio absoluto '+fix(avg(b.players.map(p=>Math.abs(p.errors.minutes))))+'.');
  if(b.excluded.dnp||b.excluded.missing)lines.push('Excluidos: '+b.excluded.dnp+' sin participación; '+b.excluded.missing+' sin datos completos.');
@@ -51,3 +59,4 @@ function message(g,forecasts,players,published=0){
  return lines.join('\n');
 }
 module.exports={latestBefore,gameBalance,evaluateBalance,message,metrics};
+

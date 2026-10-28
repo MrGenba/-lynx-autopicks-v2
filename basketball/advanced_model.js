@@ -115,3 +115,4 @@ function buildAdvanced(game,history,rosters,rows,now){
  return {team,players,validations};
 }
 module.exports={POLICY,VERSION,CONFIG,gate,validatePlayer,priors,enrichPlayer,buildAdvanced};
+

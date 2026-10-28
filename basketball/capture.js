@@ -28,3 +28,4 @@ async function runCapture({http,rest,now=new Date(),maxBoxes=6}){
  }return report;
 }
 module.exports={all,mapLimit,safe,runCapture};
+

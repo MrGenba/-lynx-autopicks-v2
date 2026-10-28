@@ -59,7 +59,7 @@ function playerForecast(playerId,game,history,team,config=MODELS.baseline){
  return {status:'OK',model_version:config.version,player_id:playerId,player_name:last.player_name,team_id:teamId,projected_minutes:projectedMinutes,minutes_sd:Math.sqrt(minutes.variance),props,
   sample:rows.length,last_played_at:last.game.starts_at,availability:'UNVERIFIED',uncertainty:'EXPERIMENTAL_UNCALIBRATED'};
 }
-function probability(quote,forecast){
+function baseProbability(quote,forecast){
  if(forecast.status!=='OK')throw Error('FORECAST_NOT_READY');
  if(quote.player_id){const p=forecast.props[quote.market];if(!p)throw Error('UNSUPPORTED_PROP');return countDistribution(p.mean,p.variance,Number(quote.line),quote.selection);}
  if(quote.market==='moneyline')return {p_win:quote.selection==='home'?forecast.p_home:forecast.p_away,p_push:0,p_loss:quote.selection==='home'?forecast.p_away:forecast.p_home};
@@ -67,4 +67,6 @@ function probability(quote,forecast){
  if(quote.market==='spread'){const mu=quote.selection==='home'?forecast.margin:-forecast.margin;return normalDistribution(mu,forecast.margin_variance,-Number(quote.line),'over');}
  throw Error('UNSUPPORTED_MARKET');
 }
-module.exports={MODELS,PROPS,weighted,normalCdf,normalDistribution,countDistribution,prepareHistory,teamForecast,playerForecast,probability};
+function probability(quote,forecast){return forecast?.overtime?.status==='APPLIED'?require('./overtime').probability(quote,forecast,baseProbability):baseProbability(quote,forecast);}
+module.exports={MODELS,PROPS,weighted,normalCdf,normalDistribution,countDistribution,prepareHistory,teamForecast,playerForecast,baseProbability,probability};
+

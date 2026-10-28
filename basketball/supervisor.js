@@ -16,13 +16,18 @@ function plan(states,games,locks,now){
    if(rule.market&&!games.some(g=>g.league===league&&g.status==='scheduled'&&Date.parse(g.starts_at)>now.getTime()&&Date.parse(g.starts_at)<=now.getTime()+12*3600000))continue;
    const s=states.find(s=>s.league===league&&s.component===rule.component),age=now.getTime()-Date.parse(s?.checked_at);
    const researchRetry=task==='research'&&s?.status==='attention'&&['RATE_LIMITED','BUDGET_OR_DUPLICATE'].includes(s.detail?.review)&&s.checked_at.slice(0,10)<now.toISOString().slice(0,10);
-   if(bad(s)||!Number.isFinite(age)||age>rule.minutes*60000||researchRetry)affected.push({league,component:rule.component,status:s?.status||'MISSING',checked_at:s?.checked_at||null,reason:researchRetry?'RESUME_AI':bad(s)?'FAILED_OR_MISSING':'STALE'});
+   if(bad(s)||!Number.isFinite(age)||age>rule.minutes*60000||researchRetry){const code=s?.detail?.error;affected.push({league,component:rule.component,status:s?.status||'MISSING',checked_at:s?.checked_at||null,error:/^[A-Z][A-Z_0-9]{1,95}$/.test(code||'')?code:null,reason:researchRetry?'RESUME_AI':bad(s)?'FAILED_OR_MISSING':'STALE'});}
   }
   if(affected.length){const locked=locks.some(l=>l.name===task&&Date.parse(l.expires_at)>now.getTime());issues.push({task,affected,locked});}
  }
  return {issues,blocked};
 }
-function recovered(action,states){return action.evidence.affected.every(before=>{const s=states.find(s=>s.league===before.league&&s.component===before.component);return s&&!bad(s)&&s.status!=='attention'&&Date.parse(s.checked_at)>Date.parse(action.requested_at);});}
+function recovered(action,states,now=new Date()){return action.evidence.affected.every(before=>{
+ const s=states.find(s=>s.league===before.league&&s.component===before.component);
+ if(!s||bad(s)||s.status==='attention'||!(Date.parse(s.checked_at)>Date.parse(action.requested_at)))return false;
+ if(before.component==='odds'){const capture=s.detail?.latest_capture;return s.status==='captured'&&capture?.quotes>0&&Date.parse(capture.completed_at)>Date.parse(action.requested_at)&&Date.parse(capture.expires_at)>now.getTime();}
+ return true;
+});}
 function targetFor(task,targets){const t=targets?.[task];if(!TASKS[task]||!t||!/^basketball-[a-z]+-[a-f0-9-]{36}$/.test(t.webhookPath)||!/^[a-f0-9]{64}$/.test(t.webhookToken))throw Error('SUPERVISOR_TARGET_INVALID');return t;}
 async function runSupervisor(ctx){
  const {rest,now=new Date()}=ctx;
@@ -31,7 +36,7 @@ async function runSupervisor(ctx){
  const locks=await rest('bk_locks?select=name,expires_at');
  const prior=(await rest('bk_state?league=eq.ALL&component=eq.supervisor&select=detail'))[0]?.detail;
  const actions=await rest('bk_agent_actions?status=in.(claimed,requested,dispatch_unknown)&select=*');
- for(const a of actions){if(recovered(a,states))await rest('rpc/bk_agent_finish','POST',{p_id:a.action_id,p_status:'recovered'});else if(Date.parse(a.requested_at)<now.getTime()-75*60000)await rest('rpc/bk_agent_finish','POST',{p_id:a.action_id,p_status:'unresolved'});}
+ for(const a of actions){if(recovered(a,states,now))await rest('rpc/bk_agent_finish','POST',{p_id:a.action_id,p_status:'recovered'});else if(Date.parse(a.requested_at)<now.getTime()-75*60000)await rest('rpc/bk_agent_finish','POST',{p_id:a.action_id,p_status:'unresolved'});}
  const assessment=plan(states,games,locks,now),dispatched=[];
  for(const issue of assessment.issues){
   if(issue.locked)continue;
@@ -41,16 +46,21 @@ async function runSupervisor(ctx){
   await rest('rpc/bk_agent_finish','POST',{p_id:claim,p_status:status});dispatched.push({task:issue.task,status});
  }
  const since={};for(const issue of assessment.issues){since[issue.task]=prior?.since?.[issue.task]||now.toISOString();
-  if(Date.parse(since[issue.task])<=now.getTime()-20*60000)for(const item of issue.affected)await notify(ctx,'supervisor:incident:'+item.league+':'+issue.task+':'+since[issue.task],item.league,item.league+' · supervisor persistente\nLa tarea '+issue.task+' sigue sin recuperarse después de 20 minutos. Estado: '+item.status+'. Los reintentos están limitados y el incidente queda guardado en Supabase. Se requiere revisar esta fuente o servicio.');
+  if(Date.parse(since[issue.task])<=now.getTime()-20*60000)for(const item of issue.affected)await notify(ctx,'supervisor:incident:'+item.league+':'+issue.task+':'+since[issue.task],item.league,item.league+' · supervisor persistente\nLa tarea '+issue.task+' sigue sin recuperarse después de 20 minutos. Estado: '+item.status+'.'+(item.error?' Código: '+item.error+'.':'')+' Los reintentos están limitados y el incidente queda guardado en la base de datos de baloncesto del VPS. Se requiere revisar esta fuente o servicio.');
  }
  for(const task of Object.keys(prior?.since||{}))if(!assessment.issues.some(i=>i.task===task)&&!assessment.blocked.some(i=>i.task===task))for(const league of ['NBA','WNBA']){
   const incident='supervisor:incident:'+league+':'+task+':'+prior.since[task];
   const sent=await rest('bk_notifications?notification_id=eq.'+encodeURIComponent(incident)+'&sent_at=not.is.null&select=notification_id');
-  if(sent.length)await notify(ctx,incident+':recovered',league,league+' · supervisor persistente\nLa tarea '+task+' vuelve a estar actualizada. Recuperación comprobada en el servidor.');
+  if(sent.length){
+   if(recovered({requested_at:prior.since[task],evidence:{affected:[{league,component:TASKS[task]?.component}]}},states,now))await notify(ctx,incident+':recovered',league,league+' · supervisor persistente\nLa tarea '+task+' vuelve a estar actualizada. Recuperación comprobada en el servidor.');
+   else since[task]=prior.since[task];
+  }
  }
+ for(const item of assessment.blocked)if(prior?.since?.[item.task])since[item.task]=prior.since[item.task];
  const detail={version:VERSION,goal:'Capture and validate NBA/WNBA data, evaluate sealed models and notify estimated value; recover permitted workflows.',runtime:'VPS_N8N',state_store:'DEDICATED_BASKETBALL_POSTGRES',since,issues:assessment.issues,blocked:assessment.blocked,dispatched,ai_budget:'EXISTING_RESEARCH_BUDGET_UNCHANGED',research_schedule:'09:00 UTC daily; resume after API cooldown',auto_model_promotion:false,can_place_bet:false};
  await rest('bk_state?on_conflict=league,component','POST',{league:'ALL',component:'supervisor',checked_at:now.toISOString(),status:assessment.issues.length?'recovering':'healthy',detail},{prefer:'resolution=merge-duplicates,return=minimal'});
- for(const league of ['NBA','WNBA'])await notify(ctx,'supervisor:enabled:'+VERSION+':'+league,league,league+' · supervisor persistente activo en el VPS\nComprueba las tareas cada 10 minutos, conserva su estado en Supabase y reintenta fallos sin depender del PC. Los cuatro revisores de IA continúan con su presupuesto y pausa de API actuales.\nAvisará de incidencias persistentes, recuperación y mejoras que superen la prueba registrada.');
+ for(const league of ['NBA','WNBA'])await notify(ctx,'supervisor:enabled:'+VERSION+':'+league,league,league+' · supervisor persistente activo en el VPS\nComprueba las tareas cada 10 minutos, conserva su estado en la base de datos de baloncesto del VPS y reintenta fallos sin depender del PC. Los cuatro revisores de IA continúan con su presupuesto y pausa de API actuales.\nAvisará de incidencias persistentes, recuperación y mejoras que superen la prueba registrada.');
  return {status:assessment.issues.length?'RECOVERING':'HEALTHY',issues:assessment.issues.map(i=>i.task),blocked:assessment.blocked,dispatched};
 }
 module.exports={VERSION,TASKS,plan,recovered,targetFor,runSupervisor};
+

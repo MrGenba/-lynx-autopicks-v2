@@ -64,3 +64,4 @@ function normalizePublicQuotes(raw,games,now=new Date(),forecasts=[]){
  }return {quotes,rejected};
 }
 module.exports={parseGamePrices,parsePlayerPrices,normalizePublicQuotes};
+

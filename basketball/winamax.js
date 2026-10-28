@@ -49,3 +49,4 @@ function normalizeProps(raw,games,forecasts,now=new Date()){
  }return {quotes,rejected};
 }
 module.exports={HEADERS,RULES_URL,norm,teamNorm,eventIdentity,parsePairs,normalizeProps};
+

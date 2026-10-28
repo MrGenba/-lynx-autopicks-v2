@@ -92,3 +92,4 @@ function build(game,history,forecasts,rows,now){
  return players.map(f=>enrich({...f,matchup_pace_factor:paceFactor},bundles.get(f.player_id),grouped.get(f.player_id)||[],prior,opponents[f.team_id],defenses[f.team_id],game,now));
 }
 module.exports={VERSION,POLICY,optional,opponentHistory,defenderContext,enrich,build};
+

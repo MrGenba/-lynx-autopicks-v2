@@ -13,4 +13,20 @@ async function requestAnalysis(ctx,report){
  }
  return report;
 }
-module.exports={lastStarted,canStart,freshCount,requestAnalysis};
+async function requestContextAnalysis(ctx,report){
+ if(!ctx.requestAnalysis)return report;
+ const checked_at=new Date().toISOString(),detail={fallback:'SCHEDULED_ANALYSIS',capture_completed:true};let status='dispatch_unknown';
+ try{
+  const locks=await ctx.rest('bk_locks?name=eq.analysis&expires_at=gt.'+checked_at+'&select=name');
+  if(locks.length)status='already_running';
+  else if(await ctx.requestAnalysis())status='requested';
+  else detail.error='WORKFLOW_TRIGGER_NOT_ACKNOWLEDGED';
+ }catch(e){detail.error=/^[A-Z][A-Z_0-9]+$/.test(e.message||'')?e.message:'WORKFLOW_TRIGGER_FAILED';}
+ // Capture has already persisted its source health. A failed handoff must not
+ // overwrite that successful checkpoint or retry a possibly accepted webhook.
+ try{await ctx.rest('bk_state?on_conflict=league,component','POST',{league:'ALL',component:'context_analysis_dispatch',checked_at,status,detail},{prefer:'resolution=merge-duplicates,return=minimal'});}
+ catch(e){detail.checkpoint_error=/^[A-Z][A-Z_0-9]+$/.test(e.message||'')?e.message:'DISPATCH_CHECKPOINT_FAILED';}
+ return {...report,analysis_dispatch:{status,...detail}};
+}
+module.exports={lastStarted,canStart,freshCount,requestAnalysis,requestContextAnalysis};
+

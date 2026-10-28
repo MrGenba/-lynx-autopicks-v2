@@ -30,3 +30,4 @@ function apply(f,g,h,now){
  return out;
 }
 module.exports={POLICY,totals,opponent,apply};
+

@@ -43,7 +43,7 @@ async function runResearch(ctx){
   const forecasts=await all(rest,'bk_forecasts?league=eq.'+league+'&select=*'),ids=[...new Set(forecasts.map(f=>f.game_id))];
   const games=[],players=[];
   for(let i=0;i<ids.length;i+=150){const list=ids.slice(i,i+150).join(',');games.push(...await all(rest,'bk_games?league=eq.'+league+'&game_id=in.('+list+')&select=*'));players.push(...await all(rest,'bk_player_box?league=eq.'+league+'&game_id=in.('+list+')&select=game_id,player_id,stats,minutes,did_not_play'));}
-  const cs=await all(rest,'bk_candidates?league=eq.'+league+'&select=candidate_id,game_id,player_id,market,selection,created_at,as_of,model_version,verdict,result,settled_at,p_win,p_push,quote_snapshot,matchup:forecast->matchup,evaluation:forecast->evaluation,defense:forecast->defense');
+  const cs=await all(rest,'bk_candidates?league=eq.'+league+'&select=candidate_id,game_id,player_id,market,selection,created_at,as_of,model_version,verdict,result,settled_at,p_win,p_push,quote_snapshot,matchup:forecast->matchup,evaluation:forecast->evaluation,defense:forecast->defense,overtime:forecast->overtime');
   const states=await rest('bk_state?league=eq.'+league+'&select=component,status,checked_at,detail');
   const protocol=(await rest('bk_model_protocols?protocol_id=eq.'+PROTOCOL+'&select=*'))[0];
   const report=evaluate(games,forecasts,players,cs);report.advanced_comparison=compareAdvanced(games,forecasts,cs,protocol,pairedCI);
@@ -51,6 +51,14 @@ async function runResearch(ctx){
   const priorMatchup=(await rest('bk_model_test_results?protocol_id=eq.'+matchup.POLICY+'&league=eq.'+league+'&select=report'))[0];
   report.matchup_comparison=priorMatchup?.report||matchupResearch.compare(games,forecasts,players,cs,mp,pairedCI);
   if(!priorMatchup&&report.matchup_comparison.n===200)await rest('bk_model_test_results?on_conflict=protocol_id,league','POST',{protocol_id:matchup.POLICY,league,report:report.matchup_comparison},{prefer:'resolution=ignore-duplicates,return=minimal'});
+  const previousContext=require('./previous_context'),previousResearch=require('./previous_context_research');
+  const pp=(await rest('bk_model_protocols?protocol_id=eq.'+previousContext.POLICY+'&select=*'))[0],pr=(await rest('bk_model_test_results?protocol_id=eq.'+previousContext.POLICY+'&league=eq.'+league+'&select=report'))[0];
+  report.previous_context_comparison=pr?.report||previousResearch.compare(games,forecasts,players,cs,pp,pairedCI);
+  if(!pr&&report.previous_context_comparison.n===200)await rest('bk_model_test_results?on_conflict=protocol_id,league','POST',{protocol_id:previousContext.POLICY,league,report:report.previous_context_comparison},{prefer:'resolution=ignore-duplicates,return=minimal'});
+  const otContext=require('./overtime_context'),otResearch=require('./overtime_context_research');
+  const op=(await rest('bk_model_protocols?protocol_id=eq.'+otContext.POLICY+'&select=*'))[0],or=(await rest('bk_model_test_results?protocol_id=eq.'+otContext.POLICY+'&league=eq.'+league+'&select=report'))[0];
+  report.overtime_comparison=or?.report||otResearch.compare(games,forecasts,players,cs,op,pairedCI);
+  if(!or&&report.overtime_comparison.n===200)await rest('bk_model_test_results?on_conflict=protocol_id,league','POST',{protocol_id:otContext.POLICY,league,report:report.overtime_comparison},{prefer:'resolution=ignore-duplicates,return=minimal'});
   const cp=(await rest('bk_model_protocols?protocol_id=eq.'+activeContext.POLICY+'&select=*'))[0],priorContext=(await rest('bk_model_test_results?protocol_id=eq.'+activeContext.POLICY+'&league=eq.'+league+'&select=report'))[0];
   report.player_context_comparison=priorContext?.report||contextResearch.compare(games,forecasts,players,cs,cp,pairedCI);
   if(!priorContext&&report.player_context_comparison.n===200)await rest('bk_model_test_results?on_conflict=protocol_id,league','POST',{protocol_id:activeContext.POLICY,league,report:report.player_context_comparison},{prefer:'resolution=ignore-duplicates,return=minimal'});
@@ -82,3 +90,4 @@ async function runResearch(ctx){
  }return {reports};
 }
 module.exports={metrics,pairedCI,evaluate,runResearch};
+

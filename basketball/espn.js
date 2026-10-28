@@ -85,3 +85,4 @@ async function loadGame(league,url,get,{box=false,rosters=false}={}){
  result.receipt={collector:VERSION,player_count:result.players.length,team_count:2,complete:true};return result;
 }
 module.exports={VERSION,LEAGUES,FIELDS,root,sourceUrl,idFrom,counts,status,game,createClient,schedule,loadGame};
+

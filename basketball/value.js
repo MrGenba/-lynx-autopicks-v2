@@ -3,6 +3,7 @@ const {probability}=require('./model');
 const {VERSION}=require('./advanced_model');
 const {notify}=require('./notifications');
 const {VERSION:CONTEXT_VERSION,contextReasons,latest}=require('./context');
+const view=require('./pick_format');
 const POLICY='bk-value-estimate-2';
 const LIMITS={minEV:.10,minEdge:.04,minStressEV:.01,maxAgeMinutes:5,minOdds:1.5,maxOdds:3.5,minOverround:1,maxOverround:1.12,maxPerGame:3};
 const opposite=q=>q.selection==='over'?'under':q.selection==='under'?'over':q.selection==='home'?'away':'home';
@@ -41,25 +42,33 @@ function assess(q,g,forecast,baseline,quotes,now,validateQuote,current){
 const labels={points:'puntos',rebounds:'rebotes',assists:'asistencias',threes:'triples',pra:'P+R+A',pr:'P+R',pa:'P+A',ra:'R+A',total:'total',spread:'hándicap',moneyline:'ganador'};
 function message(g,q,f,a){
  const selection=q.player_id?f.player_name+' · '+(q.selection==='over'?'Más de ':'Menos de ')+q.line+' '+labels[q.market]:q.market==='total'?(q.selection==='over'?'Más de ':'Menos de ')+q.line+' puntos':(q.selection==='home'?g.home_team:g.away_team)+(q.market==='spread'?' '+(q.line>0?'+':'')+q.line:' gana');
- const time=new Date(q.captured_at).toLocaleTimeString('es-ES',{timeZone:'Europe/Madrid',hour:'2-digit',minute:'2-digit'});
- const lines=[g.league+' · valor estimado · modelo experimental',g.away_team+' @ '+g.home_team,selection,
-  q.bookmaker+' · cuota '+q.odds.toFixed(2)+' · lectura '+time+' (Madrid)',
-  'Probabilidad sin empate: modelo '+(100*a.model_probability).toFixed(1)+'% / mercado sin margen '+(100*a.market_probability).toFixed(1)+'%.',
-  'EV estimado: '+(100*a.ev).toFixed(1)+'%; escenario adverso: '+(100*a.stress_ev).toFixed(1)+'%.'];
- if(a.p_push>0)lines.push('Probabilidad de devolución: '+(100*a.p_push).toFixed(1)+'%.');
- if(a.conditional_on_participation)lines.push('Condicionado a que participe. Estado: '+f.availability+'; quinteto '+(f.context?.lineup||'sin confirmar')+'; minutos estimados '+f.projected_minutes.toFixed(1)+'.');
- if(q.source==='winamax_fr_direct')lines.push('Fuente Winamax.fr; equivalencia con España y revisión actual de reglas sin verificar.');
- lines.push('Confirma cuota y disponibilidad. Estimación en evaluación prospectiva; rentabilidad no demostrada.');
+ const expires=Math.min(Date.parse(q.expires_at),Date.parse(q.captured_at)+LIMITS.maxAgeMinutes*60000,Date.parse(g.starts_at));
+ const lines=[...view.heading(g,'PICK DE VALOR'),'',view.divider,'🎯 '+selection,'💰 Cuota '+q.odds.toFixed(2)+' · '+view.book(q.bookmaker),view.divider,'',
+  '📊 Probabilidad sin empate',
+  'Modelo '+(100*a.model_probability).toFixed(1)+'% · Mercado sin margen '+(100*a.market_probability).toFixed(1)+'%',
+  '📈 EV estimado: '+view.signedPercent(a.ev),
+  '🛡 Escenario adverso: '+view.signedPercent(a.stress_ev)];
+ if(a.p_push>0)lines.push('↩️ Probabilidad de devolución: '+(100*a.p_push).toFixed(1)+'%');
+ if(a.conditional_on_participation)lines.push('','👤 '+view.availability(f.availability)+' · quinteto '+view.lineup(f.context?.lineup),'⏱ Minutos estimados: '+f.projected_minutes.toFixed(1),'Condicionado a que participe.');
+ lines.push('','🕒 Cuota leída '+view.time(q.captured_at)+' · aviso válido hasta '+view.time(expires)+' (Madrid)');
+ if(q.source==='winamax_fr_direct')lines.push('ℹ️ Winamax.fr: equivalencia con España y revisión actual de reglas sin verificar.');
+ const ot=require('./overtime').notice(f);if(ot)lines.push(ot);
+ lines.push('Modelo experimental · rentabilidad no demostrada. Confirma cuota y disponibilidad.');
  return lines.join('\n');
 }
 async function notifyValues(ctx,g,forecasts,quotes,validateQuote){
  const {now=new Date(),rest}=ctx,report={assessed:0,qualified:0,sent:0,rejected:{}};
+ const review=require('./pregame_review');
+ if(review.paused(ctx)&&review.bothConfirmed(g,ctx.gameContext))return report;
  const prior=await rest('bk_value_alerts?league=eq.'+g.league+'&game_id=eq.'+g.game_id+'&select=alert_id,subject');
  const advanced=latest(forecasts,ctx.gameContext),qualified=[];
  for(const q of quotes){const f=advanced.find(f=>(f.player_id||null)===(q.player_id||null)),b=forecasts.find(f=>f.model_version==='bk-pace-minutes-1'&&(f.player_id||null)===(q.player_id||null));
   const a=assess(q,g,f?.result,b?.result,quotes,now,validateQuote,ctx.gameContext);report.assessed++;
   for(const r of a.reasons)report.rejected[r]=(report.rejected[r]||0)+1;
-  if(a.qualifies){report.qualified++;qualified.push({q,f,a});}
+  if(a.qualifies){
+   if(ctx.pregameReview?.enabled){const check=review.assess(g,f.result,ctx.gameContext,now);if(!check.eligible){for(const reason of check.reasons)report.rejected[reason]=(report.rejected[reason]||0)+1;continue;}}
+   report.qualified++;qualified.push({q,f,a});
+  }
  }
  qualified.sort((a,b)=>b.a.stress_ev-a.a.stress_ev);const subjects=new Set(prior.map(p=>p.subject));let total=prior.length;
  for(const {q,f,a}of qualified){const subject=q.player_id||'game';if(total>=LIMITS.maxPerGame||subjects.has(subject))continue;
@@ -77,9 +86,11 @@ async function canRetryValue(ctx,payload,now){
  if(!Number.isFinite(a.decision?.ev)||a.decision.ev<LIMITS.minEV)return false;
  if(a.decision.forecast?.model_version!==CONTEXT_VERSION)return false;
  const current=(await ctx.rest('bk_context_current?league=eq.'+a.league+'&game_id=eq.'+a.game_id+'&select=*'))[0];
+ if(require('./pregame_review').paused(ctx)&&Object.values(current?.body?.teams||{}).length===2&&Object.values(current.body.teams).every(t=>t.lineup==='CONFIRMED'))return false;
  if(contextReasons(a.decision.forecast,current,now).length)return false;
  const q=(await ctx.rest('bk_quotes?quote_id=eq.'+encodeURIComponent(a.quote_snapshot.quote_id)+'&select=*'))[0];
  const g=(await ctx.rest('bk_games?league=eq.'+a.league+'&game_id=eq.'+a.game_id+'&select=status,starts_at'))[0];
  return !!q&&g?.status==='scheduled'&&Date.parse(g.starts_at)>now.getTime()&&q.detail?.delayed!==true&&q.detail?.reference_only!==true&&q.odds===a.quote_snapshot.odds&&q.opposite_odds===a.quote_snapshot.opposite_odds&&Date.parse(q.expires_at)>now.getTime()&&Date.parse(q.captured_at)>now.getTime()-LIMITS.maxAgeMinutes*60000;
 }
 module.exports={POLICY,LIMITS,pairFor,assess,message,notifyValues,canRetryValue};
+

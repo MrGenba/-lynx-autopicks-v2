@@ -1,15 +1,15 @@
 'use strict';
 const {teamNorm}=require('./winamax');
-const POLICY=Object.freeze({version:'winamax-afternoon-1',timezone:'Europe/Madrid',startHour:15,endHour:22,minSessionGapMinutes:30,maxDailySessions:14,maxSessionSeconds:90,maxGames:3,perGameGapMinutes:60,outsideLearnedGapMinutes:120,minIntervals:20,minDays:7});
+const POLICY=Object.freeze({version:'winamax-pregame-2',timezone:'Europe/Madrid',startHour:15,endHour:22,minSessionGapMinutes:30,maxDailySessions:96,maxPublicationSessions:14,pregameMinutes:90,pregameGapMinutes:5,pregameMaxGames:2,maxSessionSeconds:90,maxGames:3,perGameGapMinutes:60,outsideLearnedGapMinutes:120,minIntervals:20,minDays:7});
 function localTime(now){const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:POLICY.timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(now).map(p=>[p.type,p.value]));return {day:p.year+'-'+p.month+'-'+p.day,minutes:Number(p.hour)*60+Number(p.minute)};}
 function inWindow(now){const {minutes}=localTime(now);return minutes>=POLICY.startHour*60&&minutes<POLICY.endHour*60;}
-function sessionMs(now){if(!inWindow(now))return 0;return Math.min(POLICY.maxSessionSeconds*1000,(POLICY.endHour*60-localTime(now).minutes)*60000-now.getUTCSeconds()*1000-now.getUTCMilliseconds());}
-function budget(raw={},now){return {...raw,day:localTime(now).day,sessions:raw.day===localTime(now).day?Number(raw.sessions)||0:0};}
-function launchReason(state,now){
- if(!inWindow(now))return 'OUTSIDE_AFTERNOON';
+function sessionMs(now,pregame=false){if(pregame)return POLICY.maxSessionSeconds*1000;if(!inWindow(now))return 0;return Math.min(POLICY.maxSessionSeconds*1000,(POLICY.endHour*60-localTime(now).minutes)*60000-now.getUTCSeconds()*1000-now.getUTCMilliseconds());}
+function budget(raw={},now){const same=raw.day===localTime(now).day;return {...raw,day:localTime(now).day,sessions:same?Number(raw.sessions)||0:0,publication_sessions:same?Number(raw.publication_sessions??raw.sessions)||0:0,pregame_sessions:same?Number(raw.pregame_sessions)||0:0};}
+function launchReason(state,now,pregame=false){
+ if(!inWindow(now)&&!pregame)return 'OUTSIDE_AFTERNOON';
  if(Date.parse(state.cooldown_until)>now.getTime())return 'SOURCE_COOLDOWN';
- if(state.sessions>=POLICY.maxDailySessions)return 'DAILY_BROWSER_LIMIT';
- if(now.getTime()-Date.parse(state.last_started_at)<POLICY.minSessionGapMinutes*60000)return 'BROWSER_INTERVAL';
+ if(state.sessions>=POLICY.maxDailySessions||(!pregame&&state.publication_sessions>=POLICY.maxPublicationSessions))return 'DAILY_BROWSER_LIMIT';
+ if(now.getTime()-Date.parse(state.last_started_at)<(pregame?POLICY.pregameGapMinutes:POLICY.minSessionGapMinutes)*60000)return 'BROWSER_INTERVAL';
  return null;
 }
 function profile(observations){
@@ -20,6 +20,15 @@ function profile(observations){
  return result;
 }
 function gameGapMinutes(learning,now){const p=learning?.profile,minute=localTime(now).minutes;return p?.status==='LEARNED_INTERVAL'&&(minute<p.startMinute||minute>=p.endMinute)?POLICY.outsideLearnedGapMinutes:POLICY.perGameGapMinutes;}
+function selectGames(games,checked,learning,now){
+ const upcoming=games.filter(g=>g.status==='scheduled'&&Date.parse(g.starts_at)>now.getTime());
+ const near=g=>Date.parse(g.starts_at)-now.getTime()<=POLICY.pregameMinutes*60000;
+ const due=(g,gap)=>!checked[g.game_id]||Date.parse(checked[g.game_id])<=now.getTime()-gap*60000;
+ const order=(a,b)=>(checked[a.game_id]||'').localeCompare(checked[b.game_id]||'')||Date.parse(a.starts_at)-Date.parse(b.starts_at);
+ const urgent=upcoming.filter(g=>near(g)&&due(g,POLICY.pregameGapMinutes)).sort(order);
+ if(urgent.length)return {pregame:true,games:urgent.slice(0,POLICY.pregameMaxGames)};
+ return {pregame:false,games:inWindow(now)?upcoming.filter(g=>!near(g)&&due(g,gameGapMinutes(learning,now))).sort(order).slice(0,POLICY.maxGames):[]};
+}
 function observe(old={},games,raw,quotes,now,jobId){
  const observations={...(old.observations||{})};
  for(const g of games){
@@ -41,4 +50,5 @@ function observe(old={},games,raw,quotes,now,jobId){
  return {policy:POLICY.version,observations:kept,profile:profile(kept)};
 }
 const hour=m=>String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
-module.exports={POLICY,localTime,inWindow,sessionMs,budget,launchReason,profile,gameGapMinutes,observe,hour};
+module.exports={POLICY,localTime,inWindow,sessionMs,budget,launchReason,profile,gameGapMinutes,selectGames,observe,hour};
+

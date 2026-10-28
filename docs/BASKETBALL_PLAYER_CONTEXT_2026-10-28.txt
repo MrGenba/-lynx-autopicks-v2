@@ -1,0 +1,93 @@
+Player context version 4
+========================
+
+This change reconstructs the lost development work from the verified live
+version 3 bundles, rather than treating the older repository as production.
+No increased accuracy or profitability is established by this deployment.
+
+The projected starting/bench role is resolved from the same current lineup
+and public named-player news for both minutes estimation and pick display.
+Unknown roles, conflicting news, insufficient role/rotation samples, uncertain
+teammates and returns with uncertain workloads hold publication.
+
+Comparable rotations require five observations in the current availability
+pattern and five contrasting observations with the same role. A full boxscore
+alone cannot classify a player outside a verified same-team tenure as absent.
+Recipients can gain, lose or retain minutes. Missing teammate minutes are not
+assigned automatically to a replacement. Effects are bounded and shrunk.
+
+When sufficient data exist, shot attempts and rebound/assist production rates
+are compared per minute and normalized for historical team pace. Points use
+pooled shot conversion and changes in attempts; hot shooting is not treated as
+new opportunity. WNBA boxscore proxies are never labelled tracking data.
+The advanced input's attack/pace effects, opponent defense and overtime mixture
+are retained. The new minute/production adjustment occurs before defense and
+the overtime mixture, which are each applied once. Explicit caps survive OT.
+
+The injury-exit evidence table is separate from official boxscores. Only an
+explicit named, dated injury exit with no return, linked to a unique completed
+game and observed before the forecast, may exclude that exposure from new-model
+training. Low minutes alone are not evidence. Actual stats and outcomes remain
+unchanged and still count in evaluation. No historical forecast is rewritten.
+
+Protocol: bk-player-context-prospective-4. Baseline: bk-player-context-3.
+First 200 eligible future paired games per league after registration, including
+discarded candidates. Half-point O/U, maximum 12% overround, game-level Brier
+differences and fixed 2000-resample bootstrap. Both 95% upper bounds must be
+negative against the previous sealed model and no-vig market. Prior protocols
+continue separately. No automatic model promotion or reuse of inspected tests.
+
+Upgrade entry point: basketball/upgrade_workflows.js takes a fresh live export
+and changes only the relevant modules. Preserve the live runtime suffix and
+all nodes, connections, credentials, schedules, notification destinations and
+settings. Do not rebuild existing workflows with old deployment config files.
+The strict filtered-channel gates remain probability > 0.60 and edge over
+1/odds > 0.20. Confirmed-lineup reanalysis remains disabled. Deduplication and
+compact pick formatting are retained for both NBA and WNBA.
+
+Worker deployment uses the existing persistent basketball-data volume and a
+last startup layer in player-context-4. It updates context_capture.py, injury_exit.py and
+context_sources.py, preserving Tor, Winamax's original connection and Proton
+isolation. The official injury PDF reader also preserves an explicit reason
+continued at the start of the next page, instead of invalidating the whole report.
+No shared baseball service rebuild/restart is necessary. Before a
+future base-image rebuild, reconcile existing persistent source patch layers
+with the chosen image; the repository had been behind those live patches.
+
+Recovery assets (private, never version): work/recovery in the maintenance
+chat, plus /app/basketball-data/player-context-4/recovery on the VPS. A full
+database dump, original workflow exports, source snapshots and startup backup
+precede the update. Restore workflow exports to roll back executable logic;
+restore the worker/startup files for capture rollback. Additive evidence schema
+and historical forecasts can remain; do not erase observations to roll back.
+
+Verified deployment, 2026-10-28
+------------------------------
+Protocol registered 19:16:21 UTC. Context, analysis and research bundles were
+read back and matched their expected hashes. All ten basketball workflows
+remain active; the seven unrelated bundles retain their original hashes.
+Environment, network configuration, mounted volumes and deployment command
+are unchanged. The startup patch is stored on the existing persistent volume.
+
+The real cycle at 19:28 UTC completed successfully. Latest inputs include 214
+version-4 forecasts for 12 NBA games, with 202 player forecasts. All 202 roles
+match the minute model, all player forecasts include opponent adjustments,
+all 214 forecasts include overtime and link to version 3. No production-rate
+comparison had sufficient live rotation evidence in that sample: the feature
+is validated with fixtures and does not invent a live effect. WNBA had no
+upcoming game within 12 hours, so no WNBA live forecast is claimed here.
+
+108 JavaScript and 37 Python tests passed on D:/Milb/autopicks_v2. Additional
+VPS checks passed: transactional migration rollback/idempotency/permissions,
+bounded forecast query, retry-safe lock ownership and the current official
+NBA PDF (110 records, 26 teams, one explicit page continuation).
+The current-query optimization reads 1,856 rows instead of 51,678 historical
+rows for those games; no historical row is deleted. Lock retries by the same
+execution retain ownership and cannot take another execution's live lease.
+
+The recovery dump contains 295,514,803 bytes. A post-deployment hash verifies
+195,718 previous forecasts unchanged. No filtered-channel deliveries were
+created during this deployment. No future eligible game had completed yet.
+The pre-existing daily agent research review remains RATE_LIMITED for both
+leagues; this is distinct from deterministic projection and statistical
+evaluation. No provider credentials or request budgets were changed.

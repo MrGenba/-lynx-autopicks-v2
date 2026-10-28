@@ -30,29 +30,70 @@ async function runSnapshot(ctx){
  const started=await server(ctx,'/basketball-stats/start','POST');if(!started.job_id)throw Error('SNAPSHOT_NOT_STARTED');
  await rest('bk_state?on_conflict=league,component','POST',{league:'NBA',component:'capture_job',status:'running',checked_at:now.toISOString(),detail:{job_id:started.job_id}},{prefer:'resolution=merge-duplicates,return=minimal'});return {status:'STARTED'};
 }
+const safeError=(error,fallback)=>{const code=String(error?.message??error??'').trim();return /^[A-Z][A-Z_0-9]{1,95}$/.test(code)?code:fallback;};
+const putState=(rest,league,component,status,detail,now)=>rest('bk_state?on_conflict=league,component','POST',{league,component,status,checked_at:now.toISOString(),detail},{prefer:'resolution=merge-duplicates,return=minimal'});
+async function advanceOdds(ctx,league,games,detail,r){
+ const {rest,now}=ctx;
+ if(!games.length){detail.job_id=null;detail.checked={};detail.last_failure=null;return;}
+ const active=new Set(games.map(g=>g.game_id));for(const key of Object.keys(detail.checked))if(!active.has(key))delete detail.checked[key];
+ let last=lastStarted(detail,now);
+ if(detail.job_id&&!last)last=Date.parse(detail.checked_at)||now.getTime();
+ detail.last_started_at=last?new Date(last).toISOString():null;
+ if(detail.job_id){
+  const job=await server(ctx,'/scrape-odds/status/'+detail.job_id);
+  if(job?.status==='running'){
+   // Polls are heartbeats, not proof that quotes recovered. Keep the original
+   // launch time and never create another browser for an overdue running job.
+   if(now.getTime()-last>=20*60000)detail.last_failure=detail.last_failure||{error:'ODDS_JOB_STALLED',failed_at:now.toISOString()};
+   return;
+  }
+  if(job?.status==='done'){
+   if(job.result?.league!==league||!Array.isArray(job.result?.games))throw Error('ODDS_RESULT_INVALID');
+   const normalized=normalizeQuotes(job.result,games,now);r.rejected=normalized.rejected;r.source_errors=job.result.errors||[];
+   if(normalized.quotes.length){await rest('bk_quotes?on_conflict=quote_id','POST',normalized.quotes,{prefer:'resolution=merge-duplicates,return=minimal'});r.quotes=normalized.quotes.length;r.fresh_quotes=freshCount(normalized.quotes,now);}
+   detail.latest_capture={completed_at:now.toISOString(),quotes:r.quotes,source_errors:r.source_errors,rejected:r.rejected,expires_at:normalized.quotes.length?new Date(Math.max(...normalized.quotes.map(q=>Date.parse(q.expires_at)))).toISOString():null};
+   detail.last_failure=null;
+  }else if(['error','not_found'].includes(job?.status)){
+   detail.last_failure={error:safeError(job.error,job.status==='not_found'?'ODDS_JOB_NOT_FOUND':'ODDS_JOB_FAILED'),failed_at:now.toISOString()};
+  }else throw Error('ODDS_JOB_STATUS_INVALID');
+  detail.job_id=null;
+ }
+ if(canStart(last,now)){
+  const selected=[...games].sort((a,b)=>(detail.checked[a.game_id]||'').localeCompare(detail.checked[b.game_id]||'')).slice(0,3);
+  const names=selected.flatMap(g=>[g.home_team.replace(/^LA Clippers$/,'Los Angeles Clippers'),g.away_team.replace(/^LA Clippers$/,'Los Angeles Clippers')]);
+  // Reserve the five-minute interval before dispatch: a lost HTTP response can
+  // still mean the worker accepted the request. Do not retry it every minute.
+  detail.last_started_at=now.toISOString();for(const g of selected)detail.checked[g.game_id]=now.toISOString();
+  await putState(rest,league,'odds_job','running',detail,now);
+  const start=await server(ctx,'/scrape-odds/start?league='+league+'&bookmaker=Bet365&teams='+encodeURIComponent(names.join(',')));
+  if(!start?.job_id)throw Error('ODDS_NOT_STARTED');detail.job_id=start.job_id;
+ }
+}
 async function runOdds(ctx){
  const {rest,now=new Date()}=ctx,report={leagues:{}};
  for(const league of ['NBA','WNBA']){
-  const games=await rest('bk_games?league=eq.'+league+'&status=eq.scheduled&starts_at=gt.'+now.toISOString()+'&starts_at=lt.'+new Date(now.getTime()+12*3600000).toISOString()+'&order=starts_at.asc&select=*');
-  const old=(await rest('bk_state?league=eq.'+league+'&component=eq.odds_job&select=*'))[0],checked=old?.detail?.checked||{},r={games:games.length,quotes:0,rejected:[],bookmaker:'bet365',player_props:'SEPARATE_WINAMAX_FR_COLLECTOR'};report.leagues[league]=r;let jobId=null,latest=old?.detail?.latest_capture||null;
-  let last=lastStarted(old?.detail,now);
-  if(old?.detail?.job_id){const job=await server(ctx,'/scrape-odds/status/'+old.detail.job_id);
-   if(job?.status==='running'){r.status='RUNNING';continue;}
-   if(job?.status==='done'){const normalized=normalizeQuotes(job.result,games,now);r.rejected=normalized.rejected;r.source_errors=job.result.errors||[];
-    if(normalized.quotes.length){await rest('bk_quotes?on_conflict=quote_id','POST',normalized.quotes,{prefer:'resolution=merge-duplicates,return=minimal'});r.quotes=normalized.quotes.length;r.fresh_quotes=freshCount(normalized.quotes,now);}
-    latest={completed_at:now.toISOString(),quotes:r.quotes,source_errors:r.source_errors,rejected:r.rejected,expires_at:normalized.quotes.length?new Date(Math.max(...normalized.quotes.map(q=>Date.parse(q.expires_at)))).toISOString():null};
-   }else r.error='ODDS_JOB_FAILED';
+  const r={quotes:0,rejected:[],bookmaker:'bet365',player_props:'SEPARATE_WINAMAX_FR_COLLECTOR'};report.leagues[league]=r;
+  let detail=null;
+  try{
+   const games=await rest('bk_games?league=eq.'+league+'&status=eq.scheduled&starts_at=gt.'+now.toISOString()+'&starts_at=lt.'+new Date(now.getTime()+12*3600000).toISOString()+'&order=starts_at.asc&select=*');r.games=games.length;
+   const old=(await rest('bk_state?league=eq.'+league+'&component=eq.odds_job&select=*'))[0];
+   detail={...old?.detail,job_id:old?.detail?.job_id||null,checked:{...old?.detail?.checked},checked_at:old?.checked_at};
+   await advanceOdds({...ctx,now},league,games,detail,r);
+  }catch(error){
+   r.error=safeError(error,'ODDS_TASK_FAILED');
+   if(detail)detail.last_failure={error:r.error,failed_at:now.toISOString()};
   }
-  if(games.length&&canStart(last,now)){const selected=[...games].sort((a,b)=>(checked[a.game_id]||'').localeCompare(checked[b.game_id]||'')).slice(0,3);
-   const names=selected.flatMap(g=>[g.home_team.replace(/^LA Clippers$/,'Los Angeles Clippers'),g.away_team.replace(/^LA Clippers$/,'Los Angeles Clippers')]);
-   const start=await server(ctx,'/scrape-odds/start?league='+league+'&bookmaker=Bet365&teams='+encodeURIComponent(names.join(',')));if(!start.job_id)throw Error('ODDS_NOT_STARTED');jobId=start.job_id;
-   last=now.getTime();for(const g of selected)checked[g.game_id]=now.toISOString();
-  }
-  const active=new Set(games.map(g=>g.game_id));for(const key of Object.keys(checked))if(!active.has(key))delete checked[key];
-  r.latest_capture=latest;
-  r.status=!games.length?'no_games':jobId?'running':latest?.quotes===0?'source_unavailable':Date.parse(latest?.expires_at)>now.getTime()?'captured':'awaiting_refresh';
-  await rest('bk_state?on_conflict=league,component','POST',{league,component:'odds_job',status:r.status,checked_at:now.toISOString(),detail:{job_id:jobId,checked,last_started_at:last?new Date(last).toISOString():null,latest_capture:latest}},{prefer:'resolution=merge-duplicates,return=minimal'});
-  await rest('bk_state?on_conflict=league,component','POST',{league,component:'odds',status:r.status,checked_at:now.toISOString(),detail:r},{prefer:'resolution=merge-duplicates,return=minimal'});
- }return requestAnalysis(ctx,report);
+  r.latest_capture=detail?.latest_capture||null;r.job_status=detail?.job_id?'running':null;
+  if(detail?.last_failure)r.error=detail.last_failure.error;
+  r.status=r.error?'error':r.games===0?'no_games':Date.parse(r.latest_capture?.expires_at)>now.getTime()?'captured':r.job_status?'running':r.latest_capture?.quotes===0?'source_unavailable':'awaiting_refresh';
+  // One league's worker failure must not reach the workflow-wide catch that
+  // marks BOTH leagues as error. Preserve pending job IDs for the next poll.
+  try{
+   if(detail){delete detail.checked_at;await putState(rest,league,'odds_job',r.status,detail,now);}
+   await putState(rest,league,'odds',r.status,r,now);
+  }catch(error){r.status='error';r.state_error=safeError(error,'ODDS_STATE_WRITE_FAILED');}
+ }
+ return requestAnalysis(ctx,report);
 }
 module.exports={norm,normalizeQuotes,runOdds,runSnapshot};
+

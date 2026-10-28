@@ -1,6 +1,6 @@
 """Bounded PDF reads: a publication delay must not permanently disable a feed."""
 from datetime import timedelta
-from basketball.context_sources import ET, injury_pdf, report_time
+from basketball.context_sources import ET, injury_pdf, report_time, INJURY_PARSER_VERSION
 
 
 def fresh_report(report, league, now):
@@ -32,12 +32,15 @@ async def latest_report(league, now, get, previous=None):
     folder = 'injury' if league == 'NBA' else 'wnba_injury'
     url = 'https://ak-static.cms.nba.com/referee/' + folder + '/Injury-Report_' + at.strftime('%Y-%m-%d_%I_%M%p') + '.pdf'
     detail = {**previous, 'report': report}
-    if previous.get('last_attempt_url') == url:
+    if (previous.get('last_attempt_url') == url
+            and previous.get('parser_version') == INJURY_PARSER_VERSION):
         status = previous.get('source_status', 'AWAITING_REPORT')
         if status == 'OK' and not report:
             status = 'AWAITING_REPORT'
         return report, {**detail, 'source_status': status}
-    detail.update(last_attempt_url=url, last_attempt_at=now.isoformat(), blocked=False)
+    detail.pop('parser_error', None)
+    detail.update(last_attempt_url=url, last_attempt_at=now.isoformat(), blocked=False,
+                  parser_version=INJURY_PARSER_VERSION)
     try:
         response = await get(url)
         detail['http'] = response.status_code
@@ -61,8 +64,10 @@ async def latest_report(league, now, get, previous=None):
             detail.update(source_status='SOURCE_ACCESS_BLOCKED', blocked=True, publication='UNVERIFIED')
         else:
             detail.update(source_status='SOURCE_HTTP_'+str(response.status_code), publication='UNVERIFIED')
-    except ValueError:
+    except ValueError as error:
         detail.update(source_status='REPORT_INVALID', publication='UNVERIFIED')
+        code = str(error)
+        detail['parser_error'] = code if code.startswith(('REPORT_', 'EMPTY_REPORT')) and code.replace('_', '').isalnum() else 'REPORT_PARSE_FAILED'
     except Exception:
         detail.update(source_status='SOURCE_FAILED', publication='UNVERIFIED')
     return report, detail

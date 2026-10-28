@@ -1,0 +1,14 @@
+{
+ "protocol_id":"bk-player-context-prospective-4",
+ "specification":{
+  "model":"bk-player-context-4",
+  "baseline_model":"bk-player-context-3",
+  "leagues":["NBA","WNBA"],
+  "selection":"First 200 eligible future games per league after registration. First sealed paired pregame half-point O/U quote per game/player/market; includes discarded candidates; maximum 12% overround; actual completed boxscores and minutes > 0.",
+  "metric":"Mean paired player-prop Brier loss difference within each game; fixed 2000-resample game bootstrap. Both upper 95% confidence bounds below zero against sealed version 3 and the no-vig market.",
+  "fixed_policy":"Minimum 5 comparable and 5 contrasting rotation observations; role minimum 5. Minutes adjustment shrunk by n/(n+8) and bounded to 6 minutes. Pace-normalized production factor shrunk by min(n)/(min(n)+12), bounded 0.85 to 1.15. No fitting on inspected outcomes.",
+  "injury_exits":"Only explicit named, dated, no-return injury statements. Excluded from new-model training only; real boxscore, settlement and evaluation outcomes retained.",
+  "preservation":"Versions 1,2,3 and their registered cohorts retained. No rewritten historical forecasts, prices, outcomes or notification receipts.",
+  "promotion":"No automatic model promotion, no accuracy or profitability claim. Freeze evaluation at 200 games and require new future cohort for a revised model."
+ }
+}

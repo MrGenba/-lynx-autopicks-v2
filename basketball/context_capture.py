@@ -5,6 +5,8 @@ from urllib.parse import urlparse
 import httpx
 from basketball.context_sources import ET,norm,digest,injury_pdf,lineups,news
 from basketball.injury_reports import latest_report
+from basketball.injury_exit import capture as capture_injury_exits
+from basketball.context_rosters import refresh_rosters,supplement
 from basketball.advanced_stats import NBA_TEAMS
 
 WNBA_NAMES={'Atlanta Dream':'ATL','Chicago Sky':'CHI','Connecticut Sun':'CON','Dallas Wings':'DAL','Golden State Valkyries':'GSV','Indiana Fever':'IND','Las Vegas Aces':'LVA','Los Angeles Sparks':'LAS','Minnesota Lynx':'MIN','New York Liberty':'NYL','Phoenix Mercury':'PHO','Seattle Storm':'SEA','Washington Mystics':'WAS','Toronto Tempo':'TOR','Portland Fire':'POR'}
@@ -39,7 +41,8 @@ def context_for(g,known,aliases,report,lu,headlines,sources):
         confirmed=bool(lineup and lineup['confirmed'] and len(starters)==5)
         teams[tid]={'injury_report_submitted':submitted,'lineup':'CONFIRMED' if confirmed else 'UNMAPPED' if lineup and lineup['confirmed'] else 'EXPECTED' if lineup else 'UNKNOWN','starters':starters,'team_name':g[side+'_team']}
         for p in catalog:
-            players[p['player_id']]={'player_id':p['player_id'],'name':p['player_name'],'team_id':tid,'availability':'NOT_LISTED' if submitted else 'UNVERIFIED','role':'STARTER' if confirmed and p['player_id'] in starters else 'BENCH' if confirmed else 'UNKNOWN','expected_starter':bool(lineup and p['player_id'] in starters),'news':[]}
+            players[p['player_id']]={'player_id':p['player_id'],'name':p['player_name'],'team_id':tid,'availability':'NOT_LISTED' if submitted else 'UNVERIFIED','role':'STARTER' if len(starters)==5 and p['player_id'] in starters else 'BENCH' if len(starters)==5 else 'UNKNOWN','expected_starter':bool(lineup and p['player_id'] in starters),'news':[]}
+            if p.get('identity'):players[p['player_id']]['identity']=p['identity']
         for item in injuries:
             if not item['player_name']:continue
             pid=match_name(item['player_name'],catalog,alias)
@@ -128,12 +131,23 @@ async def run():
                             await rest('bk_state?on_conflict=league,component',{'league':league,'component':'news_cache','checked_at':now.isoformat(),'status':'healthy','detail':{'items':ns,'retention_days':2,'max_items':500}},'resolution=merge-duplicates,return=minimal')
                         sources[kind]='OK'
                     except Exception as e:sources[kind]=str(e) if isinstance(e,(ValueError,RuntimeError)) else 'SOURCE_FAILED'
+            # Boxscore history omits rookies and other players yet to appear.
+            # Resolve only missing identities against a scoped current roster;
+            # never synthesize their stats or treat an unmapped injury as healthy.
+            targets={(g['season'],p['team_id']) for g in gs for p in context_for(g,known,aliases,report,lu,ns,sources)['unmapped']}
+            league_known=known
+            if targets:
+                cached=await rest('bk_state?league=eq.'+league+'&component=eq.context_roster_identities&select=detail')
+                identities,detail=await refresh_rosters(league,targets,now,client.get,cached[0]['detail'] if cached else None)
+                league_known=supplement(known,identities)
+                await rest('bk_state?on_conflict=league,component',{'league':league,'component':'context_roster_identities','checked_at':now.isoformat(),'status':'healthy' if len(detail['teams'])==len(targets) and all(t['status']=='OK' for t in detail['teams'].values()) else 'partial','detail':detail},'resolution=merge-duplicates,return=minimal')
+            injury_exits=await capture_injury_exits(rest,league,ns,now) if sources.get('news')=='OK' else 0
             snapshots=0
             for g in gs:
-                body=context_for(g,known,aliases,report,lu,ns,sources);revision=digest(body)
+                body=context_for(g,league_known,aliases,report,lu,ns,sources);revision=digest(body)
                 await rest('rpc/bk_store_context',{'p_row':{'snapshot_id':revision,'league':league,'game_id':g['game_id'],'observed_at':now.isoformat(),'body':body}});snapshots+=1
             health='source_error' if any(s not in ['OK','AWAITING_REPORT'] for s in sources.values()) else 'healthy' if gs and all(s=='OK' for s in sources.values()) else 'partial' if gs else 'no_games'
-            state={'league':league,'component':'context','checked_at':now.isoformat(),'status':health,'detail':{'games':len(gs),'snapshots':snapshots,'sources':sources,'injury_rows':len(report.get('records',[])),'lineup_teams':len(lu),'confirmed_teams':sum(x['confirmed'] for x in lu),'news':len(ns)}}
+            state={'league':league,'component':'context','checked_at':now.isoformat(),'status':health,'detail':{'games':len(gs),'snapshots':snapshots,'sources':sources,'injury_rows':len(report.get('records',[])),'lineup_teams':len(lu),'confirmed_teams':sum(x['confirmed'] for x in lu),'news':len(ns),'explicit_injury_exits':injury_exits,'player_context_model':'bk-player-context-4'}}
             await rest('bk_state?on_conflict=league,component',state,'resolution=merge-duplicates,return=minimal');reports.append(state)
         return {'reports':reports}
 if __name__=='__main__':

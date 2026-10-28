@@ -7,6 +7,7 @@ from pypdf import PdfReader
 from basketball.rotation_news import signals
 
 ET = ZoneInfo('America/New_York')
+INJURY_PARSER_VERSION = 'injury-pdf-3'
 def norm(s):
     return re.sub('[^a-z0-9]', '', unicodedata.normalize('NFKD', str(s)).encode('ascii','ignore').decode().lower())
 def digest(x):
@@ -18,6 +19,55 @@ def report_time(url):
     m = re.search(r'Injury-Report_(\d{4}-\d{2}-\d{2})_(\d{2})_(\d{2})(AM|PM)\.pdf$', url)
     if not m: raise ValueError('REPORT_URL_INVALID')
     return datetime.strptime(' '.join(m.groups()), '%Y-%m-%d %I %M %p').replace(tzinfo=ET).astimezone(timezone.utc)
+
+def injury_player_name(value):
+    parts = [p.strip() for p in value.split(',')]
+    suffix = r'(?:Jr\.?|Sr\.?|II|III|IV)'
+    if len(parts) == 2 and all(parts):
+        last, first = parts
+        # The report also uses "Butler III, Jimmy" and "Lively II, Dereck".
+        match = re.fullmatch(r'(.+?)\s+(' + suffix + r')', last, re.I)
+        return first + ' ' + (match[1] + ' ' + match[2] if match else last)
+    if len(parts) == 3 and all(parts) and re.fullmatch(suffix, parts[1], re.I):
+        return parts[2] + ' ' + parts[0] + ' ' + parts[1]
+    raise ValueError('REPORT_PLAYER_INVALID')
+
+def injury_rows(lines, cols, top, bottom, leading=None):
+    """Join reason lines around the vertically centred player/status row.
+
+    A wrapped reason can start ABOVE the first player's date/team. Attach by
+    position before carrying that context, including on continuation pages.
+    Ambiguous or detached text remains an invalid report, not a missing injury.
+    """
+    rows, fragments = [], []
+    for y, words in lines:
+        if not top < y < bottom:
+            continue
+        cells = [''] * 6
+        for x, text in sorted(words):
+            col = sum(x >= bound-2 for bound in cols)
+            cells[col] += (' ' if cells[col] else '') + text
+        if any(cells[:5]) or cells[5] == 'NOT YET SUBMITTED':
+            rows.append((y, cells, [(y, cells[5])] if cells[5] else []))
+        elif cells[5]:
+            fragments.append((y, cells[5]))
+    anchors = [r for r in rows if r[1][3] or r[1][4] or r[1][5] == 'NOT YET SUBMITTED']
+    for y, text in fragments:
+        candidates = sorted(anchors, key=lambda r: abs(r[0]-y))
+        # A page can split a reason after its player's complete status row.
+        # Only isolated leading text far from the next player is carried back;
+        # normal wrapped lines above a vertically centred player stay local.
+        if leading is not None and anchors and y<min(r[0] for r in anchors) and abs(candidates[0][0]-y)>25:
+            leading.append(text)
+            continue
+        if (not candidates or abs(candidates[0][0]-y) > 25
+                or (len(candidates) > 1 and abs(abs(candidates[0][0]-y)-abs(candidates[1][0]-y)) < 1)):
+            raise ValueError('REPORT_REASON_ROW_AMBIGUOUS')
+        candidates[0][2].append((y, text))
+    for _, cells, reason in rows:
+        cells[5] = ' '.join(t for _, t in sorted(reason))
+        yield cells
+
 def injury_pdf(content, url, now):
     published = report_time(url)
     if published > now or (now-published).total_seconds()>6*3600: raise ValueError('REPORT_DATE_INVALID')
@@ -36,11 +86,13 @@ def injury_pdf(content, url, now):
         if not header and cols is None:raise ValueError('REPORT_HEADER_INVALID')
         if header:cols=[next(x for x,t in header[1] if t==label) for label in ['Matchup','Team','Player','Current','Reason']]
         if cols!=sorted(cols):raise ValueError('REPORT_COLUMNS_INVALID')
-        for y,w in lines:
-            if y<=(header[0] if header else 75) or y>height-65:continue
-            cells=['']*6
-            for x,t in sorted(w):
-                col=sum(x>=bound-2 for bound in cols);cells[col]+=(' ' if cells[col] else '')+t
+        leading=[]
+        cells_list=list(injury_rows(lines,cols,header[0] if header else 75,height-65,leading if records else None))
+        if leading:
+            if not records or not records[-1].get('player_name') or not records[-1].get('reason') or not records[-1].get('submitted'):raise ValueError('REPORT_REASON_ROW_AMBIGUOUS')
+            records[-1]['reason']=(records[-1]['reason']+' '+' '.join(leading))[:180]
+            records[-1]['reason_page_continuation']=True
+        for cells in cells_list:
             before,ma,te,player,st,reason=cells
             dm=re.search(r'\d{2}/\d{2}/\d{4}',before)
             if dm:date=datetime.strptime(dm[0],'%m/%d/%Y').date().isoformat()
@@ -51,11 +103,10 @@ def injury_pdf(content, url, now):
             if not date or not match or not team:raise ValueError('REPORT_CONTEXT_MISSING')
             if 'NOT YET SUBMITTED' in ' '.join(cells):
                 records.append({'date':date,'matchup':match,'team':team,'submitted':False,'player_name':None,'status':'UNVERIFIED','reason':'NOT_YET_SUBMITTED'});continue
-            if player and st:
+            if player or st:
                 value=status(st)
-                if value=='UNVERIFIED' or ',' not in player:raise ValueError('REPORT_PLAYER_INVALID')
-                last,first=player.split(',',1)
-                records.append({'date':date,'matchup':match,'team':team,'submitted':True,'player_name':first.strip()+' '+last.strip(),'status':value,'reason':reason[:180]})
+                if value=='UNVERIFIED':raise ValueError('REPORT_PLAYER_INVALID')
+                records.append({'date':date,'matchup':match,'team':team,'submitted':True,'player_name':injury_player_name(player),'status':value,'reason':reason[:180]})
     if not records:raise ValueError('EMPTY_REPORT')
     return {'published_at':published.isoformat(),'source_url':url,'records':records}
 

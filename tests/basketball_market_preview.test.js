@@ -53,6 +53,7 @@ test('analysis sends a single combined preview per game/book and leaves failed-v
  const x=fixture(),sent=[],claimed=new Set();
  const ctx={now,owner:'test',send:async(league,text)=>{sent.push({league,text});return {ok:true,result:{message_id:sent.length}};},rest:async(p,m='GET',b)=>{
   if(m==='POST'){
+   if(p==='rpc/bk_analysis_forecasts'){assert.equal(b.p_league,'NBA');assert.deepEqual(b.p_game_ids,[x.game.game_id]);return x.forecasts;}
    if(p==='rpc/bk_claim_notification'){if(claimed.has(b.p_id))return false;claimed.add(b.p_id);return true;}
    if(p==='rpc/bk_finish_notification')return true;
    if(p==='rpc/bk_seal_value_alert')throw Error('Rejected high-margin market cannot be sealed');

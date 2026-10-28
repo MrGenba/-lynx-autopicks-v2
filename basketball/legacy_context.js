@@ -75,3 +75,4 @@ async function refresh(ctx){
  if(r.body?.status!=='already_running'&&ctx.requestAnalysis)await ctx.requestAnalysis();return r.body;
 }
 module.exports={VERSION,currentOK,contextReasons,derive,latest,publishChanges,refresh,unavailable};
+

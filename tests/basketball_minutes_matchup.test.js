@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
-const minutes=require('../basketball/minutes_model'),defense=require('../basketball/player_matchup'),context=require('../basketball/context'),legacy=require('../basketball/legacy_context'),{PROPS}=require('../basketball/model');
-const {compare}=require('../basketball/context_research');
+const minutes=require('../basketball/minutes_model'),defense=require('../basketball/player_matchup'),context=require('../basketball/previous_context'),legacy=require('../basketball/legacy_context'),{PROPS}=require('../basketball/model');
+const {compare}=require('../basketball/previous_context_research');
 const now=new Date('2026-10-24T12:00:00Z'),g={league:'WNBA',season:2026,season_type:3,game_id:'today',home_team_id:'a',away_team_id:'b',starts_at:'2026-10-24T17:00:00Z',status:'scheduled'};
 const stats={points:80,rebounds:40,assists:20,turnovers:12,fgm:30,fga:70,fg3m:8,fg3a:25,ftm:12,fta:15,orb:10,drb:30};
 const personal={points:20,rebounds:5,assists:4,fgm:7,fga:15,fg3m:2,fg3a:6,ftm:4,fta:5,orb:1,drb:4};

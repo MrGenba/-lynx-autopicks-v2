@@ -42,3 +42,4 @@ function stable(value) {
 const fingerprint = value => sha256(JSON.stringify(stable(value)));
 const uuidFrom = text => { const s=sha256(text);return `${s.slice(0,8)}-${s.slice(8,12)}-4${s.slice(13,16)}-8${s.slice(17,20)}-${s.slice(20,32)}`; };
 module.exports = {sha256,fingerprint,uuidFrom};
+

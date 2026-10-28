@@ -27,3 +27,4 @@ function compare(games,forecasts,players,candidates,protocol,pairedCI){
   improvement:!!ciBase&&ciBase[1]<0&&ciMarket[1]<0,status:cohort.length<200?'ACCUMULATING':ciBase[1]<0&&ciMarket[1]<0?'IMPROVED_PROP_BRIER':'NO_DEMONSTRATED_IMPROVEMENT'};
 }
 module.exports={compare};
+

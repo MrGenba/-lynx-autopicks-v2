@@ -1,6 +1,6 @@
 'use strict';
 const {PROPS,MODELS}=require('./model');
-const {VERSION:CONTEXT}=require('./context');
+const {VERSION:CONTEXT,PREVIOUS_VERSION}=require('./context');
 const {VERSION:LEGACY_CONTEXT}=require('./legacy_context');
 const {VERSION:ADVANCED}=require('./advanced_model');
 const reference=require('./ps3838_reference');
@@ -99,7 +99,7 @@ function publishedSelections(g,notifications,forecasts,players,alerts=[]){
 function evaluatedSelections(g,candidates,players){
  // Fixed descriptive policy: context > advanced > baseline; last paired pregame revision,
  // one line and the more probable side per book/subject/market. Outcomes are not consulted.
- const grouped=new Map(),rank={[CONTEXT]:4,[LEGACY_CONTEXT]:3,[ADVANCED]:2,[MODELS.baseline.version]:1};
+ const grouped=new Map(),rank={[CONTEXT]:5,[PREVIOUS_VERSION]:4,[LEGACY_CONTEXT]:3,[ADVANCED]:2,[MODELS.baseline.version]:1};
  for(const c of candidates){
   if(c.league!==g.league||c.game_id!==g.game_id||!rank[c.model_version]||!before(c.as_of,g)||!before(c.created_at,g)||!usableQuote(c.quote_snapshot,g,c.as_of))continue;
   const key=[subject({...c,bookmaker:c.quote_snapshot.bookmaker}),c.quote_snapshot.source,c.model_version,c.forecast?.context?.input_revision||c.forecast?.context?.revision||'',c.market==='spread'?Math.abs(c.line):c.line,c.quote_snapshot.captured_at].join('|');
@@ -129,12 +129,14 @@ function rowText(g,r){
  return selectionText(g,r)+'\n'+r.bookmaker+' @'+reference.price(r.odds)+(Number.isFinite(r.projected)&&r.player_id?' · proy. '+r.projected.toFixed(1):'')+' · real '+actualText(g,r)+' · '+outcomes[r.result]+' · '+unitsText(r.paper_units)+'.';
 }
 function unitsText(n){return Number.isFinite(n)?(n>=0?'+':'')+fixed(n)+' u':'sin liquidar';}
-function accounting(s){return 'Ganadas +'+fixed(s.paper_won)+' u · perdidas −'+fixed(s.paper_lost)+' u · neto '+unitsText(s.paper_units)+'\nBase liquidada '+s.paper_staked+' u · retorno '+fixed(s.paper_returned)+' u · ROI '+(s.paper_roi===null?'—':fixed(100*s.paper_roi)+'%')+'.';}
+function yieldText(s){return 'Yield '+(Number.isFinite(s.paper_roi)?(s.paper_roi>=0?'+':'')+fixed(100*s.paper_roi)+'%':'—');}
+function accounting(s){return 'Ganadas +'+fixed(s.paper_won)+' u · perdidas −'+fixed(s.paper_lost)+' u · neto '+unitsText(s.paper_units)+'\nBase liquidada '+s.paper_staked+' u · retorno '+fixed(s.paper_returned)+' u · '+yieldText(s)+'.';}
 function actualText(g,r){return r.actual===null||r.actual===undefined?'—':!r.player_id&&r.market==='moneyline'?g.away_score+'–'+g.home_score:!r.player_id&&r.market==='spread'?'margen '+(r.selection==='home'?r.actual:-r.actual):String(r.actual);}
 function summaryText(s){return s.WIN+' aciertos / '+s.LOSS+' fallos'+(s.PUSH?' / '+s.PUSH+' devoluciones':'')+(s.DNP?' / '+s.DNP+' sin participación':'')+(s.MISSING?' / '+s.MISSING+' sin dato':'')+(s.RULES_UNVERIFIED?' / '+s.RULES_UNVERIFIED+' sin reglas de prórroga':'')+'; '+(s.accuracy===null?'sin resueltos':(100*s.accuracy).toFixed(1)+'% de acierto')+'.';}
 function messages(g,b){
  const header=g.league+' · balance de cuotas y actuaciones\n'+g.away_team+' '+g.away_score+' — '+g.home_team+' '+g.home_score;
  const sections=['Pronósticos informativos enviados por Telegram (última revisión por jugador/mercado/casa):',...b.published.map(r=>rowText(g,r))];
+ if(g.periods>4)sections.unshift('⏱ '+(g.periods-4)+' prórroga(s). Se mantienen los totales finales de los mercados que incluyen prórroga; las referencias con reglas sin verificar quedan pendientes. Un resultado favorable o adverso con prórroga no demuestra por sí solo calidad del modelo.');
  if(!b.published.length)sections.push('No consta un pronóstico con línea y cuota enviado antes del inicio.');
  const team=b.evaluated.filter(r=>!r.player_id&&r.bookmaker==='bet365');
  if(team.length)sections.push('Partido · cuotas históricas Bet365 evaluadas (no acreditan una apuesta publicada):',...team.map(r=>rowText(g,r)));
@@ -169,9 +171,9 @@ function ledger(notifications,league){
 function ledgerMessage(l){return [l.league+' · acumulado de unidades · '+l.games+' partidos',
  'Simulación de 1 unidad fija por selección enviada; cada revisión sustituye la anterior para el recuento.',
  'Pronósticos informativos enviados: '+summaryText(l.published),accounting(l.published),
- ...Object.entries(l.by_book).map(([book,s])=>book+': '+s.WIN+' A / '+s.LOSS+' F · '+unitsText(s.paper_units)),
+ ...Object.entries(l.by_book).map(([book,s])=>book+': '+s.WIN+' A / '+s.LOSS+' F · '+unitsText(s.paper_units)+' · '+yieldText(s)),
  'Alertas de valor entregadas: '+l.value.total+' · '+summaryText(l.value)+'\n'+accounting(l.value),
  ...(l.reference.total?['PS3838 · comparación retrospectiva de las mismas selecciones/líneas con referencias retrasadas: '+summaryText(l.reference)+'\n'+accounting(l.reference)+'\nSin cuota equivalente: '+l.reference_missing+'. Este subtotal no se suma al anterior.']:[]),
- 'Los descartes no se suman al saldo publicado. DNP/anulados: 0 u; sin datos o reglas: sin liquidar. No acredita apuestas realizadas ni rentabilidad futura.'
+ 'Yield = beneficio neto / unidades liquidadas × 100. Los descartes no se suman al saldo publicado. DNP/anulados: 0 u; sin datos o reglas: sin liquidar. No acredita apuestas realizadas ni rentabilidad futura.'
  ].join('\n\n');}
-module.exports={POLICY,labels,usableQuote,settle,summary,byBook,referenceComparison,legacySelections,publishedSelections,evaluatedSelections,build,selectionText,actualText,unitsText,accounting,messages,ledger,ledgerMessage};
+module.exports={POLICY,labels,usableQuote,settle,summary,byBook,referenceComparison,legacySelections,publishedSelections,evaluatedSelections,build,selectionText,actualText,unitsText,yieldText,accounting,messages,ledger,ledgerMessage};
